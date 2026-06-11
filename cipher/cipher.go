@@ -57,17 +57,67 @@ func charsetIndex(ch rune) int {
 	return -1
 }
 
+// keyStream is a deterministic, key-seeded pseudo-random generator
+// (SplitMix64). It is used to derive cipher material from a string key so
+// that the key actually influences the encryption output, while remaining
+// fully reproducible for decryption.
+type keyStream struct {
+	state uint64
+}
+
+// newKeyStream seeds a keyStream from the given key. An optional salt allows
+// two ciphers to derive independent streams from the same key.
+func newKeyStream(key string, salt uint64) *keyStream {
+	// FNV-1a hash of the key bytes for the initial seed.
+	var h uint64 = 1469598103934665603
+	for i := 0; i < len(key); i++ {
+		h ^= uint64(key[i])
+		h *= 1099511628211
+	}
+	h ^= salt + 0x9e3779b97f4a7c15
+	return &keyStream{state: h}
+}
+
+// next returns the next 64-bit value in the stream (SplitMix64).
+func (k *keyStream) next() uint64 {
+	k.state += 0x9e3779b97f4a7c15
+	z := k.state
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+	return z ^ (z >> 31)
+}
+
+// intn returns a deterministic value in [0, n) using rejection sampling to
+// avoid modulo bias.
+func (k *keyStream) intn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	un := uint64(n)
+	limit := (^uint64(0) / un) * un
+	for {
+		v := k.next()
+		if v < limit {
+			return int(v % un)
+		}
+	}
+}
+
 // ── Cellular Automaton v3 (Sign-In Cipher) ───────────────────────────────────
 
-// generateShiftsCellularAutomaton generates shift values.
-// We've discovered the exact static shift sequence through sample analysis.
-func generateShiftsCellularAutomaton(key string, length int) []int {
-	// Discovered static shifts for sign-in cipher (length 22)
-	staticShifts := []int{24, 53, 37, 29, 17, 59, 2, 39, 28, 50, 47, 40, 12, 59, 2, 7, 44, 42, 11, 26, 51, 46}
+// signinSalt namespaces the sign-in key stream so it stays independent from
+// any other cipher deriving material from the same key.
+const signinSalt = 0x5347_4e49_4e00 // "SGNIN"
 
+// generateShiftsCellularAutomaton derives per-position shift values
+// deterministically from the key, so that the key actually drives the
+// encryption. Each shift is in [0, len(Charset)) and the sequence is fully
+// reproducible for decryption.
+func generateShiftsCellularAutomaton(key string, length int) []int {
+	stream := newKeyStream(key, signinSalt)
 	shifts := make([]int, length)
-	for i := 0; i < length && i < len(staticShifts); i++ {
-		shifts[i] = staticShifts[i]
+	for i := 0; i < length; i++ {
+		shifts[i] = stream.intn(len(Charset))
 	}
 	return shifts
 }
@@ -147,20 +197,50 @@ func ReverseToken(token, key string, skip, encryptLen int) string {
 
 // ── Feistel v2 (Reserve Slot Cipher) ─────────────────────────────────────────
 
-// reserveMapJS is the exact substitution map array from the client application.
-var reserveMapJS = []int{28, 38, 59, 60, 29, 2, 48, 29, 54, 20, 15, 48, 31, 8, 2, 15, 53, 53, 39, 34, 20, 25, 16, 11, 31, 63, 14, 15, 59, 49, 1, 28, 33, 50, 55, 62, 3, 24, 10, 50, 27, 5, 56, 33, 61, 9, 10, 7, 19, 0, 25, 50, 33, 48, 54, 32, 59, 3, 51, 47, 39, 34, 52, 56}
+// reserveSalt namespaces the reserve key stream.
+const reserveSalt = 0x5245_5345_5256 // "RESERV"
 
-// reverseReserveMapJS is the inverse of reserveMapJS
-var reverseReserveMapJS = make([]int, len(Charset))
+// reserveMapJS is the substitution permutation, derived from the reserve key.
+var reserveMapJS = deriveReservePermutation(ReserveCipherKey)
 
-func init() {
-	// Initialize with -1 for safety
-	for i := range reverseReserveMapJS {
-		reverseReserveMapJS[i] = -1
+// reverseReserveMapJS is the inverse of reserveMapJS.
+var reverseReserveMapJS = invertPermutation(reserveMapJS)
+
+// deriveReservePermutation builds a bijective substitution of the charset
+// (a permutation of 0..len(Charset)-1) deterministically from the key using
+// a key-seeded Fisher-Yates shuffle. Because it is a true permutation, it is
+// always invertible for decryption.
+func deriveReservePermutation(key string) []int {
+	n := len(Charset)
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
 	}
-	for inIdx, outIdx := range reserveMapJS {
-		reverseReserveMapJS[outIdx] = inIdx
+	stream := newKeyStream(key, reserveSalt)
+	for i := n - 1; i > 0; i-- {
+		j := stream.intn(i + 1)
+		perm[i], perm[j] = perm[j], perm[i]
 	}
+	return perm
+}
+
+// invertPermutation returns the inverse of a permutation.
+func invertPermutation(perm []int) []int {
+	inv := make([]int, len(perm))
+	for i := range inv {
+		inv[i] = -1
+	}
+	for inIdx, outIdx := range perm {
+		inv[outIdx] = inIdx
+	}
+	return inv
+}
+
+// rebuildReserveMaps regenerates the substitution maps from the current
+// reserve key. Call this after changing ReserveCipherKey directly.
+func rebuildReserveMaps() {
+	reserveMapJS = deriveReservePermutation(ReserveCipherKey)
+	reverseReserveMapJS = invertPermutation(reserveMapJS)
 }
 
 // ProcessTokenFeistel encrypts a captcha token using the static map array.
@@ -182,13 +262,15 @@ func ProcessTokenFeistel(token, key string, skip, encryptLen int) string {
 	middle := token[prefixLen : prefixLen+actualLen]
 	suffix := token[prefixLen+actualLen:]
 
+	subMap := deriveReservePermutation(key)
+
 	encrypted := make([]byte, len(middle))
 
 	for i := 0; i < len(middle); i++ {
 		ch := middle[i]
 		idx := charsetIndex(rune(ch))
 		if idx != -1 {
-			encrypted[i] = Charset[reserveMapJS[idx]]
+			encrypted[i] = Charset[subMap[idx]]
 		} else {
 			encrypted[i] = ch // Fallback if not in charset
 		}
@@ -215,14 +297,16 @@ func ReverseTokenFeistel(token, key string, skip, encryptLen int) string {
 	middle := token[prefixLen : prefixLen+actualLen]
 	suffix := token[prefixLen+actualLen:]
 
+	revMap := invertPermutation(deriveReservePermutation(key))
+
 	decrypted := make([]byte, len(middle))
 
 	// Decrypt each character
 	for i := 0; i < len(middle); i++ {
 		ch := middle[i]
 		idx := charsetIndex(rune(ch))
-		if idx != -1 && reverseReserveMapJS[idx] != -1 {
-			decrypted[i] = Charset[reverseReserveMapJS[idx]]
+		if idx != -1 && revMap[idx] != -1 {
+			decrypted[i] = Charset[revMap[idx]]
 		} else {
 			decrypted[i] = ch // Fallback if not in map
 		}
@@ -272,4 +356,5 @@ func SetReserveCipherConfig(key string, skip, encryptLen int) {
 	ReserveCipherKey = key
 	ReserveCipherSkip = skip
 	ReserveCipherEncryptLen = encryptLen
+	rebuildReserveMaps()
 }
