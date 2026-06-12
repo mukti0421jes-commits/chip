@@ -40,13 +40,21 @@ func TestKeySensitivity(t *testing.T) {
 	}
 }
 
-func TestReservePermutationIsBijective(t *testing.T) {
-	perm := deriveReservePermutation(ReserveCipherKey)
-	seen := make([]bool, len(Charset))
-	for _, v := range perm {
-		if v < 0 || v >= len(Charset) || seen[v] {
-			t.Fatalf("derived map is not a valid permutation: %v", perm)
-		}
-		seen[v] = true
+// TestJSParity locks the Go output to the reference values produced by the
+// site's JavaScript bundle (modules "m$" version 3 and "HX" version 2) for the
+// real sign-in and reserve keys.
+func TestJSParity(t *testing.T) {
+	const token = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789"
+
+	gotSignin := ProcessToken(token, DefaultSigninKey, DefaultSigninSkip, DefaultSigninEncryptLen)
+	wantSignin := "01234tXIBq5dPF0-Utdlr10yOc8rstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789"
+	if gotSignin != wantSignin {
+		t.Fatalf("sign-in JS parity mismatch:\n got %q\nwant %q", gotSignin, wantSignin)
+	}
+
+	gotReserve := ProcessTokenFeistel(token, DefaultReserveKey, DefaultReserveSkip, DefaultReserveEncryptLen)
+	wantReserve := "012KpEXGCjANynwRL-dYHW9nopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789"
+	if gotReserve != wantReserve {
+		t.Fatalf("reserve JS parity mismatch:\n got %q\nwant %q", gotReserve, wantReserve)
 	}
 }
