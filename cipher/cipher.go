@@ -1,41 +1,28 @@
-// Package cipher implements the captcha-token ciphers used by the booking
-// frontend, ported 1:1 from the site's JavaScript bundle.
-//
-//   Sign-in (version 3, module "m$"):  Binary Cellular Automaton
-//   Reserve (version 2, module "HX"):  Bitmix Feistel network
-//
-// Both ciphers leave a prefix of `skip` characters untouched, transform the
-// next `encryptLen` characters, and leave the remainder untouched. Characters
-// outside Charset pass through unchanged.
+// Package cipher implements both the cellular-automaton cipher and the bitmix
+// Feistel cipher used to encrypt captcha tokens before sending them to the
+// booking API.
 package cipher
 
 const (
-	// Charset is the 64-character alphabet used by the ciphers.
+	// Charset is the 64-character alphabet used by the cipher.
 	Charset = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"
 
-	// Sign-in cipher parameters (Cellular Automaton, version 3).
-	DefaultSigninKey        = "rb%a#)tveypgal^xc8qqzdox%vh23b@!lq8yj9@i@3jq$ua+@k"
-	DefaultSigninSkip       = 5
-	DefaultSigninEncryptLen = 22
+	// Sign-in cipher parameters (cellular automaton, version 3)
+	SigninKey        = "rb%a#)tveypgal^xc8qqzdox%vh23b@!lq8yj9@i@3jq$ua+@k"
+	SigninSkip       = 5
+	SigninEncryptLen = 22
 
-	// Reserve slot cipher parameters (Bitmix Feistel, version 2).
-	DefaultReserveKey        = "4%i$h3wegd7daghf4p!3a9kbxczvgk3gl@ozin01++b1z#g)=w"
-	DefaultReserveSkip       = 3
-	DefaultReserveEncryptLen = 20
-)
+	// Reserve slot cipher parameters (bitmix Feistel, version 2)
+	ReserveKey        = "4%i$h3wegd7daghf4p!3a9kbxczvgk3gl@ozin01++b1z#g)=w"
+	ReserveSkip       = 3
+	ReserveEncryptLen = 20
 
-// Global sign-in cipher parameters.
-var (
-	SignInCipherKey        = DefaultSigninKey
-	SignInCipherSkip       = DefaultSigninSkip
-	SignInCipherEncryptLen = DefaultSigninEncryptLen
-)
-
-// Global reserve slot cipher parameters.
-var (
-	ReserveCipherKey        = DefaultReserveKey
-	ReserveCipherSkip       = DefaultReserveSkip
-	ReserveCipherEncryptLen = DefaultReserveEncryptLen
+	// Deprecated: Use SigninKey instead
+	DefaultKey = SigninKey
+	// Deprecated: Use SigninSkip instead
+	DefaultSkip = SigninSkip
+	// Deprecated: Use SigninEncryptLen instead
+	DefaultEncryptLen = SigninEncryptLen
 )
 
 // max returns the maximum of two integers.
@@ -54,43 +41,17 @@ func min(a, b int) int {
 	return b
 }
 
-// charsetIndex returns the index of ch in Charset, or -1 if not found.
-func charsetIndex(ch byte) int {
-	for i := 0; i < len(Charset); i++ {
-		if Charset[i] == ch {
-			return i
-		}
-	}
-	return -1
-}
-
-// splitToken splits a token into the untouched prefix, the transformable
-// middle, and the untouched suffix, following the JS slice logic exactly.
-func splitToken(token string, skip, encryptLen int) (prefix, middle, suffix string, ok bool) {
-	prefixLen := max(0, min(skip, len(token)))
-	remaining := max(0, len(token)-prefixLen)
-	actualLen := max(0, min(encryptLen, remaining))
-	if actualLen == 0 {
-		return token, "", "", false
-	}
-	return token[:prefixLen], token[prefixLen : prefixLen+actualLen], token[prefixLen+actualLen:], true
-}
-
-// ── Sign-In Cipher — Binary Cellular Automaton (JS module "m$", version 3) ────
+// generateShiftsCA generates the per-position shift values for the sign-in
+// cipher by evolving a 64-cell binary cellular automaton seeded from the key.
+// This is a port of the JavaScript a$ function (module "m$").
 //
-// JS source (a$ function):
-//   let s = new Uint8Array(64)
-//   for each key char: s[h%64] ^= (charCode & 1)
-//   s[32] = 1
-//   per output position:
-//     e[i] = s[(i+63)%64] ^ (s[i] | s[(i+1)%64])   for i in 0..63
-//     shift = top 6 cells (i=0..5) read MSB-first   // 0..63
-//     s = e
-
-// generateShiftsCellularAutomaton derives the per-position shift values for the
-// sign-in cipher by evolving a 64-cell binary cellular automaton seeded from
-// the key.
-func generateShiftsCellularAutomaton(key string, length int) []int {
+// The automaton:
+//   - seeds 64 cells with the parity of each key character (cell[h%64] ^= key[h]&1)
+//   - sets cell[32] = 1
+//   - per output position evolves one step with the rule
+//     new[i] = left ^ (center | right) over wrap-around neighbours
+//     and reads the top 6 cells (i=0..5, MSB first) as the shift value.
+func generateShiftsCA(key string, length int) []int {
 	var state [64]byte
 	for h := 0; h < len(key); h++ {
 		state[h%64] ^= key[h] & 1
@@ -111,176 +72,238 @@ func generateShiftsCellularAutomaton(key string, length int) []int {
 			}
 		}
 		state = next
-		shifts[h] = t % len(Charset)
+		shifts[h] = t % 64
 	}
 	return shifts
 }
 
-// ProcessToken encrypts a captcha token using the sign-in Cellular Automaton
-// cipher. JavaScript equivalent: m$.encryptText(token, key, skip, encryptLen).
+// ProcessToken encrypts a captcha token using the cellular-automaton cipher.
+// This is the equivalent of encryptSigninCaptchaToken() in JavaScript.
 func ProcessToken(token, key string, skip, encryptLen int) string {
-	prefix, middle, suffix, ok := splitToken(token, skip, encryptLen)
-	if !ok {
+	if token == "" {
 		return token
 	}
-	shifts := generateShiftsCellularAutomaton(key, len(middle))
-	out := make([]byte, len(middle))
+
+	prefixLen := max(0, min(skip, len(token)))
+	remaining := max(0, len(token)-prefixLen)
+	actualLen := max(0, min(encryptLen, remaining))
+
+	if actualLen == 0 {
+		return token
+	}
+
+	prefix := token[:prefixLen]
+	middle := token[prefixLen : prefixLen+actualLen]
+	suffix := token[prefixLen+actualLen:]
+
+	shifts := generateShiftsCA(key, len(middle))
+
+	encrypted := make([]byte, len(middle))
 	for i := 0; i < len(middle); i++ {
-		idx := charsetIndex(middle[i])
-		if idx == -1 {
-			out[i] = middle[i]
+		ch := middle[i]
+		charIdx := charsetIndex(rune(ch))
+		if charIdx == -1 {
+			encrypted[i] = ch
 		} else {
-			out[i] = Charset[(idx+shifts[i])%len(Charset)]
+			encrypted[i] = Charset[(charIdx+shifts[i])%64]
 		}
 	}
-	return prefix + string(out) + suffix
+
+	return prefix + string(encrypted) + suffix
 }
 
-// ReverseToken decrypts a token produced by ProcessToken.
+// ReverseToken decrypts a captcha token using the cellular-automaton cipher.
 func ReverseToken(token, key string, skip, encryptLen int) string {
-	prefix, middle, suffix, ok := splitToken(token, skip, encryptLen)
-	if !ok {
+	if token == "" {
 		return token
 	}
-	shifts := generateShiftsCellularAutomaton(key, len(middle))
-	out := make([]byte, len(middle))
+
+	prefixLen := max(0, min(skip, len(token)))
+	remaining := max(0, len(token)-prefixLen)
+	actualLen := max(0, min(encryptLen, remaining))
+
+	if actualLen == 0 {
+		return token
+	}
+
+	prefix := token[:prefixLen]
+	middle := token[prefixLen : prefixLen+actualLen]
+	suffix := token[prefixLen+actualLen:]
+
+	shifts := generateShiftsCA(key, len(middle))
+
+	decrypted := make([]byte, len(middle))
 	for i := 0; i < len(middle); i++ {
-		idx := charsetIndex(middle[i])
-		if idx == -1 {
-			out[i] = middle[i]
+		ch := middle[i]
+		charIdx := charsetIndex(rune(ch))
+		if charIdx == -1 {
+			decrypted[i] = ch
 		} else {
-			n := (idx - shifts[i]) % len(Charset)
-			if n < 0 {
-				n += len(Charset)
+			// Reverse the shift: subtract instead of add, then handle negative modulo
+			newIdx := (charIdx - shifts[i]) % 64
+			if newIdx < 0 {
+				newIdx += 64
 			}
-			out[i] = Charset[n]
+			decrypted[i] = Charset[newIdx]
 		}
 	}
-	return prefix + string(out) + suffix
+
+	return prefix + string(decrypted) + suffix
 }
 
-// ── Reserve Cipher — Bitmix Feistel network (JS module "HX", version 2) ───────
-//
-// JS source (PX key schedule + feistel + NX round function):
-//   i = Σ charCode(s) * (s+1)           (mod 2^32)
-//   round keys (8): i = imul(i, 1103515245) + 12345; key = i & 7
-//   roundFn(half, k) = 7 & ((3*half + k) ^ 3)
-//   feistel splits the 6-bit index into two 3-bit halves and runs 8 rounds.
-
-const feistelRounds = 8
-
-// feistelKeySchedule derives the 8 round keys from the cipher key (JS: PX).
-func feistelKeySchedule(key string) []int {
-	var i uint32
-	for s := 0; s < len(key); s++ {
-		i = i + uint32(key[s])*uint32(s+1)
+// charsetIndex returns the index of ch in Charset, or -1 if not found.
+func charsetIndex(ch rune) int {
+	for i, c := range Charset {
+		if c == ch {
+			return i
+		}
 	}
-	out := make([]int, feistelRounds)
-	for s := 0; s < feistelRounds; s++ {
-		i = i*1103515245 + 12345 // imul + add, wraps at 2^32
+	return -1
+}
+
+// keySchedule generates a key schedule for the Feistel cipher.
+// This is the bitmix "add" seed mode implementation (JavaScript PX function).
+func keySchedule(key string) []int {
+	const keyScheduleLen = 8
+
+	i := uint32(0)
+	for s := 0; s < len(key); s++ {
+		i = (i + uint32(key[s])*(uint32(s)+1))
+	}
+
+	out := make([]int, keyScheduleLen)
+	for s := 0; s < keyScheduleLen; s++ {
+		// Linear congruential generator (LCG)
+		// Same as Math.imul(i, 1103515245) + 12345 in JavaScript
+		i = (i*1103515245 + 12345)
 		out[s] = int(i & 7)
 	}
+
 	return out
 }
 
-// feistelRoundFn is the round function (JS: NX).
-func feistelRoundFn(half, k int) int {
-	return 7 & ((3*half + k) ^ 3)
+// roundFn is the Feistel round function (JavaScript NX function).
+func roundFn(e, t int) int {
+	return 7 & ((e*3 + t) ^ 3)
 }
 
-// feistelEncrypt applies the Feistel network to a 6-bit charset index.
-func feistelEncrypt(e int, schedule []int) int {
+// feistel applies the Feistel cipher to an index.
+func feistel(e int, schedule []int) int {
 	o := (e >> 3) & 7
 	i := e & 7
+
 	for c := 0; c < len(schedule); c++ {
-		ni := o ^ feistelRoundFn(i, schedule[c])
+		newI := o ^ roundFn(i, schedule[c])
 		o = i
-		i = ni
+		i = newI
 	}
+
 	return (i << 3) | o
 }
 
-// feistelDecrypt inverts feistelEncrypt.
-func feistelDecrypt(x int, schedule []int) int {
+// feistelInverse inverts feistel, used for decryption.
+func feistelInverse(x int, schedule []int) int {
 	i := (x >> 3) & 7
 	o := x & 7
+
 	for c := len(schedule) - 1; c >= 0; c-- {
 		newI := o
-		newO := i ^ feistelRoundFn(o, schedule[c])
+		newO := i ^ roundFn(o, schedule[c])
 		o = newO
 		i = newI
 	}
+
 	return (o << 3) | i
 }
 
-// ProcessTokenFeistel encrypts a captcha token using the reserve Bitmix Feistel
-// cipher. JavaScript equivalent: HX.encryptText(token, key, skip, encryptLen).
-func ProcessTokenFeistel(token, key string, skip, encryptLen int) string {
-	prefix, middle, suffix, ok := splitToken(token, skip, encryptLen)
-	if !ok {
-		return token
-	}
-	schedule := feistelKeySchedule(key)
-	out := make([]byte, len(middle))
-	for i := 0; i < len(middle); i++ {
-		idx := charsetIndex(middle[i])
-		if idx == -1 {
-			out[i] = middle[i]
-		} else {
-			out[i] = Charset[feistelEncrypt(idx, schedule)%len(Charset)]
-		}
-	}
-	return prefix + string(out) + suffix
-}
-
-// ReverseTokenFeistel decrypts a token produced by ProcessTokenFeistel.
-func ReverseTokenFeistel(token, key string, skip, encryptLen int) string {
-	prefix, middle, suffix, ok := splitToken(token, skip, encryptLen)
-	if !ok {
-		return token
-	}
-	schedule := feistelKeySchedule(key)
-	out := make([]byte, len(middle))
-	for i := 0; i < len(middle); i++ {
-		idx := charsetIndex(middle[i])
-		if idx == -1 {
-			out[i] = middle[i]
-		} else {
-			out[i] = Charset[feistelDecrypt(idx, schedule)%len(Charset)]
-		}
-	}
-	return prefix + string(out) + suffix
-}
-
-// ── Backward-compatibility aliases ────────────────────────────────────────────
-
-// ProcessTokenBitmix is an alias for ProcessTokenFeistel.
+// ProcessTokenBitmix encrypts a captcha token using the bitmix Feistel cipher.
+// This is used for reserve slot tokens.
+//
+// The algorithm:
+//  1. Generates a key schedule using LCG (Linear Congruential Generator)
+//  2. Applies Feistel cipher to each character index
+//  3. Maps the result back to the charset
 func ProcessTokenBitmix(token, key string, skip, encryptLen int) string {
-	return ProcessTokenFeistel(token, key, skip, encryptLen)
+	if token == "" {
+		return token
+	}
+
+	prefixLen := max(0, min(skip, len(token)))
+	remaining := max(0, len(token)-prefixLen)
+	actualLen := max(0, min(encryptLen, remaining))
+
+	if actualLen == 0 {
+		return token
+	}
+
+	prefix := token[:prefixLen]
+	middle := token[prefixLen : prefixLen+actualLen]
+	suffix := token[prefixLen+actualLen:]
+
+	// Generate key schedule for Feistel cipher
+	schedule := keySchedule(key)
+
+	// Encrypt each character
+	encrypted := make([]byte, len(middle))
+	for x := 0; x < len(middle); x++ {
+		ch := middle[x]
+		idx := charsetIndex(rune(ch))
+		if idx != -1 {
+			feistelResult := feistel(idx, schedule)
+			newIdx := feistelResult % len(Charset)
+			encrypted[x] = Charset[newIdx]
+		} else {
+			encrypted[x] = ch
+		}
+	}
+
+	return prefix + string(encrypted) + suffix
 }
 
-// ── Convenience functions ─────────────────────────────────────────────────────
+// ReverseTokenBitmix decrypts a captcha token using the bitmix Feistel cipher.
+func ReverseTokenBitmix(token, key string, skip, encryptLen int) string {
+	if token == "" {
+		return token
+	}
 
-// ProcessTokenSignin encrypts a sign-in captcha token.
-func ProcessTokenSignin(token string) string {
-	return ProcessToken(token, SignInCipherKey, SignInCipherSkip, SignInCipherEncryptLen)
+	prefixLen := max(0, min(skip, len(token)))
+	remaining := max(0, len(token)-prefixLen)
+	actualLen := max(0, min(encryptLen, remaining))
+
+	if actualLen == 0 {
+		return token
+	}
+
+	prefix := token[:prefixLen]
+	middle := token[prefixLen : prefixLen+actualLen]
+	suffix := token[prefixLen+actualLen:]
+
+	schedule := keySchedule(key)
+
+	decrypted := make([]byte, len(middle))
+	for x := 0; x < len(middle); x++ {
+		ch := middle[x]
+		idx := charsetIndex(rune(ch))
+		if idx != -1 {
+			feistelResult := feistelInverse(idx, schedule)
+			newIdx := feistelResult % len(Charset)
+			decrypted[x] = Charset[newIdx]
+		} else {
+			decrypted[x] = ch
+		}
+	}
+
+	return prefix + string(decrypted) + suffix
 }
 
-// ProcessTokenReserveSlot encrypts a reserve slot captcha token.
+// ProcessTokenReserveSlot is a convenience function that encrypts a reserve slot token
+// using the correct bitmix parameters.
 func ProcessTokenReserveSlot(token string) string {
-	return ProcessTokenFeistel(token, ReserveCipherKey, ReserveCipherSkip, ReserveCipherEncryptLen)
+	return ProcessTokenBitmix(token, ReserveKey, ReserveSkip, ReserveEncryptLen)
 }
 
-// SetSignInCipherConfig updates the global sign-in cipher configuration.
-func SetSignInCipherConfig(key string, skip, encryptLen int) {
-	SignInCipherKey = key
-	SignInCipherSkip = skip
-	SignInCipherEncryptLen = encryptLen
-}
-
-// SetReserveCipherConfig updates the global reserve slot cipher configuration.
-func SetReserveCipherConfig(key string, skip, encryptLen int) {
-	ReserveCipherKey = key
-	ReserveCipherSkip = skip
-	ReserveCipherEncryptLen = encryptLen
+// ProcessTokenSignin is a convenience function that encrypts a sign-in token
+// using the correct cellular-automaton parameters.
+func ProcessTokenSignin(token string) string {
+	return ProcessToken(token, SigninKey, SigninSkip, SigninEncryptLen)
 }

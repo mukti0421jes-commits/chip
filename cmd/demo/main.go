@@ -17,13 +17,13 @@ func main() {
 
 	// 1. Sign-in cipher (keyed polyalphabetic shift over the 64-char alphabet).
 	encA := cipher.ProcessTokenSignin(sample)
-	decA := cipher.ReverseToken(encA, cipher.SignInCipherKey, cipher.SignInCipherSkip, cipher.SignInCipherEncryptLen)
+	decA := cipher.ReverseToken(encA, cipher.SigninKey, cipher.SigninSkip, cipher.SigninEncryptLen)
 	fmt.Println("[sign-in]  encrypted:", encA)
 	fmt.Println("[sign-in]  decrypted:", decA, ok(decA == sample))
 
 	// 2. Reserve cipher (keyed bijective substitution / permutation).
 	encB := cipher.ProcessTokenReserveSlot(sample)
-	decB := cipher.ReverseTokenFeistel(encB, cipher.ReserveCipherKey, cipher.ReserveCipherSkip, cipher.ReserveCipherEncryptLen)
+	decB := cipher.ReverseTokenBitmix(encB, cipher.ReserveKey, cipher.ReserveSkip, cipher.ReserveEncryptLen)
 	fmt.Println("[reserve]  encrypted:", encB)
 	fmt.Println("[reserve]  decrypted:", decB, ok(decB == sample))
 
