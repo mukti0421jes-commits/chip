@@ -294,60 +294,245 @@ function classifyFlow(anchor) {
 
 // ── code generation ──────────────────────────────────────────────────────────
 
-// Emit a self-contained, ready-to-use cipher file for one flow. The site's real
-// cipher module is embedded verbatim (so it is byte-for-byte correct for ANY
-// algorithm), with the extracted key/skip/len baked in and a clean API exposed.
-function emitFlowFile(flow, modName, key, skip, len, algo) {
-  const chunk = moduleChunk(modName);
-  if (!chunk) return null;
+const CHARSET_LITERAL = '"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"';
 
+// Clean, readable implementations for the algorithms we have fully verified.
+// Each returns a JS snippet defining `encrypt(token,key,skip,len)` and
+// `decrypt(token,key,skip,len)` over the 64-char charset.
+function cleanAlgoBody(algo) {
+  const common = `const Charset = ${CHARSET_LITERAL};
+function _slice(token, skip, encryptLen) {
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
+  return { prefixLen, actualLen };
+}
+`;
+
+  if (algo === 'Cellular Automaton') {
+    return common + `
+function _shifts(key, length) {
+  let state = new Uint8Array(64);
+  for (let h = 0; h < key.length; h++) state[h % 64] ^= (key.charCodeAt(h) & 1);
+  state[32] = 1;
+  const shifts = new Array(length);
+  for (let h = 0; h < length; h++) {
+    const next = new Uint8Array(64);
+    let t = 0;
+    for (let i = 0; i < 64; i++) {
+      const left = state[(i + 63) % 64], center = state[i], right = state[(i + 1) % 64];
+      next[i] = left ^ (center | right);
+      if (i < 6) t = (t << 1) | next[i];
+    }
+    state = next;
+    shifts[h] = t % 64;
+  }
+  return shifts;
+}
+function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const sh = _shifts(key, mid.length);
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[(x + sh[i]) % 64]; }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const sh = _shifts(key, mid.length);
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) { let n = (x - sh[i]) % 64; if (n < 0) n += 64; mid[i] = Charset[n]; } }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+`;
+  }
+
+  if (algo === 'Feistel (bitmix)') {
+    return common + `
+function _schedule(key) {
+  let i = 0 >>> 0;
+  for (let s = 0; s < key.length; s++) i = (i + key.charCodeAt(s) * (s + 1)) >>> 0;
+  const out = [];
+  for (let s = 0; s < 8; s++) { i = (Math.imul(i, 1103515245) + 12345) >>> 0; out.push(i & 7); }
+  return out;
+}
+function _round(half, k) { return 7 & ((3 * half + k) ^ 3); }
+function _fe(e, sch) { let o = (e >> 3) & 7, i = e & 7; for (let c = 0; c < sch.length; c++) { const ni = o ^ _round(i, sch[c]); o = i; i = ni; } return (i << 3) | o; }
+function _fd(x, sch) { let i = (x >> 3) & 7, o = x & 7; for (let c = sch.length - 1; c >= 0; c--) { const ni = o, no = i ^ _round(o, sch[c]); o = no; i = ni; } return (o << 3) | i; }
+function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const sch = _schedule(key);
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[_fe(x, sch) % 64]; }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const sch = _schedule(key);
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[_fd(x, sch) % 64]; }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+`;
+  }
+
+  if (algo === 'Polynomial Shift') {
+    return common + `
+function _shifts(key, length) {
+  const stateLen = Math.max(3, key.length);
+  const st = [];
+  for (let r = 0; r < stateLen; r++) st[r] = (key.charCodeAt(r % key.length) + r) % 67;
+  const shifts = [];
+  for (let f = 1; f <= length; f++) {
+    let e = 0, t = 1;
+    for (const o of st) { e = (e + o * t) % 67; t = (t * f) % 67; }
+    shifts[f - 1] = e % 64;
+  }
+  return shifts;
+}
+function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const sh = _shifts(key, mid.length);
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[(x + sh[i]) % 64]; }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const sh = _shifts(key, mid.length);
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) { let n = (x - sh[i]) % 64; if (n < 0) n += 64; mid[i] = Charset[n]; } }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+`;
+  }
+
+  if (algo === 'S-box substitution') {
+    return common + `
+function _sbox(key) {
+  const N = 64;
+  const o = Array.from({ length: N }, (_, t) => t);
+  let u = 0;
+  for (let l = 0; l < N; l++) { u = (u + o[l] + key.charCodeAt(l % key.length)) % N; const t = o[l]; o[l] = o[u]; o[u] = t; }
+  const inv = new Array(N);
+  for (let l = 0; l < N; l++) inv[o[l]] = l;
+  return { sbox: o, invSbox: inv };
+}
+function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const { sbox } = _sbox(key);
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[sbox[x]]; }
+  mid.reverse();
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+  if (!token) return token;
+  const { prefixLen, actualLen } = _slice(token, skip, len);
+  if (actualLen === 0) return token;
+  const { invSbox } = _sbox(key);
+  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
+  mid.reverse();
+  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[invSbox[x]]; }
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+}
+`;
+  }
+
+  return null; // no clean template for this algorithm
+}
+
+// Verify a clean body reproduces the real module exactly for the given key.
+function cleanBodyMatches(body, mod, key, skip, len) {
+  try {
+    const sb = {};
+    vm.createContext(sb);
+    vm.runInContext(body + ';this.encrypt=encrypt;this.decrypt=decrypt;', sb, { timeout: 4000 });
+    for (const t of ['0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ', 'hello-world_X-12345', 'aZ9_-bQ', 'x', '']) {
+      const a = sb.encrypt(t, key, skip, len);
+      if (a !== mod.encryptText(t, key, skip, len)) return false;
+      if (sb.decrypt(a, key, skip, len) !== t) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+// Emit a ready-to-use cipher file for one flow. Prefers a clean readable
+// implementation (verified against the real module); falls back to embedding
+// the site module verbatim for algorithms without a clean template.
+function emitFlowFile(flow, modName, key, skip, len, algo, mod) {
   const tag = flow.toLowerCase().replace(/[^a-z]/g, '') || 'flow';
   const Cap = tag.charAt(0).toUpperCase() + tag.slice(1);
   const file = path.join(process.cwd(), tag + '.generated.js');
 
-  const content =
+  const header =
 `// ${tag}.generated.js — auto-generated by extract.js
 // flow:      ${flow}
 // algorithm: ${algo}
-// module:    ${modName}
-//
-// The site's real cipher module is embedded below, so encrypt()/decrypt() are
-// byte-for-byte identical to the website regardless of the algorithm. The
-// key / skip / length were extracted automatically from the bundle.
+// key/skip/length were extracted automatically from the site bundle.
 'use strict';
 
 const KEY  = ${JSON.stringify(key)};
 const SKIP = ${skip};
 const LEN  = ${len};
+`;
 
-// ── embedded cipher module (verbatim from the site bundle) ───────────────────
-const _MOD = (function () {
-${chunk}
-  return ${modName};
-})();
-
-// ── clean public API ─────────────────────────────────────────────────────────
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
-  return _MOD.encryptText(token, key, skip, len);
-}
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
-  return _MOD.decryptText(token, key, skip, len);
-}
-
-// Go-style aliases (match the signin.js / reserve.js sample API).
+  const apiFooter =
+`
+// ── convenience: default-parameter wrappers ──────────────────────────────────
+function ${cap2(tag)}Encrypt(token) { return encrypt(token, KEY, SKIP, LEN); }
+function ${cap2(tag)}Decrypt(token) { return decrypt(token, KEY, SKIP, LEN); }
 const ProcessToken = encrypt;
 const ReverseToken = decrypt;
 
 if (typeof module !== 'undefined') {
-  module.exports = { KEY, SKIP, LEN, encrypt, decrypt, ProcessToken, ReverseToken };
+  module.exports = { Charset, KEY, SKIP, LEN, encrypt, decrypt, ProcessToken, ReverseToken, ${cap2(tag)}Encrypt, ${cap2(tag)}Decrypt };
 }
 if (typeof window !== 'undefined') {
   window.${Cap}Cipher = { KEY, SKIP, LEN, encrypt, decrypt };
 }
 `;
+
+  const body = cleanAlgoBody(algo);
+  let content, kind;
+  if (body && mod && cleanBodyMatches(body, mod, key, skip, len)) {
+    content = header + '\n// ── ' + algo + ' (clean implementation, verified vs the site) ──\n' + body + apiFooter;
+    kind = 'clean';
+  } else {
+    const chunk = moduleChunk(modName);
+    if (!chunk) return null;
+    content = header +
+`
+// No clean template for this algorithm — embedding the site's real module so
+// encrypt()/decrypt() stay byte-for-byte correct.
+const Charset = ${CHARSET_LITERAL};
+const _MOD = (function () {
+${chunk}
+  return ${modName};
+})();
+function encrypt(token, key = KEY, skip = SKIP, len = LEN) { return _MOD.encryptText(token, key, skip, len); }
+function decrypt(token, key = KEY, skip = SKIP, len = LEN) { return _MOD.decryptText(token, key, skip, len); }
+` + apiFooter;
+    kind = 'embedded';
+  }
   fs.writeFileSync(file, content);
-  return file;
+  return { file, kind };
 }
+
+function cap2(tag) { return tag.charAt(0).toUpperCase() + tag.slice(1); }
 
 // ── report ───────────────────────────────────────────────────────────────────
 
@@ -415,10 +600,10 @@ function main() {
 
       // Write a ready-to-use standalone JS file for this flow.
       if (clean) {
-        const f = emitFlowFile(flow, modName, key, cfg.skip, cfg.len, detectAlgo(modName));
-        if (f) {
-          generated.push(f);
-          console.log('  │  file : ' + path.basename(f) + '  (encrypt/decrypt ready)');
+        const r = emitFlowFile(flow, modName, key, cfg.skip, cfg.len, detectAlgo(modName), mod);
+        if (r) {
+          generated.push(r.file);
+          console.log('  │  file : ' + path.basename(r.file) + '  (' + r.kind + ', encrypt/decrypt ready)');
         }
       }
     }
