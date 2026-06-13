@@ -279,6 +279,16 @@ function findConfigs() {
   return out;
 }
 
+// Classify a flow as sign-in or reserve by the UI strings around its config.
+function classifyFlow(anchor) {
+  const win = src.slice(Math.max(0, anchor - 6000), anchor + 6000).toLowerCase();
+  const signin = (win.match(/sign-?in|login|otp|phone|password|verify-login/g) || []).length;
+  const reserve = (win.match(/reserve|reserving|booking|slot|continuebooking|date/g) || []).length;
+  if (signin > reserve) return 'SIGN-IN';
+  if (reserve > signin) return 'RESERVE';
+  return 'unknown-flow';
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 
 function main() {
@@ -318,7 +328,8 @@ function main() {
     const clean = typeof key === 'string' && /^[\x20-\x7e]+$/.test(key);
     if (clean) okCount++;
 
-    console.log('  ┌─ version ' + cfg.version + '  ->  module ' + (modName || '?') +
+    const flow = classifyFlow(cfg.at);
+    console.log('  ┌─ [' + flow + ']  version ' + cfg.version + '  ->  module ' + (modName || '?') +
                 '  (' + (modName ? detectAlgo(modName) : '?') + ')');
     if (clean) {
       console.log('  │  key  : ' + JSON.stringify(key));
