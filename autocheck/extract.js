@@ -296,22 +296,25 @@ function classifyFlow(anchor) {
 
 const CHARSET_LITERAL = '"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"';
 
-// Clean, readable implementations for the algorithms we have fully verified.
-// Each returns a JS snippet defining `encrypt(token,key,skip,len)` and
-// `decrypt(token,key,skip,len)` over the 64-char charset.
-function cleanAlgoBody(algo) {
-  const common = `const Charset = ${CHARSET_LITERAL};
-function _slice(token, skip, encryptLen) {
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  return { prefixLen, actualLen };
+// Shared preamble used by every clean file (matches the sample signin.js).
+const PREAMBLE =
+`const Charset = ${CHARSET_LITERAL};
+
+// charsetIndex returns the index of ch in Charset, or -1 if not found.
+function charsetIndex(ch) {
+  return Charset.indexOf(ch);
 }
 `;
 
+// Clean, readable implementations for the algorithms we have fully verified.
+// Each defines a key-schedule plus ProcessToken(token,key,skip,encryptLen) and
+// ReverseToken(...), in the exact style of the sample signin.js.
+function cleanAlgoBody(algo) {
   if (algo === 'Cellular Automaton') {
-    return common + `
-function _shifts(key, length) {
+    return `
+// generateShiftsCellularAutomaton derives per-position shift values by evolving
+// a 64-cell binary cellular automaton seeded from the key.
+function generateShiftsCellularAutomaton(key, length) {
   let state = new Uint8Array(64);
   for (let h = 0; h < key.length; h++) state[h % 64] ^= (key.charCodeAt(h) & 1);
   state[32] = 1;
@@ -325,129 +328,217 @@ function _shifts(key, length) {
       if (i < 6) t = (t << 1) | next[i];
     }
     state = next;
-    shifts[h] = t % 64;
+    shifts[h] = t % Charset.length;
   }
   return shifts;
 }
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ProcessToken encrypts a captcha token using Cellular Automaton.
+function ProcessToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const sh = _shifts(key, mid.length);
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[(x + sh[i]) % 64]; }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const shifts = generateShiftsCellularAutomaton(key, middle.length);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[(idx + shifts[i]) % Charset.length];
+  }
+  return prefix + middle.join("") + suffix;
 }
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ReverseToken decrypts a captcha token using Cellular Automaton.
+function ReverseToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const sh = _shifts(key, mid.length);
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) { let n = (x - sh[i]) % 64; if (n < 0) n += 64; mid[i] = Charset[n]; } }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const shifts = generateShiftsCellularAutomaton(key, middle.length);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) { let n = (idx - shifts[i]) % Charset.length; if (n < 0) n += Charset.length; middle[i] = Charset[n]; }
+  }
+  return prefix + middle.join("") + suffix;
 }
 `;
   }
 
   if (algo === 'Feistel (bitmix)') {
-    return common + `
-function _schedule(key) {
+    return `
+// keySchedule generates the 8 Feistel round keys from the cipher key.
+function keySchedule(key) {
   let i = 0 >>> 0;
   for (let s = 0; s < key.length; s++) i = (i + key.charCodeAt(s) * (s + 1)) >>> 0;
   const out = [];
   for (let s = 0; s < 8; s++) { i = (Math.imul(i, 1103515245) + 12345) >>> 0; out.push(i & 7); }
   return out;
 }
-function _round(half, k) { return 7 & ((3 * half + k) ^ 3); }
-function _fe(e, sch) { let o = (e >> 3) & 7, i = e & 7; for (let c = 0; c < sch.length; c++) { const ni = o ^ _round(i, sch[c]); o = i; i = ni; } return (i << 3) | o; }
-function _fd(x, sch) { let i = (x >> 3) & 7, o = x & 7; for (let c = sch.length - 1; c >= 0; c--) { const ni = o, no = i ^ _round(o, sch[c]); o = no; i = ni; } return (o << 3) | i; }
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
-  if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
-  if (actualLen === 0) return token;
-  const sch = _schedule(key);
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[_fe(x, sch) % 64]; }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+function roundFn(half, k) { return 7 & ((3 * half + k) ^ 3); }
+function feistel(e, schedule) {
+  let o = (e >> 3) & 7, i = e & 7;
+  for (let c = 0; c < schedule.length; c++) { const ni = o ^ roundFn(i, schedule[c]); o = i; i = ni; }
+  return (i << 3) | o;
 }
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+function feistelInverse(x, schedule) {
+  let i = (x >> 3) & 7, o = x & 7;
+  for (let c = schedule.length - 1; c >= 0; c--) { const ni = o, no = i ^ roundFn(o, schedule[c]); o = no; i = ni; }
+  return (o << 3) | i;
+}
+
+// ProcessToken encrypts a captcha token using the bitmix Feistel cipher.
+function ProcessToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const sch = _schedule(key);
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[_fd(x, sch) % 64]; }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const schedule = keySchedule(key);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[feistel(idx, schedule) % Charset.length];
+  }
+  return prefix + middle.join("") + suffix;
+}
+
+// ReverseToken decrypts a captcha token using the bitmix Feistel cipher.
+function ReverseToken(token, key, skip, encryptLen) {
+  if (!token) return token;
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
+  if (actualLen === 0) return token;
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const schedule = keySchedule(key);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[feistelInverse(idx, schedule) % Charset.length];
+  }
+  return prefix + middle.join("") + suffix;
 }
 `;
   }
 
   if (algo === 'Polynomial Shift') {
-    return common + `
-function _shifts(key, length) {
+    return `
+// generateShiftsPoly derives per-position shift values from a polynomial over
+// the key, modulo 67 then 64.
+function generateShiftsPoly(key, length) {
   const stateLen = Math.max(3, key.length);
-  const st = [];
-  for (let r = 0; r < stateLen; r++) st[r] = (key.charCodeAt(r % key.length) + r) % 67;
+  const s = [];
+  for (let r = 0; r < stateLen; r++) s[r] = (key.charCodeAt(r % key.length) + r) % 67;
   const shifts = [];
   for (let f = 1; f <= length; f++) {
     let e = 0, t = 1;
-    for (const o of st) { e = (e + o * t) % 67; t = (t * f) % 67; }
+    for (const o of s) { e = (e + o * t) % 67; t = (t * f) % 67; }
     shifts[f - 1] = e % 64;
   }
   return shifts;
 }
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ProcessToken encrypts a captcha token using the polynomial shift cipher.
+function ProcessToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const sh = _shifts(key, mid.length);
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[(x + sh[i]) % 64]; }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const shifts = generateShiftsPoly(key, middle.length);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[(idx + shifts[i]) % Charset.length];
+  }
+  return prefix + middle.join("") + suffix;
 }
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ReverseToken decrypts a captcha token using the polynomial shift cipher.
+function ReverseToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const sh = _shifts(key, mid.length);
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) { let n = (x - sh[i]) % 64; if (n < 0) n += 64; mid[i] = Charset[n]; } }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const shifts = generateShiftsPoly(key, middle.length);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) { let n = (idx - shifts[i]) % Charset.length; if (n < 0) n += Charset.length; middle[i] = Charset[n]; }
+  }
+  return prefix + middle.join("") + suffix;
 }
 `;
   }
 
   if (algo === 'S-box substitution') {
-    return common + `
-function _sbox(key) {
+    return `
+// buildSbox derives a keyed substitution box (and its inverse) via a
+// key-seeded Fisher-Yates shuffle of 0..63.
+function buildSbox(key) {
   const N = 64;
-  const o = Array.from({ length: N }, (_, t) => t);
+  const sbox = Array.from({ length: N }, (_, t) => t);
   let u = 0;
-  for (let l = 0; l < N; l++) { u = (u + o[l] + key.charCodeAt(l % key.length)) % N; const t = o[l]; o[l] = o[u]; o[u] = t; }
-  const inv = new Array(N);
-  for (let l = 0; l < N; l++) inv[o[l]] = l;
-  return { sbox: o, invSbox: inv };
+  for (let l = 0; l < N; l++) {
+    u = (u + sbox[l] + key.charCodeAt(l % key.length)) % N;
+    const t = sbox[l]; sbox[l] = sbox[u]; sbox[u] = t;
+  }
+  const invSbox = new Array(N);
+  for (let l = 0; l < N; l++) invSbox[sbox[l]] = l;
+  return { sbox, invSbox };
 }
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ProcessToken encrypts a captcha token: substitute via the s-box, then reverse.
+function ProcessToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const { sbox } = _sbox(key);
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[sbox[x]]; }
-  mid.reverse();
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const { sbox } = buildSbox(key);
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[sbox[idx]];
+  }
+  middle.reverse();
+  return prefix + middle.join("") + suffix;
 }
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) {
+
+// ReverseToken decrypts a captcha token: reverse, then inverse-substitute.
+function ReverseToken(token, key, skip, encryptLen) {
   if (!token) return token;
-  const { prefixLen, actualLen } = _slice(token, skip, len);
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const remaining = Math.max(0, token.length - prefixLen);
+  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
   if (actualLen === 0) return token;
-  const { invSbox } = _sbox(key);
-  const mid = token.slice(prefixLen, prefixLen + actualLen).split("");
-  mid.reverse();
-  for (let i = 0; i < mid.length; i++) { const x = Charset.indexOf(mid[i]); if (x !== -1) mid[i] = Charset[invSbox[x]]; }
-  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + actualLen);
+  const prefix = token.slice(0, prefixLen);
+  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
+  const suffix = token.slice(prefixLen + actualLen);
+  const { invSbox } = buildSbox(key);
+  middle.reverse();
+  for (let i = 0; i < middle.length; i++) {
+    const idx = charsetIndex(middle[i]);
+    if (idx !== -1) middle[i] = Charset[invSbox[idx]];
+  }
+  return prefix + middle.join("") + suffix;
 }
 `;
   }
@@ -460,79 +551,82 @@ function cleanBodyMatches(body, mod, key, skip, len) {
   try {
     const sb = {};
     vm.createContext(sb);
-    vm.runInContext(body + ';this.encrypt=encrypt;this.decrypt=decrypt;', sb, { timeout: 4000 });
+    vm.runInContext(PREAMBLE + body + ';this.P=ProcessToken;this.R=ReverseToken;', sb, { timeout: 4000 });
     for (const t of ['0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ', 'hello-world_X-12345', 'aZ9_-bQ', 'x', '']) {
-      const a = sb.encrypt(t, key, skip, len);
+      const a = sb.P(t, key, skip, len);
       if (a !== mod.encryptText(t, key, skip, len)) return false;
-      if (sb.decrypt(a, key, skip, len) !== t) return false;
+      if (sb.R(a, key, skip, len) !== t) return false;
     }
     return true;
   } catch { return false; }
 }
 
-// Emit a ready-to-use cipher file for one flow. Prefers a clean readable
-// implementation (verified against the real module); falls back to embedding
-// the site module verbatim for algorithms without a clean template.
+function cap2(tag) { return tag.charAt(0).toUpperCase() + tag.slice(1); }
+
+// Emit a ready-to-use cipher file for one flow, in the sample signin.js style.
+// Prefers a clean readable implementation (verified against the real module);
+// falls back to embedding the site module for algorithms without a template.
 function emitFlowFile(flow, modName, key, skip, len, algo, mod) {
-  const tag = flow.toLowerCase().replace(/[^a-z]/g, '') || 'flow';
-  const Cap = tag.charAt(0).toUpperCase() + tag.slice(1);
+  const isSignin = flow === 'SIGN-IN';
+  const tag = isSignin ? 'signin' : (flow === 'RESERVE' ? 'reserve' : flow.toLowerCase().replace(/[^a-z]/g, '') || 'flow');
+  const KP = isSignin ? 'Signin' : (flow === 'RESERVE' ? 'Reserve' : cap2(tag));   // constant prefix
+  const SUF = isSignin ? 'Signin' : (flow === 'RESERVE' ? 'ReserveSlot' : cap2(tag)); // convenience suffix
+  const Cap = cap2(tag);
   const file = path.join(process.cwd(), tag + '.generated.js');
 
-  const header =
-`// ${tag}.generated.js — auto-generated by extract.js
-// flow:      ${flow}
-// algorithm: ${algo}
-// key/skip/length were extracted automatically from the site bundle.
-'use strict';
-
-const KEY  = ${JSON.stringify(key)};
-const SKIP = ${skip};
-const LEN  = ${len};
+  const consts =
+`const ${KP}Key        = ${JSON.stringify(key)};
+const ${KP}Skip       = ${skip};
+const ${KP}EncryptLen = ${len};
 `;
 
-  const apiFooter =
+  const footer =
 `
-// ── convenience: default-parameter wrappers ──────────────────────────────────
-function ${cap2(tag)}Encrypt(token) { return encrypt(token, KEY, SKIP, LEN); }
-function ${cap2(tag)}Decrypt(token) { return decrypt(token, KEY, SKIP, LEN); }
-const ProcessToken = encrypt;
-const ReverseToken = decrypt;
+// ${tag} convenience wrappers (use the default ${KP} parameters).
+function ProcessToken${SUF}(token) { return ProcessToken(token, ${KP}Key, ${KP}Skip, ${KP}EncryptLen); }
+function ReverseToken${SUF}(token) { return ReverseToken(token, ${KP}Key, ${KP}Skip, ${KP}EncryptLen); }
 
 if (typeof module !== 'undefined') {
-  module.exports = { Charset, KEY, SKIP, LEN, encrypt, decrypt, ProcessToken, ReverseToken, ${cap2(tag)}Encrypt, ${cap2(tag)}Decrypt };
+  module.exports = { Charset, ${KP}Key, ${KP}Skip, ${KP}EncryptLen, ProcessToken, ReverseToken, ProcessToken${SUF}, ReverseToken${SUF} };
 }
 if (typeof window !== 'undefined') {
-  window.${Cap}Cipher = { KEY, SKIP, LEN, encrypt, decrypt };
+  window.${Cap}Cipher = { key: ${KP}Key, skip: ${KP}Skip, encryptLen: ${KP}EncryptLen, encrypt: ProcessToken${SUF}, decrypt: ReverseToken${SUF} };
 }
 `;
 
   const body = cleanAlgoBody(algo);
   let content, kind;
   if (body && mod && cleanBodyMatches(body, mod, key, skip, len)) {
-    content = header + '\n// ── ' + algo + ' (clean implementation, verified vs the site) ──\n' + body + apiFooter;
+    content =
+`// ${tag}.generated.js — ${isSignin ? 'Sign-In' : (flow === 'RESERVE' ? 'Reserve Slot' : flow)} cipher (${algo})
+// Auto-generated by extract.js from the site bundle (key/skip/len extracted,
+// algorithm verified byte-for-byte against the live module).
+
+${consts}
+${PREAMBLE}${body}${footer}`;
     kind = 'clean';
   } else {
     const chunk = moduleChunk(modName);
     if (!chunk) return null;
-    content = header +
-`
-// No clean template for this algorithm — embedding the site's real module so
-// encrypt()/decrypt() stay byte-for-byte correct.
+    content =
+`// ${tag}.generated.js — ${flow} cipher (${algo})
+// Auto-generated by extract.js. No clean template for this algorithm, so the
+// site's real cipher module is embedded to stay byte-for-byte correct.
+
+${consts}
 const Charset = ${CHARSET_LITERAL};
 const _MOD = (function () {
 ${chunk}
   return ${modName};
 })();
-function encrypt(token, key = KEY, skip = SKIP, len = LEN) { return _MOD.encryptText(token, key, skip, len); }
-function decrypt(token, key = KEY, skip = SKIP, len = LEN) { return _MOD.decryptText(token, key, skip, len); }
-` + apiFooter;
+function ProcessToken(token, key, skip, encryptLen) { return _MOD.encryptText(token, key, skip, encryptLen); }
+function ReverseToken(token, key, skip, encryptLen) { return _MOD.decryptText(token, key, skip, encryptLen); }
+${footer}`;
     kind = 'embedded';
   }
   fs.writeFileSync(file, content);
   return { file, kind };
 }
-
-function cap2(tag) { return tag.charAt(0).toUpperCase() + tag.slice(1); }
 
 // ── report ───────────────────────────────────────────────────────────────────
 
