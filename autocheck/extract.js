@@ -297,17 +297,26 @@ function main() {
   }
   console.log();
 
-  if (!configs.length) {
-    console.log('No {secret,startAt,length,version} flow configs found.');
-    console.log('The scheme may have changed — fall back to the runtime Tampermonkey extractor.');
+  if (!modules.length) {
+    console.log('✗ No cipher modules found (no encryptText/decryptText pair).');
+    console.log('  The cipher library structure changed — use the runtime');
+    console.log('  Tampermonkey extractor (cipher-extractor.user.js) instead.');
     return;
   }
 
+  if (!configs.length) {
+    console.log('✗ Modules found, but no {secret,startAt,length,version} flow configs.');
+    console.log('  The config shape changed — use the runtime Tampermonkey extractor.');
+    return;
+  }
+
+  let okCount = 0;
   console.log('flows (from {secret,startAt,length,version} configs):');
   for (const cfg of configs) {
     const modName = dispatcher[cfg.version];
     const key = decodeExpr(cfg.expr, cfg.at);
     const clean = typeof key === 'string' && /^[\x20-\x7e]+$/.test(key);
+    if (clean) okCount++;
 
     console.log('  ┌─ version ' + cfg.version + '  ->  module ' + (modName || '?') +
                 '  (' + (modName ? detectAlgo(modName) : '?') + ')');
@@ -333,6 +342,18 @@ function main() {
       } catch { console.log('  │  test : (module eval error)'); }
     }
     console.log('  └────────────────────────────────────────────');
+  }
+
+  // ── overall health verdict ──────────────────────────────────────────────
+  console.log();
+  if (okCount === configs.length) {
+    console.log('✔ DONE — all ' + okCount + ' active flow(s) extracted cleanly. You can trust these values.');
+  } else if (okCount > 0) {
+    console.log('▲ PARTIAL — ' + okCount + '/' + configs.length + ' flow(s) clean; the rest look corrupted.');
+    console.log('  For the corrupted one(s), confirm the key with the runtime Tampermonkey extractor.');
+  } else {
+    console.log('✗ Keys could not be decoded — the obfuscation changed.');
+    console.log('  Use the runtime Tampermonkey extractor (cipher-extractor.user.js) for the exact keys.');
   }
 }
 
