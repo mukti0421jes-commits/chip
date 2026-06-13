@@ -230,8 +230,11 @@ function detectAlgo(name) {
   if (/Uint8Array\(64\)/.test(ns) && /\[32\]=1/.test(ns)) return 'Cellular Automaton';
   if (/3\.99/.test(ns)) return 'Logistic Map';
   if (/0xe8d6ca6163/.test(ns) || /314159265/.test(ns)) return 'Modular Exponentiation';
+  // Feistel round function is `7 & ((3*e + t) ^ 3)`.
   if (/1103515245/.test(ns) && (/\*[a-z]\+[a-z]\^3/.test(ns) || /\(e>>3\)/.test(ns) || />>3&7/.test(ns))) return 'Feistel (bitmix)';
   if (/1103515245/.test(ns) && />>>16/.test(ns)) return 'Dual LCG';
+  // Keyed substitution box: encryptText destructures {sbox,invSbox} from the key.
+  if (/invSbox/.test(ns) || /\{sbox:/.test(ns) || /sbox\]/.test(ns)) return 'S-box substitution';
   if (/1103515245/.test(ns)) return 'LCG-based';
   if (/%67/.test(ns)) return 'Polynomial Shift';
   return 'other / unknown';
