@@ -390,13 +390,12 @@ const ${n.UP}_SKIP = ${skip};
 const ${n.UP}_LENGTH = ${len};
 `;
 
-  let coreEnc, coreDec, tables;
+  let coreEnc, tables;
   if (tab.mode === 'sbox') {
     tables =
 `
 const ${n.low}Perm = ${_arr(tab.perm)};
 const ${n.low}Sbox = ${_arr(tab.sbox)};
-const ${n.low}InvSbox = ${_arr(tab.invSbox)};
 `;
     coreEnc =
 `function encrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
@@ -413,22 +412,6 @@ const ${n.low}InvSbox = ${_arr(tab.invSbox)};
     mid[i] = ci !== -1 ? ${n.UP}_CHARSET[${n.low}Sbox[ci]] : ch;
   }
   return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + span);
-}`;
-    coreDec =
-`function decrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
-  if (!token || typeof token !== "string") return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
-  if (span === 0) return token;
-  const enc = token.slice(prefixLen, prefixLen + span).split("");
-  const out = enc.slice();
-  for (let i = 0; i < span; i++) {
-    const sp = ${n.low}Perm[i];
-    const dst = sp < span ? sp : i;
-    const ci = ${n.UP}_CHARSET.indexOf(enc[i]);
-    out[dst] = ci !== -1 ? ${n.UP}_CHARSET[${n.low}InvSbox[ci]] : enc[i];
-  }
-  return token.slice(0, prefixLen) + out.join("") + token.slice(prefixLen + span);
 }`;
   } else {
     tables =
@@ -448,51 +431,27 @@ const ${n.low}Shifts = ${_arr(tab.shifts)};
   }
   return token.slice(0, prefixLen) + src.join("") + token.slice(prefixLen + span);
 }`;
-    coreDec =
-`function decrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
-  if (!token || typeof token !== "string") return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
-  if (span === 0) return token;
-  const enc = token.slice(prefixLen, prefixLen + span).split("");
-  for (let i = 0; i < span; i++) {
-    const ci = ${n.UP}_CHARSET.indexOf(enc[i]);
-    if (ci !== -1) { let v = (ci - ${n.low}Shifts[i]) % 64; if (v < 0) v += 64; enc[i] = ${n.UP}_CHARSET[v]; }
-  }
-  return token.slice(0, prefixLen) + enc.join("") + token.slice(prefixLen + span);
-}`;
   }
 
   const pub =
 `
-function encrypt${n.Cap}CaptchaToken(rawToken) { return encrypt${n.Cap}CaptchaTokenImpl(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
-function decrypt${n.Cap}CaptchaToken(rawToken) { return decrypt${n.Cap}CaptchaTokenImpl(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
-
-if (typeof module !== "undefined") {
-  module.exports = {
-    ${n.UP}_CHARSET, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH,
-    encrypt${n.Cap}CaptchaToken, decrypt${n.Cap}CaptchaToken,
-    encrypt${n.Cap}CaptchaTokenImpl, decrypt${n.Cap}CaptchaTokenImpl
-  };
-}
-if (typeof window !== "undefined") {
-  window.${n.Cap}Cipher = { encrypt: encrypt${n.Cap}CaptchaToken, decrypt: decrypt${n.Cap}CaptchaToken };
+function encrypt${n.Cap}CaptchaToken(rawToken) {
+  return encrypt${n.Cap}CaptchaTokenImpl(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH);
 }
 `;
-  return head + tables + '\n' + coreEnc + '\n\n' + coreDec + '\n' + pub;
+  return head + tables + '\n' + coreEnc + '\n' + pub;
 }
 
-// Verify the generated static file reproduces the real module on full-length
-// tokens (which is what real captcha tokens always are).
-function verifyStaticFile(content, implName, decName, mod, key, skip, len) {
+// Verify the generated encrypt function reproduces the real module on
+// full-length tokens (which is what real captcha tokens always are).
+function verifyStaticFile(content, implName, mod, key, skip, len) {
   try {
     const sb = {};
     vm.createContext(sb);
-    vm.runInContext(content + ';this.E=' + implName + ';this.D=' + decName + ';', sb, { timeout: 4000 });
+    vm.runInContext(content + ';this.E=' + implName + ';', sb, { timeout: 4000 });
     const long = (_CS + _CS).slice(0, skip + len + 8);
     for (const t of [long, _CS.slice(0, skip + len + 5), 'A'.repeat(skip) + _CS.slice(0, len + 3)]) {
       if (sb.E(t, key, skip, len) !== mod.encryptText(t, key, skip, len)) return false;
-      if (sb.D(sb.E(t, key, skip, len), key, skip, len) !== t) return false;
     }
     return true;
   } catch { return false; }
@@ -507,7 +466,7 @@ function emitFlowFile(flow, modName, key, skip, len, algo, mod) {
 
   if (tab && mod) {
     const content = buildStaticFile(flow, tab, key, skip, len, algo);
-    if (verifyStaticFile(content, 'encrypt' + n.Cap + 'CaptchaTokenImpl', 'decrypt' + n.Cap + 'CaptchaTokenImpl', mod, key, skip, len)) {
+    if (verifyStaticFile(content, 'encrypt' + n.Cap + 'CaptchaTokenImpl', mod, key, skip, len)) {
       fs.writeFileSync(file, content);
       return { file, kind: 'static ' + tab.mode };
     }
@@ -531,14 +490,8 @@ ${chunk}
   return ${modName};
 })();
 
-function encrypt${n.Cap}CaptchaToken(rawToken) { return _MOD.encryptText(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
-function decrypt${n.Cap}CaptchaToken(rawToken) { return _MOD.decryptText(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
-
-if (typeof module !== "undefined") {
-  module.exports = { ${n.UP}_CHARSET, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH, encrypt${n.Cap}CaptchaToken, decrypt${n.Cap}CaptchaToken };
-}
-if (typeof window !== "undefined") {
-  window.${n.Cap}Cipher = { encrypt: encrypt${n.Cap}CaptchaToken, decrypt: decrypt${n.Cap}CaptchaToken };
+function encrypt${n.Cap}CaptchaToken(rawToken) {
+  return _MOD.encryptText(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH);
 }
 `;
   fs.writeFileSync(file, content);
@@ -614,7 +567,7 @@ function main() {
         const r = emitFlowFile(flow, modName, key, cfg.skip, cfg.len, detectAlgo(modName), mod);
         if (r) {
           generated.push(r.file);
-          console.log('  │  file : ' + path.basename(r.file) + '  (' + r.kind + ', encrypt/decrypt ready)');
+          console.log('  │  file : ' + path.basename(r.file) + '  (' + r.kind + ', encrypt ready)');
         }
       }
     }
