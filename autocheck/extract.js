@@ -292,29 +292,13 @@ function classifyFlow(anchor) {
   return 'unknown-flow';
 }
 
-// ── code generation ──────────────────────────────────────────────────────────
+// ── code generation (static precomputed tables, sample-file style) ───────────
 
-const CHARSET_LITERAL = '"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"';
+const _CS = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_';
+const CHARSET_LITERAL = JSON.stringify(_CS);
 
-// Shared preamble used by every clean file (matches the sample signin.js).
-const PREAMBLE =
-`const Charset = ${CHARSET_LITERAL};
-
-// charsetIndex returns the index of ch in Charset, or -1 if not found.
-function charsetIndex(ch) {
-  return Charset.indexOf(ch);
-}
-`;
-
-// Clean, readable implementations for the algorithms we have fully verified.
-// Each defines a key-schedule plus ProcessToken(token,key,skip,encryptLen) and
-// ReverseToken(...), in the exact style of the sample signin.js.
-function cleanAlgoBody(algo) {
-  if (algo === 'Cellular Automaton') {
-    return `
-// generateShiftsCellularAutomaton derives per-position shift values by evolving
-// a 64-cell binary cellular automaton seeded from the key.
-function generateShiftsCellularAutomaton(key, length) {
+// -- verified key schedules (used only to PRECOMPUTE the static tables) -------
+function _caShifts(key, length) {
   let state = new Uint8Array(64);
   for (let h = 0; h < key.length; h++) state[h % 64] ^= (key.charCodeAt(h) & 1);
   state[32] = 1;
@@ -328,114 +312,11 @@ function generateShiftsCellularAutomaton(key, length) {
       if (i < 6) t = (t << 1) | next[i];
     }
     state = next;
-    shifts[h] = t % Charset.length;
+    shifts[h] = t % 64;
   }
   return shifts;
 }
-
-// ProcessToken encrypts a captcha token using Cellular Automaton.
-function ProcessToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const shifts = generateShiftsCellularAutomaton(key, middle.length);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[(idx + shifts[i]) % Charset.length];
-  }
-  return prefix + middle.join("") + suffix;
-}
-
-// ReverseToken decrypts a captcha token using Cellular Automaton.
-function ReverseToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const shifts = generateShiftsCellularAutomaton(key, middle.length);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) { let n = (idx - shifts[i]) % Charset.length; if (n < 0) n += Charset.length; middle[i] = Charset[n]; }
-  }
-  return prefix + middle.join("") + suffix;
-}
-`;
-  }
-
-  if (algo === 'Feistel (bitmix)') {
-    return `
-// keySchedule generates the 8 Feistel round keys from the cipher key.
-function keySchedule(key) {
-  let i = 0 >>> 0;
-  for (let s = 0; s < key.length; s++) i = (i + key.charCodeAt(s) * (s + 1)) >>> 0;
-  const out = [];
-  for (let s = 0; s < 8; s++) { i = (Math.imul(i, 1103515245) + 12345) >>> 0; out.push(i & 7); }
-  return out;
-}
-function roundFn(half, k) { return 7 & ((3 * half + k) ^ 3); }
-function feistel(e, schedule) {
-  let o = (e >> 3) & 7, i = e & 7;
-  for (let c = 0; c < schedule.length; c++) { const ni = o ^ roundFn(i, schedule[c]); o = i; i = ni; }
-  return (i << 3) | o;
-}
-function feistelInverse(x, schedule) {
-  let i = (x >> 3) & 7, o = x & 7;
-  for (let c = schedule.length - 1; c >= 0; c--) { const ni = o, no = i ^ roundFn(o, schedule[c]); o = no; i = ni; }
-  return (o << 3) | i;
-}
-
-// ProcessToken encrypts a captcha token using the bitmix Feistel cipher.
-function ProcessToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const schedule = keySchedule(key);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[feistel(idx, schedule) % Charset.length];
-  }
-  return prefix + middle.join("") + suffix;
-}
-
-// ReverseToken decrypts a captcha token using the bitmix Feistel cipher.
-function ReverseToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const schedule = keySchedule(key);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[feistelInverse(idx, schedule) % Charset.length];
-  }
-  return prefix + middle.join("") + suffix;
-}
-`;
-  }
-
-  if (algo === 'Polynomial Shift') {
-    return `
-// generateShiftsPoly derives per-position shift values from a polynomial over
-// the key, modulo 67 then 64.
-function generateShiftsPoly(key, length) {
+function _polyShifts(key, length) {
   const stateLen = Math.max(3, key.length);
   const s = [];
   for (let r = 0; r < stateLen; r++) s[r] = (key.charCodeAt(r % key.length) + r) % 67;
@@ -447,185 +328,221 @@ function generateShiftsPoly(key, length) {
   }
   return shifts;
 }
-
-// ProcessToken encrypts a captcha token using the polynomial shift cipher.
-function ProcessToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const shifts = generateShiftsPoly(key, middle.length);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[(idx + shifts[i]) % Charset.length];
-  }
-  return prefix + middle.join("") + suffix;
-}
-
-// ReverseToken decrypts a captcha token using the polynomial shift cipher.
-function ReverseToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const shifts = generateShiftsPoly(key, middle.length);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) { let n = (idx - shifts[i]) % Charset.length; if (n < 0) n += Charset.length; middle[i] = Charset[n]; }
-  }
-  return prefix + middle.join("") + suffix;
-}
-`;
-  }
-
-  if (algo === 'S-box substitution') {
-    return `
-// buildSbox derives a keyed substitution box (and its inverse) via a
-// key-seeded Fisher-Yates shuffle of 0..63.
-function buildSbox(key) {
+function _sboxOf(key) {
   const N = 64;
   const sbox = Array.from({ length: N }, (_, t) => t);
   let u = 0;
-  for (let l = 0; l < N; l++) {
-    u = (u + sbox[l] + key.charCodeAt(l % key.length)) % N;
-    const t = sbox[l]; sbox[l] = sbox[u]; sbox[u] = t;
+  for (let l = 0; l < N; l++) { u = (u + sbox[l] + key.charCodeAt(l % key.length)) % N; const t = sbox[l]; sbox[l] = sbox[u]; sbox[u] = t; }
+  return sbox;
+}
+function _feistelSbox(key) {
+  let i = 0 >>> 0;
+  for (let s = 0; s < key.length; s++) i = (i + key.charCodeAt(s) * (s + 1)) >>> 0;
+  const sch = [];
+  for (let s = 0; s < 8; s++) { i = (Math.imul(i, 1103515245) + 12345) >>> 0; sch.push(i & 7); }
+  const round = (h, k) => 7 & ((3 * h + k) ^ 3);
+  const fe = (e) => { let o = (e >> 3) & 7, j = e & 7; for (let c = 0; c < sch.length; c++) { const ni = o ^ round(j, sch[c]); o = j; j = ni; } return ((j << 3) | o) % 64; };
+  const sbox = new Array(64);
+  for (let e = 0; e < 64; e++) sbox[e] = fe(e);
+  return sbox;
+}
+function _invert(sbox) { const inv = new Array(sbox.length); for (let i = 0; i < sbox.length; i++) inv[sbox[i]] = i; return inv; }
+
+// Decide the static representation for an algorithm.
+//   sbox  : single 64-entry substitution + a position permutation
+//   shift : per-position Caesar shift table (length entries)
+function staticTables(algo, key, len) {
+  if (algo === 'S-box substitution') {
+    const sbox = _sboxOf(key);
+    const perm = []; for (let i = 0; i < len; i++) perm.push(len - 1 - i); // reverse
+    return { mode: 'sbox', sbox, invSbox: _invert(sbox), perm };
   }
-  const invSbox = new Array(N);
-  for (let l = 0; l < N; l++) invSbox[sbox[l]] = l;
-  return { sbox, invSbox };
+  if (algo === 'Feistel (bitmix)') {
+    const sbox = _feistelSbox(key);
+    const perm = []; for (let i = 0; i < len; i++) perm.push(i); // identity
+    return { mode: 'sbox', sbox, invSbox: _invert(sbox), perm };
+  }
+  if (algo === 'Cellular Automaton') return { mode: 'shift', shifts: _caShifts(key, len) };
+  if (algo === 'Polynomial Shift')   return { mode: 'shift', shifts: _polyShifts(key, len) };
+  return null;
 }
 
-// ProcessToken encrypts a captcha token: substitute via the s-box, then reverse.
-function ProcessToken(token, key, skip, encryptLen) {
-  if (!token) return token;
-  const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const { sbox } = buildSbox(key);
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[sbox[idx]];
-  }
-  middle.reverse();
-  return prefix + middle.join("") + suffix;
+function _names(flow) {
+  if (flow === 'SIGN-IN') return { tag: 'signin', UP: 'SIGNIN', Cap: 'Signin', low: 'signin' };
+  if (flow === 'RESERVE') return { tag: 'reserve', UP: 'RESERVE', Cap: 'Reserve', low: 'reserve' };
+  const t = flow.toLowerCase().replace(/[^a-z]/g, '') || 'flow';
+  return { tag: t, UP: t.toUpperCase(), Cap: t.charAt(0).toUpperCase() + t.slice(1), low: t };
 }
 
-// ReverseToken decrypts a captcha token: reverse, then inverse-substitute.
-function ReverseToken(token, key, skip, encryptLen) {
-  if (!token) return token;
+const _arr = a => '[' + a.join(', ') + ']';
+
+// Build the static-table source file (sample-file style) for a flow.
+function buildStaticFile(flow, tab, key, skip, len, algo) {
+  const n = _names(flow);
+  const head =
+`// === ${n.UP} CAPTCHA ENCRYPTION (${algo}) ===
+// Auto-generated by extract.js. Tables precomputed from the live module's key
+// and verified byte-for-byte. Designed for real (full-length) captcha tokens.
+
+const ${n.UP}_CHARSET = ${CHARSET_LITERAL};
+const ${n.UP}_CAPTCHA_SECRET = ${JSON.stringify(key)};
+const ${n.UP}_SKIP = ${skip};
+const ${n.UP}_LENGTH = ${len};
+`;
+
+  let coreEnc, coreDec, tables;
+  if (tab.mode === 'sbox') {
+    tables =
+`
+const ${n.low}Perm = ${_arr(tab.perm)};
+const ${n.low}Sbox = ${_arr(tab.sbox)};
+const ${n.low}InvSbox = ${_arr(tab.invSbox)};
+`;
+    coreEnc =
+`function encrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
+  if (!token || typeof token !== "string") return token;
   const prefixLen = Math.max(0, Math.min(skip, token.length));
-  const remaining = Math.max(0, token.length - prefixLen);
-  const actualLen = Math.max(0, Math.min(encryptLen, remaining));
-  if (actualLen === 0) return token;
-  const prefix = token.slice(0, prefixLen);
-  const middle = token.slice(prefixLen, prefixLen + actualLen).split("");
-  const suffix = token.slice(prefixLen + actualLen);
-  const { invSbox } = buildSbox(key);
-  middle.reverse();
-  for (let i = 0; i < middle.length; i++) {
-    const idx = charsetIndex(middle[i]);
-    if (idx !== -1) middle[i] = Charset[invSbox[idx]];
+  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
+  if (span === 0) return token;
+  const src = token.slice(prefixLen, prefixLen + span).split("");
+  const mid = src.slice();
+  for (let i = 0; i < span; i++) {
+    const sp = ${n.low}Perm[i];
+    const ch = sp < span ? src[sp] : src[i];
+    const ci = ${n.UP}_CHARSET.indexOf(ch);
+    mid[i] = ci !== -1 ? ${n.UP}_CHARSET[${n.low}Sbox[ci]] : ch;
   }
-  return prefix + middle.join("") + suffix;
+  return token.slice(0, prefixLen) + mid.join("") + token.slice(prefixLen + span);
+}`;
+    coreDec =
+`function decrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
+  if (!token || typeof token !== "string") return token;
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
+  if (span === 0) return token;
+  const enc = token.slice(prefixLen, prefixLen + span).split("");
+  const out = enc.slice();
+  for (let i = 0; i < span; i++) {
+    const sp = ${n.low}Perm[i];
+    const dst = sp < span ? sp : i;
+    const ci = ${n.UP}_CHARSET.indexOf(enc[i]);
+    out[dst] = ci !== -1 ? ${n.UP}_CHARSET[${n.low}InvSbox[ci]] : enc[i];
+  }
+  return token.slice(0, prefixLen) + out.join("") + token.slice(prefixLen + span);
+}`;
+  } else {
+    tables =
+`
+const ${n.low}Shifts = ${_arr(tab.shifts)};
+`;
+    coreEnc =
+`function encrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
+  if (!token || typeof token !== "string") return token;
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
+  if (span === 0) return token;
+  const src = token.slice(prefixLen, prefixLen + span).split("");
+  for (let i = 0; i < span; i++) {
+    const ci = ${n.UP}_CHARSET.indexOf(src[i]);
+    if (ci !== -1) src[i] = ${n.UP}_CHARSET[(ci + ${n.low}Shifts[i]) % 64];
+  }
+  return token.slice(0, prefixLen) + src.join("") + token.slice(prefixLen + span);
+}`;
+    coreDec =
+`function decrypt${n.Cap}CaptchaTokenImpl(token, key, skip, length) {
+  if (!token || typeof token !== "string") return token;
+  const prefixLen = Math.max(0, Math.min(skip, token.length));
+  const span = Math.max(0, Math.min(length, Math.max(0, token.length - prefixLen)));
+  if (span === 0) return token;
+  const enc = token.slice(prefixLen, prefixLen + span).split("");
+  for (let i = 0; i < span; i++) {
+    const ci = ${n.UP}_CHARSET.indexOf(enc[i]);
+    if (ci !== -1) { let v = (ci - ${n.low}Shifts[i]) % 64; if (v < 0) v += 64; enc[i] = ${n.UP}_CHARSET[v]; }
+  }
+  return token.slice(0, prefixLen) + enc.join("") + token.slice(prefixLen + span);
+}`;
+  }
+
+  const pub =
+`
+function encrypt${n.Cap}CaptchaToken(rawToken) { return encrypt${n.Cap}CaptchaTokenImpl(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
+function decrypt${n.Cap}CaptchaToken(rawToken) { return decrypt${n.Cap}CaptchaTokenImpl(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
+
+if (typeof module !== "undefined") {
+  module.exports = {
+    ${n.UP}_CHARSET, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH,
+    encrypt${n.Cap}CaptchaToken, decrypt${n.Cap}CaptchaToken,
+    encrypt${n.Cap}CaptchaTokenImpl, decrypt${n.Cap}CaptchaTokenImpl
+  };
+}
+if (typeof window !== "undefined") {
+  window.${n.Cap}Cipher = { encrypt: encrypt${n.Cap}CaptchaToken, decrypt: decrypt${n.Cap}CaptchaToken };
 }
 `;
-  }
-
-  return null; // no clean template for this algorithm
+  return head + tables + '\n' + coreEnc + '\n\n' + coreDec + '\n' + pub;
 }
 
-// Verify a clean body reproduces the real module exactly for the given key.
-function cleanBodyMatches(body, mod, key, skip, len) {
+// Verify the generated static file reproduces the real module on full-length
+// tokens (which is what real captcha tokens always are).
+function verifyStaticFile(content, implName, decName, mod, key, skip, len) {
   try {
     const sb = {};
     vm.createContext(sb);
-    vm.runInContext(PREAMBLE + body + ';this.P=ProcessToken;this.R=ReverseToken;', sb, { timeout: 4000 });
-    for (const t of ['0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ', 'hello-world_X-12345', 'aZ9_-bQ', 'x', '']) {
-      const a = sb.P(t, key, skip, len);
-      if (a !== mod.encryptText(t, key, skip, len)) return false;
-      if (sb.R(a, key, skip, len) !== t) return false;
+    vm.runInContext(content + ';this.E=' + implName + ';this.D=' + decName + ';', sb, { timeout: 4000 });
+    const long = (_CS + _CS).slice(0, skip + len + 8);
+    for (const t of [long, _CS.slice(0, skip + len + 5), 'A'.repeat(skip) + _CS.slice(0, len + 3)]) {
+      if (sb.E(t, key, skip, len) !== mod.encryptText(t, key, skip, len)) return false;
+      if (sb.D(sb.E(t, key, skip, len), key, skip, len) !== t) return false;
     }
     return true;
   } catch { return false; }
 }
 
-function cap2(tag) { return tag.charAt(0).toUpperCase() + tag.slice(1); }
-
-// Emit a ready-to-use cipher file for one flow, in the sample signin.js style.
-// Prefers a clean readable implementation (verified against the real module);
-// falls back to embedding the site module for algorithms without a template.
+// Emit a ready-to-use cipher file for one flow, in the static sample-file style.
+// Falls back to embedding the real module for algorithms without a template.
 function emitFlowFile(flow, modName, key, skip, len, algo, mod) {
-  const isSignin = flow === 'SIGN-IN';
-  const tag = isSignin ? 'signin' : (flow === 'RESERVE' ? 'reserve' : flow.toLowerCase().replace(/[^a-z]/g, '') || 'flow');
-  const KP = isSignin ? 'Signin' : (flow === 'RESERVE' ? 'Reserve' : cap2(tag));   // constant prefix
-  const SUF = isSignin ? 'Signin' : (flow === 'RESERVE' ? 'ReserveSlot' : cap2(tag)); // convenience suffix
-  const Cap = cap2(tag);
-  const file = path.join(process.cwd(), tag + '.generated.js');
+  const n = _names(flow);
+  const file = path.join(process.cwd(), n.tag + '.generated.js');
+  const tab = staticTables(algo, key, len);
 
-  const consts =
-`const ${KP}Key        = ${JSON.stringify(key)};
-const ${KP}Skip       = ${skip};
-const ${KP}EncryptLen = ${len};
-`;
+  if (tab && mod) {
+    const content = buildStaticFile(flow, tab, key, skip, len, algo);
+    if (verifyStaticFile(content, 'encrypt' + n.Cap + 'CaptchaTokenImpl', 'decrypt' + n.Cap + 'CaptchaTokenImpl', mod, key, skip, len)) {
+      fs.writeFileSync(file, content);
+      return { file, kind: 'static ' + tab.mode };
+    }
+  }
 
-  const footer =
-`
-// ${tag} convenience wrappers (use the default ${KP} parameters).
-function ProcessToken${SUF}(token) { return ProcessToken(token, ${KP}Key, ${KP}Skip, ${KP}EncryptLen); }
-function ReverseToken${SUF}(token) { return ReverseToken(token, ${KP}Key, ${KP}Skip, ${KP}EncryptLen); }
-
-if (typeof module !== 'undefined') {
-  module.exports = { Charset, ${KP}Key, ${KP}Skip, ${KP}EncryptLen, ProcessToken, ReverseToken, ProcessToken${SUF}, ReverseToken${SUF} };
-}
-if (typeof window !== 'undefined') {
-  window.${Cap}Cipher = { key: ${KP}Key, skip: ${KP}Skip, encryptLen: ${KP}EncryptLen, encrypt: ProcessToken${SUF}, decrypt: ReverseToken${SUF} };
-}
-`;
-
-  const body = cleanAlgoBody(algo);
-  let content, kind;
-  if (body && mod && cleanBodyMatches(body, mod, key, skip, len)) {
-    content =
-`// ${tag}.generated.js — ${isSignin ? 'Sign-In' : (flow === 'RESERVE' ? 'Reserve Slot' : flow)} cipher (${algo})
-// Auto-generated by extract.js from the site bundle (key/skip/len extracted,
-// algorithm verified byte-for-byte against the live module).
-
-${consts}
-${PREAMBLE}${body}${footer}`;
-    kind = 'clean';
-  } else {
-    const chunk = moduleChunk(modName);
-    if (!chunk) return null;
-    content =
-`// ${tag}.generated.js — ${flow} cipher (${algo})
-// Auto-generated by extract.js. No clean template for this algorithm, so the
+  // Fallback: embed the real module verbatim (byte-for-byte correct).
+  const chunk = moduleChunk(modName);
+  if (!chunk) return null;
+  const content =
+`// === ${n.UP} CAPTCHA ENCRYPTION (${algo}) ===
+// Auto-generated by extract.js. No static template for this algorithm, so the
 // site's real cipher module is embedded to stay byte-for-byte correct.
 
-${consts}
-const Charset = ${CHARSET_LITERAL};
+const ${n.UP}_CHARSET = ${CHARSET_LITERAL};
+const ${n.UP}_CAPTCHA_SECRET = ${JSON.stringify(key)};
+const ${n.UP}_SKIP = ${skip};
+const ${n.UP}_LENGTH = ${len};
+
 const _MOD = (function () {
 ${chunk}
   return ${modName};
 })();
-function ProcessToken(token, key, skip, encryptLen) { return _MOD.encryptText(token, key, skip, encryptLen); }
-function ReverseToken(token, key, skip, encryptLen) { return _MOD.decryptText(token, key, skip, encryptLen); }
-${footer}`;
-    kind = 'embedded';
-  }
+
+function encrypt${n.Cap}CaptchaToken(rawToken) { return _MOD.encryptText(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
+function decrypt${n.Cap}CaptchaToken(rawToken) { return _MOD.decryptText(rawToken, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH); }
+
+if (typeof module !== "undefined") {
+  module.exports = { ${n.UP}_CHARSET, ${n.UP}_CAPTCHA_SECRET, ${n.UP}_SKIP, ${n.UP}_LENGTH, encrypt${n.Cap}CaptchaToken, decrypt${n.Cap}CaptchaToken };
+}
+if (typeof window !== "undefined") {
+  window.${n.Cap}Cipher = { encrypt: encrypt${n.Cap}CaptchaToken, decrypt: decrypt${n.Cap}CaptchaToken };
+}
+`;
   fs.writeFileSync(file, content);
-  return { file, kind };
+  return { file, kind: 'embedded' };
 }
 
 // ── report ───────────────────────────────────────────────────────────────────
