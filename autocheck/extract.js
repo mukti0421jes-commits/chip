@@ -113,6 +113,18 @@ const delimEnds = (() => {
 
 const CALL = /([A-Za-z_$][\w$]*)\s*\(/g;
 const NEAR = 60000;
+// A string-array's rotation IIFE is only run if the array is defined this close
+// to the config — keeps us from pulling in (and infinite-looping on) a different
+// block's array that BFS happened to reach.
+const ARRAY_NEAR = 8000;
+
+// Distance from `anchor` to the nearest `function NAME(` definition.
+function nearestDist(name, anchor) {
+  const re = new RegExp('function\\s+' + name.replace(/[$]/g, '\\$') + '\\s*\\(', 'g');
+  let best = Infinity, m;
+  while ((m = re.exec(src))) best = Math.min(best, Math.abs(m.index - anchor));
+  return best;
+}
 
 function extractFunctionNear(name, anchor) {
   const re = new RegExp('function\\s+' + name.replace(/[$]/g, '\\$') + '\\s*\\(', 'g');
@@ -170,17 +182,27 @@ function decodeExpr(expr, anchor) {
     if (collectedFns.size > 120) break;
   }
 
-  let code = '';
-  for (const a of arrays) { const r = extractRotation(a); if (r) code += r + ';\n'; }
-  for (const t of collectedFns.values()) code += t + ';\n';
-  code += '__OUT=(' + expr + ');';
+  const fnsCode = [...collectedFns.values()].join(';\n') + ';\n';
 
-  const sandbox = { __OUT: null };
-  try {
-    vm.createContext(sandbox);
-    vm.runInContext(code, sandbox, { timeout: 4000 });
-    return typeof sandbox.__OUT === 'string' ? sandbox.__OUT : null;
-  } catch { return null; }
+  // Try rotating the string arrays nearest the config first. The right array's
+  // rotation terminates and yields a clean key; a wrong/far array's rotation may
+  // infinite-loop, but we never reach it once a clean result is found.
+  const ordered = [...arrays].sort((a, b) => nearestDist(a, anchor) - nearestDist(b, anchor));
+  let last = null;
+  for (let k = 1; k <= ordered.length; k++) {
+    let rots = '';
+    for (let j = 0; j < k; j++) { const r = extractRotation(ordered[j]); if (r) rots += r + ';\n'; }
+    const sandbox = { __OUT: null };
+    try {
+      vm.createContext(sandbox);
+      vm.runInContext(rots + fnsCode + '__OUT=(' + expr + ');', sandbox, { timeout: 1500 });
+      if (typeof sandbox.__OUT === 'string') {
+        last = sandbox.__OUT;
+        if (/^[\x20-\x7e]+$/.test(last)) return last; // clean printable -> done
+      }
+    } catch { /* timeout/err -> try next array set */ }
+  }
+  return last;
 }
 
 // ── 1. cipher modules ────────────────────────────────────────────────────────
@@ -232,6 +254,8 @@ function detectAlgo(name) {
   if (/0xe8d6ca6163/.test(ns) || /314159265/.test(ns)) return 'Modular Exponentiation';
   // Feistel round function is `7 & ((3*e + t) ^ 3)`.
   if (/1103515245/.test(ns) && (/\*[a-z]\+[a-z]\^3/.test(ns) || /\(e>>3\)/.test(ns) || />>3&7/.test(ns))) return 'Feistel (bitmix)';
+  // Dual LCG: two generators seeded 123456789 / 1103515245, output (c>>>16)%64.
+  if (/1103515245/.test(ns) && /123456789/.test(ns)) return 'Dual LCG';
   if (/1103515245/.test(ns) && />>>16/.test(ns)) return 'Dual LCG';
   // Keyed substitution box: encryptText destructures {sbox,invSbox} from the key.
   if (/invSbox/.test(ns) || /\{sbox:/.test(ns) || /sbox\]/.test(ns)) return 'S-box substitution';
@@ -347,6 +371,17 @@ function _feistelSbox(key) {
   return sbox;
 }
 function _invert(sbox) { const inv = new Array(sbox.length); for (let i = 0; i < sbox.length; i++) inv[sbox[i]] = i; return inv; }
+function _dualLcgShifts(key, length) {
+  let c = 123456789 >>> 0, u = 1103515245 >>> 0;
+  for (let i = 0; i < key.length; i++) c = (c + key.charCodeAt(i)) >>> 0;
+  const out = [];
+  for (let f = 0; f < length; f++) {
+    c = (Math.imul(c, u) + 12345) >>> 0;
+    u = ((u + c) >>> 0) | 1;
+    out.push(((c >>> 16) >>> 0) % 64);
+  }
+  return out;
+}
 
 // Decide the static representation for an algorithm.
 //   sbox  : single 64-entry substitution + a position permutation
@@ -364,6 +399,7 @@ function staticTables(algo, key, len) {
   }
   if (algo === 'Cellular Automaton') return { mode: 'shift', shifts: _caShifts(key, len) };
   if (algo === 'Polynomial Shift')   return { mode: 'shift', shifts: _polyShifts(key, len) };
+  if (algo === 'Dual LCG')           return { mode: 'shift', shifts: _dualLcgShifts(key, len) };
   return null;
 }
 
