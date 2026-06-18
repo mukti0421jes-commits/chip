@@ -14,6 +14,8 @@
 // @connect      api.capmonster.cloud
 // @connect      challenges.cloudflare.com
 // @connect      duttauzzal.shop
+// @connect      localhost
+// @connect      127.0.0.1
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @grant        GM_setValue
@@ -1250,7 +1252,10 @@
 <div id="p" class="hidden">
   <div class="dh" id="dh">
     <span class="dt">RJ SLOT v7.5 H2</span>
-    <button class="db" id="mb">&minus;</button>
+    <div style="display:flex;gap:5px;align-items:center">
+      <button class="db" id="cipher-load-btn" title="Load cipher from local server (localhost:8799/cipher), save & activate encryption">🔑</button>
+      <button class="db" id="mb">&minus;</button>
+    </div>
   </div>
   <div class="tb">
     <button class="t a" data-t="l">Login</button>
@@ -1490,6 +1495,48 @@
         logStatus(e.target.checked ? '🔐 Unified encryption ON (Frontend)' : '🔓 Unified encryption OFF (Hardcode)', e.target.checked ? 'g' : 'y');
         encManager.updateStatusUI();
     });
+
+    // ==================== AUTO-LOAD CIPHER FROM LOCAL SERVER ====================
+    // Serves the local "cipher" file at http://localhost:8799/cipher (run cipher-server.py).
+    const CIPHER_SERVER_URLS = ['http://localhost:8799/cipher', 'http://127.0.0.1:8799/cipher'];
+
+    function applyCipherScript(text) {
+        if (!text || !text.trim()) { logStatus('❌ Cipher file is empty', 'r'); return; }
+        const ta = document.getElementById('enc-unified-script'); if (ta) ta.value = text;
+        encManager.saveUnifiedScript(text);
+        const ok = encManager.loadUnifiedScript(text);
+        const chk = document.getElementById('enc-unified-check'); if (chk) chk.checked = ok;
+        encManager.saveEnabledCheck(ok);
+        encManager.updateStatusUI();
+        if (ok) {
+            logStatus('✅ Cipher loaded from server, saved & Encryption ON', 'g');
+            try { showMilestonePopup('Cipher Loaded', 'Encryption script applied & activated 🔑', '🔐'); } catch(e) {}
+        } else {
+            logStatus('❌ Cipher script parse error — check the file', 'r');
+        }
+    }
+
+    function loadCipherFromServer() {
+        const btn = document.getElementById('cipher-load-btn');
+        if (btn) { btn.textContent = '⏳'; setTimeout(() => { btn.textContent = '🔑'; }, 1500); }
+        logStatus('🔑 Loading cipher from local server…', 'y');
+        const gm = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+        let idx = 0;
+        const tryNext = () => {
+            if (idx >= CIPHER_SERVER_URLS.length) { logStatus('❌ Cipher server not reachable — is cipher-server.py running on port 8799?', 'r'); return; }
+            const url = CIPHER_SERVER_URLS[idx++];
+            if (gm) {
+                gm({ method: 'GET', url, timeout: 8000,
+                    onload: (r) => { if (r.status >= 200 && r.status < 300 && r.responseText) applyCipherScript(r.responseText); else tryNext(); },
+                    onerror: tryNext, ontimeout: tryNext });
+            } else {
+                pageFetch(url, { method: 'GET', cache: 'no-store' }).then(r => r.ok ? r.text() : Promise.reject()).then(applyCipherScript).catch(tryNext);
+            }
+        };
+        tryNext();
+    }
+
+    document.getElementById('cipher-load-btn')?.addEventListener('click', loadCipherFromServer);
 
     // ==================== TAB SWITCHING ====================
     const tmap = { l: 'pl', s: 'ps', u: 'pu', f: 'pf', x: 'px' };
