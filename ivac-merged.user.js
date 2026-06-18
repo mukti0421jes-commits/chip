@@ -1500,8 +1500,8 @@
     // Serves the local "cipher" file at http://localhost:8799/cipher (run cipher-server.py).
     const CIPHER_SERVER_URLS = ['http://localhost:8799/cipher', 'http://127.0.0.1:8799/cipher'];
 
-    function applyCipherScript(text) {
-        if (!text || !text.trim()) { logStatus('❌ Cipher file is empty', 'r'); return; }
+    function applyCipherScript(text, auto) {
+        if (!text || !text.trim()) { if (!auto) logStatus('❌ Cipher file is empty', 'r'); return; }
         const ta = document.getElementById('enc-unified-script'); if (ta) ta.value = text;
         encManager.saveUnifiedScript(text);
         const ok = encManager.loadUnifiedScript(text);
@@ -1509,34 +1509,38 @@
         encManager.saveEnabledCheck(ok);
         encManager.updateStatusUI();
         if (ok) {
-            logStatus('✅ Cipher loaded from server, saved & Encryption ON', 'g');
-            try { showMilestonePopup('Cipher Loaded', 'Encryption script applied & activated 🔑', '🔐'); } catch(e) {}
+            logStatus(auto ? '✅ Cipher auto-loaded on page load & Encryption ON' : '✅ Cipher loaded from server, saved & Encryption ON', 'g');
+            if (!auto) { try { showMilestonePopup('Cipher Loaded', 'Encryption script applied & activated 🔑', '🔐'); } catch(e) {} }
         } else {
             logStatus('❌ Cipher script parse error — check the file', 'r');
         }
     }
 
-    function loadCipherFromServer() {
+    function loadCipherFromServer(auto) {
         const btn = document.getElementById('cipher-load-btn');
         if (btn) { btn.textContent = '⏳'; setTimeout(() => { btn.textContent = '🔑'; }, 1500); }
-        logStatus('🔑 Loading cipher from local server…', 'y');
+        if (!auto) logStatus('🔑 Loading cipher from local server…', 'y');
         const gm = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
         let idx = 0;
         const tryNext = () => {
-            if (idx >= CIPHER_SERVER_URLS.length) { logStatus('❌ Cipher server not reachable — is cipher-server.py running on port 8799?', 'r'); return; }
+            if (idx >= CIPHER_SERVER_URLS.length) { if (!auto) logStatus('❌ Cipher server not reachable — is cipher-server.js running on port 8799?', 'r'); return; }
             const url = CIPHER_SERVER_URLS[idx++];
             if (gm) {
                 gm({ method: 'GET', url, timeout: 8000,
-                    onload: (r) => { if (r.status >= 200 && r.status < 300 && r.responseText) applyCipherScript(r.responseText); else tryNext(); },
+                    onload: (r) => { if (r.status >= 200 && r.status < 300 && r.responseText) applyCipherScript(r.responseText, auto); else tryNext(); },
                     onerror: tryNext, ontimeout: tryNext });
             } else {
-                pageFetch(url, { method: 'GET', cache: 'no-store' }).then(r => r.ok ? r.text() : Promise.reject()).then(applyCipherScript).catch(tryNext);
+                pageFetch(url, { method: 'GET', cache: 'no-store' }).then(r => r.ok ? r.text() : Promise.reject()).then(t => applyCipherScript(t, auto)).catch(tryNext);
             }
         };
         tryNext();
     }
 
-    document.getElementById('cipher-load-btn')?.addEventListener('click', loadCipherFromServer);
+    document.getElementById('cipher-load-btn')?.addEventListener('click', () => loadCipherFromServer(false));
+
+    // Auto-load cipher from the local server every time the RJ UI loads (page reload).
+    // Silent on failure so it never blocks the panel when the server is off.
+    setTimeout(() => loadCipherFromServer(true), 1200);
 
     // ==================== TAB SWITCHING ====================
     const tmap = { l: 'pl', s: 'ps', u: 'pu', f: 'pf', x: 'px' };
