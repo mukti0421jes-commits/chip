@@ -21,7 +21,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const CIPHER_FILE = process.argv[2] || 'cipher';
+const CIPHER_FILE = process.argv[2] || 'cipher.js';
 const PORT = parseInt(process.argv[3], 10) || 8799;
 
 const BASE_DIR = __dirname;
