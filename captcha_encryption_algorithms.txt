@@ -1,0 +1,260 @@
+CAPTCHA ENCRYPTION ALGORITHMS — extracted from bundle js
+Source: 2e1ef981-mqjd24sczqpf9QCt.js  (React 18.3.1 production bundle, obfuscated)
+Total versions found: 10  (each = one encryptText + matching decryptText pair)
+Detection: Object.defineProperty({__proto__:null,decryptText:X,encryptText:Y})
+==============================================================================
+
+##############################################################################
+VERSION 1
+Algorithm name : PX/qX  — Tail-window keystream substitution cipher
+encrypt symbol : PX    decrypt symbol : qX
+##############################################################################
+
+--- encrypt function (PX) ---
+function PX(e,t,n,r){function o(e,t){return wX(e-441,t)}const i={WUadK:function(e,t){return e===t},TnbiF:function(e,t,n){return e(t,n)},tOMju:function(e,t){return e+t},ZJxqV:function(e,t){return e+t},vsJRJ:function(e,t){return e<t},MMmmN:function(e,t){return e%t},JFRkR:function(e,t){return e>>>t}},a=Math[v(232,"I8gc")](0,Math[v(70,"^YEw")](n,e[v(268,"WkHw")+"h"]))
+function c(e,t){return wX(t-507,e)}function u(e,t){return MX(0,t- -90)}function s(e,t){return wX(e-1450,t)}function l(e,t){return MX(0,e- -627)}const d=Math.max(0,e.length-a),f=Math[c("Ja#B",498)](0,Math[v(180,"XIgg")](r,d))
+if(i[l(808)](f,0))return e
+const W=i[v(263,"6Gg4")](OX,t,f)
+function m(e,t){return MX(0,e- -149)}const h=e[l(755)](0,a),p=e[o(494,"X^jS")](a,i[s(1456,"GB&b")](a,f))[o(436,"xX1D")](""),k=e[c("2!FN",465)](i.ZJxqV(a,f))
+for(let g=0;i[o(480,"7bZz")](g,p[m(1236)+"h"]);g++){const e=xX[s(1496,"]^B1")+"Of"](p[g]);-1!==e&&(p[g]=xX[i[m(1273)](i[u(0,1215)](e+W[g],0),bX)])}function v(e,t){return wX(e-145,t)}return""+h+p[wX(66,"tDeo")]("")+k}
+
+--- decrypt function (qX) ---
+function qX(e,t,n,r){function o(e,t){return AX(e-1052,t)}function i(e,t){return AX(t- -465,e)}const a={EuYhl:function(e,t){return e-t},rhkNh:function(e,t){return e===t},nLqQL:function(e,t,n){return e(t,n)},qFCem:function(e,t){return e+t},NRPUW:function(e,t){return e!==t},AbRCs:function(e,t){return e>>>t}}
+function c(e,t){return _X(0,e-302)}const u=Math[o(1468,"tDeo")](0,Math[c(623)](n,e.length))
+function s(e,t){return _X(0,t-446)}const l=Math[AX(298,"nhJp")](0,a.EuYhl(e[c(748)+"h"],u)),d=Math[o(1371,"DU3Q")](0,Math[o(1401,"7bZz")](r,l))
+if(a.rhkNh(d,0))return e
+function f(e,t){return AX(e- -497,t)}const W=a[s(0,918)](OX,t,d),m=e[_X(0,443)](0,u),h=e[c(745)](u,a[i("X^jS",-110)](u,d))[i("WkHw",-44)](""),p=e[AX(313,"t%ek")](a[i("6zPZ",-157)](u,d))
+for(let k=0;k<h[f(-134,"6Gg4")+"h"];k++){const e=xX[i("GB&b",-19)+"Of"](h[k])
+a[s(0,763)](e,-1)&&(h[k]=xX[a[c(700)](e-W[k]+100*bX,0)%bX])}return""+m+h[i("xX1D",-34)]("")+p}
+
+
+##############################################################################
+VERSION 2
+Algorithm name : e$/t$  — Head-window 8-round keystream substitution cipher
+encrypt symbol : e$    decrypt symbol : t$
+##############################################################################
+
+--- encrypt function (e$) ---
+function e$(e,t,n,r){const o={KoyMO:function(e,t){return e-t},HGEJL:function(e,t){return e===t},oMeHQ:function(e,t){return e<t},FtHvN:function(e,t){return e!==t},SGVFn:function(e,t,n){return e(t,n)},zfhhA:function(e,t){return e+t},nJPcY:function(e,t){return e-t},ftVqi:s(713,"]8JM"),MEqvf:a(0,-95),VJCEj:function(e,t){return e!==t},xVYXB:function(e,t){return e%t}},i=Math[a(0,20)](0,Math.min(n,e[ZX("(^0p",758)+"h"]))
+function a(e,t){return r$(t- -245)}function c(e,t){return ZX(e,t- -657)}function u(e,t){return r$(e-91)}function s(e,t){return ZX(t,e- -189)}function l(e,t){return r$(e-497)}const d=Math[s(567,"sUpr")](0,o[p(0,638)](e[s(678,"JO#H")+"h"],i)),f=Math[W(272,"dSB1")](0,Math[c("*d0l",256)](r,d))
+if(0===f)return e
+function W(e,t){return ZX(t,e- -473)}const m=e[p(0,604)](i,i+f)[u(353)](""),h=o[k("6RY4",-285)](VX,t,8)
+for(let g=0;g<m[c("zm1X",109)+"h"];g++){if(o[l(691)]===o[k("J#dQ",-244)]){const e=_0x2437f1[l(762)](0,_0x2f02ef[v(0,-357)](_0x9aabe8,_0x54b9c6[W(365,"GeE6")+"h"])),t=_0xf8f7e4[l(762)](0,o[p(0,581)](_0x229ec8[v(0,-286)+"h"],e)),n=_0x34fadb[W(291,"$nby")](0,_0x4655ad[k("b3VF",-230)](_0x3ffb9e,t))
+if(o.HGEJL(n,0))return _0xade0b
+const r=_0x50bfb4[a(0,-60)](e,e+n).split(""),i=_0x2f3629(_0x30eaaa,8)
+for(let c=0;o.oMeHQ(c,r.length);c++){const e=_0x4acaa1[u(288)+"Of"](r[c])
+o[a(0,-2)](e,-1)&&(r[c]=_0x27723c[o[p(0,656)](_0x30df95,e,i)%_0x1188d9])}return""+_0x28aa96[v(0,-262)](0,e)+r[v(0,-288)]("")+_0x4fce52[s(565,"fsCC")](o[a(0,-32)](e,n))}{const e=KX.indexOf(m[g])
+o[u(262)](e,-1)&&(m[g]=KX[o[c("Fbqh",224)](FX(e,h),QX)])}}function p(e,t){return r$(t-419)}function k(e,t){return ZX(e,t- -1036)}function v(e,t){return r$(t- -447)}return""+e[W(306,"TYr5")](0,i)+m.join("")+e[a(0,-60)](i+f)}
+
+--- decrypt function (t$) ---
+function t$(e,t,n,r){const o={ygjdg:function(e,t){return e-t},kNuKj:function(e,t){return e===t},RkIgL:function(e,t){return e+t},aEfoA:function(e,t){return e!==t},yvgZG:function(e,t){return e%t},pgflI:function(e,t,n){return e(t,n)},pKBPj:function(e,t){return e+t}}
+function i(e,t){return UX(e-126,t)}function a(e,t){return TX(t- -1310)}function c(e,t){return TX(e- -665)}const u=Math[m(-198,"zm1X")](0,Math[a(0,-463)](n,e[m(-260,"TYr5")+"h"])),s=Math[a(0,-288)](0,o[TX(886)](e[W(1149,"(^0p")+"h"],u)),l=Math[m(-241,"8tkX")](0,Math[f(226)](r,s))
+if(o[f(313)](l,0))return e
+const d=e[UX(523,"%bvc")](u,o[f(337)](u,l))[UX(459,"DqEh")]("")
+function f(e,t){return TX(e- -621)}function W(e,t){return UX(e-796,t)}function m(e,t){return UX(e- -688,t)}const h=VX(t,8)
+for(let p=0;p<d[m(-315,"XTHQ")+"h"];p++){const e=KX[m(-249,"6RY4")+"Of"](d[p])
+o[c(295)](e,-1)&&(d[p]=KX[o[c(267)](o[f(248)]($X,e,h),QX)])}return""+e[a(0,-368)](0,u)+d[i(619,"b3VF")]("")+e[i(476,"$nby")](o[W(1281,"Tmva")](u,l))}
+
+
+##############################################################################
+VERSION 3
+Algorithm name : x$/w$  — Min-length window additive substitution cipher
+encrypt symbol : x$    decrypt symbol : w$
+##############################################################################
+
+--- encrypt function (x$) ---
+function x$(e,t,n,r){const o={hFLmb:function(e,t){return e-t},iIPps:function(e,t){return e===t},lFPDO:function(e,t,n){return e(t,n)},KYTSt:function(e,t){return e<t},ZzrcA:function(e,t){return e+t}}
+function i(e,t){return u$(t- -559)}function a(e,t){return u$(e- -1223)}function c(e,t){return s$(t,e-391)}function u(e,t){return u$(e- -1563)}const s=Math[c(-61,"Z%$X")](0,Math[W(746,"VNtT")](n,e[i(0,559)+"h"])),l=Math[W(638,"VD&Y")](0,o[u(-425)](e[W(725,"$#lN")+"h"],s)),d=Math[W(605,"K%FZ")](0,Math[a(-23)](r,l))
+if(o[u(-380)](d,0))return e
+const f=o[s$("k*Vb",-421)](g$,t,d)
+function W(e,t){return s$(t,e-1185)}const m=e.slice(s,s+d)[u$(1098)]("")
+for(let p=0;o[W(659,"0pQz")](p,m.length);p++){const e=d$[i(0,628)+"Of"](m[p]);-1!==e&&(m[p]=d$[o[h(1029,"oRH%")](e,f[p])%W$])}function h(e,t){return s$(t,e-1458)}return""+e[a(-97)](0,s)+m.join("")+e[c(-159,"K%FZ")](s+d)}
+
+--- decrypt function (w$) ---
+function w$(e,t,n,r){function o(e,t){return p$(0,t- -1325)}const i={RtwiO:function(e,t){return e+t},RZLiy:function(e,t){return e^t},WGrOa:function(e,t){return e|t},TqFbF:function(e,t){return e===t},TuUay:function(e,t){return e+t},SplME:function(e,t){return e<t},LPtXH:function(e,t){return e===t},GCKGQ:o(0,-375),YMyjG:function(e,t){return e!==t},ersTT:function(e,t){return e-t}}
+function a(e,t){return C$(t- -679,e)}function c(e,t){return C$(t- -234,e)}const u=Math[p(591)](0,Math[p(664)](n,e[o(0,-309)+"h"])),s=Math[m(-599,"$#lN")](0,e[a("#ETC",139)+"h"]-u),l=Math[m(-510,"Y&j1")](0,Math[m(-438,"K%FZ")](r,s))
+function d(e,t){return p$(0,e- -1096)}if(i[p(660)](l,0))return e
+function f(e,t){return p$(0,t- -484)}const W=g$(t,l)
+function m(e,t){return C$(e- -1401,t)}function h(e,t){return C$(t- -1180,e)}function p(e,t){return p$(0,e- -434)}const k=e[p(590)](u,i[o(0,-321)](u,l))[m(-615,"VD&Y")]("")
+for(let x=0;i[v("#ETC",65)](x,k[a("7!A@",243)+"h"]);x++)if(i[h("ip3I",-252)](i[d(-41)],f(0,466))){const e=d$.indexOf(k[x])
+i[d(-64)](e,-1)&&(k[x]=d$[i[c("#ETC",624)](i[h("wC&[",-250)](e,W[x]),W$)%W$])}else{const e=_0x2b6bbc[trURKz[m(-594,"ze5f")](_0x1dd17c,63)%64],t=_0x3c903a[_0x42bf36],n=_0x3f4cde[trURKz[o(0,-308)](_0x325c00,1)%64]
+_0x1343e5[_0x2c05ab]=trURKz[h("k*Vb",-324)](e,trURKz[g(0,655)](t,n)),_0x56ad28<6&&(_0x3b5c8f=trURKz[a("6Y#1",180)](_0x49e585<<1,_0x41d2ff[_0x4770f2]))}function v(e,t){return C$(t- -754,e)}function g(e,t){return p$(0,t- -328)}return""+e[v("t(!$",169)](0,u)+k[o(0,-241)]("")+e[c("ixax",693)](u+l)}
+
+
+##############################################################################
+VERSION 4
+Algorithm name : D$/j$  — Tail-window keystream cipher (anti-debug branch)
+encrypt symbol : D$    decrypt symbol : j$
+##############################################################################
+
+--- encrypt function (D$) ---
+function D$(e,t,n,r){const o="m2@6"
+function i(e,t){return M$(t,e- -1104)}const a={CshCE:function(e,t,n){return e(t,n)},YEzkN:function(e,t){return e+t},NmFIz:function(e,t){return e===t},XGgma:k(571),grLNd:function(e,t){return e%t}}
+function c(e,t){return M$(e,t- -1036)}const u=Math.max(0,Math[v(0,240)](n,e.length))
+function s(e,t){return U$(e- -225)}const l=Math[v(0,160)](0,e[v(0,313)+"h"]-u),d=Math[v(0,160)](0,Math[i(122,"m2@6")](r,l))
+function f(e,t){return M$(t,e- -310)}function W(e,t){return M$(e,t- -161)}function m(e,t){return U$(t- -479)}if(0===d)return e
+const h=a[g(292)](E$,t,d),p=e[i(54,"%r3x")](u,u+d)[x("0qeB",922)]("")
+function k(e,t){return U$(e-203)}function v(e,t){return U$(t- -106)}function g(e,t){return U$(e-31)}function x(e,t){return M$(e,t- -191)}for(let b=0;b<p.length;b++){if(!a[W("dr8T",988)]("ncVHh",a[m(0,-174)])){const e=_0x20bbc1[k(469)](0,_0x58590f[f(811,"cf[$")](_0x5aa130,_0x45c3d6[m(0,-60)+"h"])),t=_0xc7ab91[c("Z15O",211)](0,_0x53ffff[s(194)+"h"]-e),n=_0x44a6a2[v(0,160)](0,_0x25033b[i(142,"hndl")](_0x2151f0,t))
+if(0===n)return _0x4194d3
+const r=a[x("fc37",879)](_0x19f38d,_0x48818a,n),u=_0x4f0ba7[m(0,-76)](e,a[x("d#xH",960)](e,n))[i(103,"fc37")]("")
+for(let a=0;a<u[m(0,-60)+"h"];a++){const e=_0x18a11b[i(133,o)+"Of"](u[a]);-1!==e&&(u[a]=_0x229e7b[(e+r[a])%_0x2b4bdc])}return""+_0x3c9ef0[x("llPC",1007)](0,e)+u[g(281)]("")+_0x5d4bc5[c("ma$I",158)](e+n)}{const e=R$.indexOf(p[b]);-1!==e&&(p[b]=R$[a[s(111)](a[k(468)](e,h[b]),q$)])}}return""+e[i(30,"yp&q")](0,u)+p[i(87,o)]("")+e[c("LLFX",156)](a[c("zLQL",147)](u,d))}
+
+--- decrypt function (j$) ---
+function j$(e,t,n,r){function o(e,t){return V$(t- -1222)}function i(e,t){return O$(e-1593,t)}const a={oTgKp:function(e,t){return e===t},fnJks:function(e,t,n){return e(t,n)},dyJhJ:function(e,t){return e<t},MDoek:function(e,t){return e!==t},FKpVZ:function(e,t){return e+t},jskyF:function(e,t){return e-t},xdhbK:function(e,t){return e+t}},c=Math[m(0,-375)](0,Math[O$(-278,"zLQL")](n,e[O$(-264,"d#xH")+"h"])),u=Math[O$(-286,"yUZe")](0,e[i(1335,"uVAw")+"h"]-c),s=Math[o(0,-512)](0,Math[i(1339,"&Xtp")](r,u))
+if(a[m(0,-297)](s,0))return e
+const l=a[h("6%mA",664)](E$,t,s)
+function d(e,t){return V$(e-183)}const f=e[h("QD23",500)](c,c+s)[h("I)Vr",513)]("")
+function W(e,t){return V$(e- -26)}function m(e,t){return V$(t- -1085)}function h(e,t){return O$(t-915,e)}function p(e,t){return V$(e-245)}for(let k=0;a[m(0,-347)](k,f[m(0,-222)+"h"]);k++){const e=R$[d(928)+"Of"](f[k])
+a[m(0,-384)](e,-1)&&(f[k]=R$[a[W(653)](a[p(1059)](e,l[k]),q$)%q$])}return""+e[o(0,-375)](0,c)+f[o(0,-528)]("")+e[W(821)](a[W(803)](c,s))}
+
+
+##############################################################################
+VERSION 5
+Algorithm name : o0/u0  — Tail-window keystream cipher (string-array variant)
+encrypt symbol : o0    decrypt symbol : u0
+##############################################################################
+
+--- encrypt function (o0) ---
+function o0(e,t,n,r){const o="gicF"
+function i(e,t){return l0(e,t-1395)}function a(e,t){return s0(t-781)}function c(e,t){return l0(e,t-634)}const u={oPZok:function(e,t){return e-t},UQDdS:function(e,t){return e===t},cLFXt:function(e,t,n){return e(t,n)},vcmRl:function(e,t){return e!==t},wASaW:k(-230,"UM!x"),HoZOf:function(e,t){return e!==t},ZNFUv:function(e,t){return e%t},yfDTR:function(e,t){return e+t}}
+function s(e,t){return l0(e,t-250)}const l=Math[x(0,861)](0,Math[m(-226)](n,e[g("zH%*",1056)+"h"])),d=Math[v(1085)](0,e[g(o,904)+"h"]-l)
+function f(e,t){return s0(e-366)}const W=Math[m(-301)](0,Math[a(0,532)](r,d))
+function m(e,t){return s0(e-23)}if(0===W)return e
+const h=u[s("XAFq",188)](n0,t,W),p=e[m(-342)](l,l+W)[v(1098)]("")
+function k(e,t){return l0(t,e- -191)}for(let b=0;b<p[c("FHpD",586)+"h"];b++){if(!u[c("oB&0",633)](u[a(0,422)],x(0,895))){const e=_0x57da30[s("%C]r",134)](0,_0x59f185[v(1160)](_0x3dd400,_0x176aa8[m(-172)+"h"])),t=_0x89418f[v(1085)](0,u[a(0,593)](_0x50ae87[f(171)+"h"],e)),n=_0x16c649[m(-301)](0,_0x5569bb[k(-223,"&[Bb")](_0x2d55df,t))
+if(u[i("BGPM",1343)](n,0))return _0x4d6682
+const r=_0x179c24(_0x4c1a1a,n),o=_0x334410[s("1QCj",255)](e,e+n)[m(-288)]("")
+for(let i=0;i<o.length;i++){const e=_0x2e5788[k(-251,"L!7o")+"Of"](o[i]);-1!==e&&(o[i]=_0xe72f0a[(u[m(-165)](e,r[i])+_0x2eed6c)%_0x10a134])}return""+_0x28be2d[i("n57Q",1332)](0,e)+o[f(27)]("")+_0x2e9648[c("n57Q",571)](e+n)}{const e=H$.indexOf(p[b])
+u[g(o,968)](e,-1)&&(p[b]=H$[u.ZNFUv(u[g("gicF",1053)](e,h[b]),X$)])}}function v(e,t){return s0(e-1409)}function g(e,t){return l0(e,t-1056)}function x(e,t){return s0(t-1185)}return""+e[g("edvH",1054)](0,l)+p.join("")+e[x(0,820)](l+W)}
+
+--- decrypt function (u0) ---
+function u0(e,t,n,r){const o="Xjf("
+function i(e,t){return l0(e,t-250)}const a={gapsC:function(e,t){return e-t},nMBPx:function(e,t){return e===t},HSTtw:function(e,t,n){return e(t,n)},IYDHW:function(e,t){return e+t},BEFqd:function(e,t){return e-t}}
+function c(e,t){return s0(t- -17)}const u=Math[h(0,502)](0,Math[m(328,o)](n,e.length)),s=Math.max(0,a[h(0,667)](e[m(432,o)+"h"],u)),l=Math[i("(]^p",153)](0,Math.min(r,s))
+if(a[c(0,-234)](l,0))return e
+const d=a[l0("BGPM",15)](n0,t,l),f=e[s0(-365)](u,a[l0("6nTA",-171)](u,l))[m(374,"FHpD")]("")
+for(let p=0;p<f.length;p++){const e=H$[c(0,-296)+"Of"](f[p]);-1!==e&&(f[p]=H$[a[W(0,-238)](a[i("FHpD",130)](e,d[p]),X$)%X$])}function W(e,t){return s0(t- -45)}function m(e,t){return l0(t,e-467)}function h(e,t){return s0(t-826)}return""+e[i("ds&0",141)](0,u)+f[h(0,487)]("")+e[W(0,-410)](u+l)}
+
+
+##############################################################################
+VERSION 6
+Algorithm name : C0/_0  — Front-window modulo substitution cipher
+encrypt symbol : C0    decrypt symbol : _0
+##############################################################################
+
+--- encrypt function (C0) ---
+function C0(e,t,n,r){function o(e,t){return g0(t-189)}const i={jOfbS:function(e,t){return e-t},mCRQA:function(e,t,n){return e(t,n)},lXVAx:function(e,t){return e<t},wyBUv:function(e,t){return e!==t},AcNGv:function(e,t){return e+t}}
+function a(e,t){return p0(e,t-34)}const c=Math[d(-294)](0,Math[W(0,-641)](n,e[g0(841)+"h"]))
+function u(e,t){return p0(t,e-328)}const s=Math[o(0,1123)](0,Math[o(0,1095)](r,Math[m(-214,"%a[x")](0,i[o(0,972)](e[a("PfRz",-494)+"h"],c))))
+if(0===s)return e
+const l=i[g0(850)](w0,t,s)
+function d(e,t){return g0(e- -1228)}const f=e[m(-223,"KDFH")](c,c+s)[d(-295)]("")
+for(let h=0;i[u(-145,"ywsY")](h,f[a("l^4#",-376)+"h"]);h++){const e=v0[W(0,-631)+"Of"](f[h])
+i[d(-276)](e,-1)&&(f[h]=v0[i[W(0,-630)](e,l[h])%x0])}function W(e,t){return g0(t- -1547)}function m(e,t){return p0(t,e-203)}return""+e[W(0,-737)](0,c)+f.join("")+e.slice(i[W(0,-630)](c,s))}
+
+--- decrypt function (_0) ---
+function _0(e,t,n,r){const o={RxbBD:function(e,t){return e-t},WIyel:function(e,t){return e===t},PjXrQ:function(e,t){return e+t},bjZBC:function(e,t){return e!==t},UvsjV:function(e,t){return e+t}}
+function i(e,t){return m0(e- -450,t)}function a(e,t){return m0(t-133,e)}function c(e,t){return k0(0,t- -909)}function u(e,t){return k0(0,e- -23)}const s=Math[l(0,-379)](0,Math.min(n,e[l(0,-472)+"h"]))
+function l(e,t){return k0(0,t- -807)}const d=Math[m(1032)](0,Math[a("yB[&",893)](r,Math[u(405)](0,o[a("KDFH",857)](e[k0(0,335)+"h"],s))))
+if(o[m0(651,"jsFq")](d,0))return e
+const f=w0(t,d),W=e.slice(s,o[u(316)](s,d))[c(0,-482)]("")
+function m(e,t){return k0(0,e-604)}for(let h=0;h<W[i(299,"w$LC")+"h"];h++){const e=v0[a("T]my",802)+"Of"](W[h])
+o[u(408)](e,-1)&&(W[h]=v0[o[m(943)](o[a("P*Hq",746)](e,f[h]),x0)%x0])}return""+e.slice(0,s)+W[a("()cK",824)]("")+e[i(292,"1uv#")](o[c(0,-483)](s,d))}
+
+
+##############################################################################
+VERSION 7
+Algorithm name : j0/Q0  — S-box (sbox) based substitution + reverse cipher
+encrypt symbol : j0    decrypt symbol : Q0
+##############################################################################
+
+--- encrypt function (j0) ---
+function j0(e,t,n,r){const o={TUQvB:function(e,t){return e-t},UrZKe:function(e,t){return e===t},OGeKl:function(e,t){return e+t},tNVzH:function(e,t){return e<t}}
+function i(e,t){return Y0(t-738)}const a=Math[s("i%sn",141)](0,Math[s("Uzp$",77)](n,e[s("Q$5t",160)+"h"]))
+function c(e,t){return K0(e,t- -623)}const u=Math.max(0,Math.min(r,Math[K0("DUq7",920)](0,o[f(0,-382)](e[s("i%sn",52)+"h"],a))))
+function s(e,t){return K0(e,t- -841)}if(o[Y0(-685)](u,0))return e
+const{sbox:l}=E0(t),d=e[s("b99u",65)](a,o[f(0,-442)](a,u)).split("")
+for(let W=0;o[c("WG9j",401)](W,d[s("DUq7",88)+"h"]);W++){const e=q0[i(0,43)+"Of"](d[W]);-1!==e&&(d[W]=q0[l[e]])}function f(e,t){return Y0(t-372)}return""+e.slice(0,a)+d[s("6%ec",145)+"se"]()[K0("t1sa",963)]("")+e[s("7$Xd",121)](a+u)}
+
+--- decrypt function (Q0) ---
+function Q0(e,t,n,r){const o={QFwWl:function(e,t){return e-t},lrTfq:function(e,t){return e===t},nJsdk:function(e,t){return e+t},oygpk:function(e,t){return e!==t}}
+function i(e,t){return V0(e- -1407)}const a=Math[l(602,"8zN]")](0,Math[l(466,"#kT3")](n,e[f(15)+"h"])),c=Math[d(-318,"6db@")](0,Math[f(-77)](r,Math[u(0,-727)](0,o[u(0,-711)](e[s("DPYD",106)+"h"],a))))
+if(o[V0(757)](c,0))return e
+function u(e,t){return V0(t- -1410)}function s(e,t){return R0(t-164,e)}function l(e,t){return R0(e-541,t)}function d(e,t){return R0(e- -262,t)}function f(e,t){return V0(e- -767)}const{invSbox:W}=E0(t)
+function m(e,t){return R0(t-952,e)}const h=e[s("t1sa",199)](a,o[s("fBW3",245)](a,c))[m("WG9j",960)]("")[R0(64,"8zN]")+"se"]()
+for(let p=0;p<h[m("7$Xd",1026)+"h"];p++){const e=q0[d(-263,"Q$5t")+"Of"](h[p])
+o[i(-610)](e,-1)&&(h[p]=q0[W[e]])}return""+e[d(-230,"nbQt")](0,a)+h[m("%4Jl",919)]("")+e[u(0,-701)](a+c)}
+
+
+##############################################################################
+VERSION 8
+Algorithm name : d1/f1  — S-box keystream substitution cipher
+encrypt symbol : d1    decrypt symbol : f1
+##############################################################################
+
+--- encrypt function (d1) ---
+function d1(e,t,n,r){function o(e,t){return p1(e- -487,t)}const i={TKscK:function(e,t){return e-t},xoMKQ:function(e,t){return e===t},BHwDW:function(e,t){return e<t},gvmny:function(e,t){return e!==t},vtmJm:function(e,t){return e+t}},a=Math[h(0,-226)](0,Math[h(0,-210)](n,e[p(0,92)+"h"]))
+function c(e,t){return p1(t-532,e)}function u(e,t){return p1(t- -601,e)}const s=Math[p1(275,"msh#")](0,Math[o(-159,"4*Ms")](r,Math[o(-125,"fuWf")](0,i[c("EtU&",796)](e[c("y(uW",901)+"h"],a))))
+function l(e,t){return n1(0,e-262)}if(i[p(0,72)](s,0))return e
+function d(e,t){return p1(t- -217,e)}const f=s1(t,s),W=e[c("K[wr",931)](a,a+s).split("")
+function m(e,t){return n1(0,e-210)}for(let k=0;i[m(1350)](k,W[h(0,-276)+"h"]);k++){const e=o1[c("C10S",864)+"Of"](W[k])
+i[u("eC7W",-206)](e,-1)&&(W[k]=o1[i[d("R!EX",188)](e,f[k])%i1])}function h(e,t){return n1(0,t- -1304)}function p(e,t){return n1(0,t- -936)}return""+e[p(0,207)](0,a)+W[l(1357)]("")+e[d("v%1q",95)](i[l(1297)](a,s))}
+
+--- decrypt function (f1) ---
+function f1(e,t,n,r){const o={WmUsy:function(e,t){return e===t},GtMDW:function(e,t,n){return e(t,n)},WcyJu:function(e,t){return e+t},DjVRa:function(e,t){return e<t},AlZNM:function(e,t){return e%t},ryrAc:function(e,t){return e-t}}
+function i(e,t){return e1(e- -525,t)}function a(e,t){return W1(e- -923)}function c(e,t){return W1(e- -899)}function u(e,t){return e1(t- -657,e)}const s=Math.max(0,Math[e1(594,"H6QH")](n,e[e1(584,"2F7w")+"h"])),l=Math[c(440)](0,Math[u("fuWf",-116)](r,Math[u("wF(3",-167)](0,e[c(390)+"h"]-s)))
+if(o.WmUsy(l,0))return e
+const d=o.GtMDW(s1,t,l)
+function f(e,t){return e1(e-518,t)}const W=e[i(108,")eXo")](s,o[f(1067,"fXm)")](s,l))[c(504)]("")
+for(let m=0;o[a(337)](m,W[a(366)+"h"]);m++){const e=o1.indexOf(W[m]);-1!==e&&(W[m]=o1[o.AlZNM(o[i(122,"ebb$")](o[i(-23,"R!EX")](e,d[m]),i1),i1)])}return""+e[a(481)](0,s)+W[i(105,"BPyC")]("")+e[a(481)](o[f(1128,"v%1q")](s,l))}
+
+
+##############################################################################
+VERSION 9
+Algorithm name : G1/q1  — Front-window additive keystream cipher
+encrypt symbol : G1    decrypt symbol : q1
+##############################################################################
+
+--- encrypt function (G1) ---
+function G1(e,t,n,r){const o={kkNkw:function(e,t){return e-t},Aager:function(e,t){return e===t},YCbrU:function(e,t){return e+t},Tafkt:function(e,t){return e!==t},yhGwG:function(e,t){return e%t},wQiSv:function(e,t){return e+t}}
+function i(e,t){return N1(e,t-299)}function a(e,t){return N1(t,e-667)}function c(e,t){return w1(e-162)}function u(e,t){return N1(t,e- -636)}const s=Math[i("QQPb",536)](0,Math[N1("y$RQ",278)](n,e[w1(-155)+"h"])),l=Math.max(0,Math[d("LBRt",762)](r,Math[i("JXL0",525)](0,o.kkNkw(e.length,s))))
+function d(e,t){return N1(e,t-403)}if(o[w1(-69)](l,0))return e
+function f(e,t){return w1(t-991)}const W=O1(t,l),m=e[a(880,"MRL9")](s,o[i("dlHV",489)](s,l))[u(-297,"O[&)")]("")
+for(let h=0;h<m[f(0,836)+"h"];h++){const e=x1[c(39)+"Of"](m[h])
+o[d("lL1)",606)](e,-1)&&(m[h]=x1[o[u(-445,"M&JR")](o[f(0,891)](e,W[h]),b1)])}return""+e[f(0,769)](0,s)+m[a(995,"URBt")]("")+e[d("Jxwj",748)](s+l)}
+
+--- decrypt function (q1) ---
+function q1(e,t,n,r){const o="fme3",i={frDfQ:function(e,t){return e%t},Qjiub:function(e,t){return e-t},pAAlT:function(e,t,n){return e(t,n)},cYKcE:function(e,t){return e<t},Xuhqb:"WyDHf",iLMmp:function(e,t){return e+t}},a=Math.max(0,Math[E1("j2JF",-36)](n,e[p(0,324)+"h"]))
+function c(e,t){return E1(e,t-443)}const u=Math[p(0,392)](0,Math[d(-628)](r,Math[l("O[&)",797)](0,e[c("URBt",387)+"h"]-a)))
+function s(e,t){return P1(t-1089)}function l(e,t){return E1(e,t-824)}if(0===u)return e
+function d(e,t){return P1(e- -816)}function f(e,t){return E1(e,t-875)}function W(e,t){return P1(t-181)}const m=i[l(o,842)](O1,t,u),h=e[W(0,291)](a,a+u)[W(0,382)]("")
+for(let k=0;i[s(0,1305)](k,h[l("0AaB",863)+"h"]);k++)if(W(0,470)===i[f("M&JR",923)]){const e=_0x2f4d5d[f("PSRk",888)+"Of"](_0x34a10f[_0xb0b613]);-1!==e&&(_0x37eefc[_0x59dfd9]=_0x32333e[i[c("3QH^",383)](i[l("$qAy",865)](e,_0x21a482[_0x4e15ed])+_0x27e8b8,_0x91bfc7)])}else{const e=x1[l("CGW4",745)+"Of"](h[k]);-1!==e&&(h[k]=x1[i[p(0,283)](i[d(-550)](e,m[k]),b1)%b1])}function p(e,t){return P1(t-147)}return""+e[f(o,950)](0,a)+h[P1(161)]("")+e.slice(i.iLMmp(a,u))}
+
+
+##############################################################################
+VERSION 10
+Algorithm name : $1/e4  — Tail-window keystream cipher (multi-guard variant)
+encrypt symbol : $1    decrypt symbol : e4
+##############################################################################
+
+--- encrypt function ($1) ---
+function $1(e,t,n,r){function o(e,t){return i4(e-1276)}function i(e,t){return i4(e-1447)}const a={QmkPH:function(e,t){return e-t},uBAYh:function(e,t){return e===t},SEwha:function(e,t){return e+t},AUEIl:function(e,t){return e!==t},jbCdn:function(e,t){return e%t},bAZgE:function(e,t){return e+t},buDRe:function(e,t){return e===t},TxyiJ:function(e,t,n){return e(t,n)},FzkGj:function(e,t){return e<t},RkOCk:i(1054),wcAYO:function(e,t){return e!==t},nnRUZ:function(e,t){return e+t}}
+function c(e,t){return i4(e-1557)}const u=Math[l(-38,"B*dM")](0,Math[h(222,"!qFU")](n,e[p(0,7)+"h"]))
+function s(e,t){return i4(t-924)}function l(e,t){return V1(t,e- -1223)}const d=Math[h(204,"Q%^D")](0,Math[m(1069,"SIMo")](r,Math[l(-109,"!v3H")](0,e[s(0,375)+"h"]-u)))
+if(a[V1("M01P",1259)](d,0))return e
+const f=a[o(714)](X1,t,d),W=e[h(126,"e@th")](u,u+d).split("")
+function m(e,t){return V1(t,e- -72)}function h(e,t){return V1(t,e- -1039)}function p(e,t){return i4(t-556)}function k(e,t){return V1(t,e- -1202)}for(let v=0;a.FzkGj(v,W[o(727)+"h"]);v++){if(a[o(723)](a.RkOCk,l(-139,"h#A2"))){const e=_0x446021[l(-101,"BqbH")](0,_0x4a82e6[k(35,"dHfY")](_0x162e08,_0x47d655.length)),t=_0xdc1dbd[o(857)](0,_0x30b159[k(35,"dHfY")](_0x6e4518,_0x17af87[l(-21,"7vk8")](0,a[m(1031,"g8Rx")](_0x108de4[k(-47,"*PGs")+"h"],e))))
+if(a[k(-128,"C9Ng")](t,0))return _0x1d2ac8
+const n=_0x5222b1(_0x30812d,t),r=_0x23a93c[m(1091,"#A]T")](e,a[c(1105)](e,t))[h(139,"B*dM")]("")
+for(let u=0;u<r[i(898)+"h"];u++){const e=_0x250c21[p(0,174)+"Of"](r[u])
+a[c(1004)](e,-1)&&(r[u]=_0x2e951c[a[c(1014)](a[o(887)](e,n[u]),_0x135a97)])}return""+_0xef8f2b[c(1183)](0,e)+r[p(0,30)]("")+_0x233ccd[h(206,"[n#5")](e+t)}{const e=H1.indexOf(W[v])
+a[c(983)](e,-1)&&(W[v]=H1[a[c(1082)](e,f[v])%Z1])}}return""+e[p(0,182)](0,u)+W.join("")+e[i(1073)](a[s(0,472)](u,d))}
+
+--- decrypt function (e4) ---
+function e4(e,t,n,r){function o(e,t){return F1(e-543,t)}const i={XyUrC:function(e,t){return e!==t},bjniD:function(e,t){return e%t},jIGTg:function(e,t){return e+t},JusMi:function(e,t,n){return e(t,n)},KYucE:"Xipno",ajDMg:function(e,t){return e-t}}
+function a(e,t){return i4(t-1263)}const c=Math[s(0,535)](0,Math[s(0,542)](n,e[s(0,405)+"h"])),u=Math[W("xgNx",1182)](0,Math[m(-245,"0FsC")](r,Math[a(0,844)](0,e[W("Q%^D",1292)+"h"]-c)))
+function s(e,t){return i4(t-954)}if(0===u)return e
+const l=i.JusMi(X1,t,u),d=e[h(1218)](c,c+u)[m(-299,"DoG3")]("")
+for(let p=0;p<d[W("tCst",1346)+"h"];p++)if(i[h(1103)](i[o(1126,"kwp6")],i[m(-405,"B8@O")])){const e=_0x5c3677[W("*PGs",1223)+"Of"](_0x411ae0[_0x32db35])
+XxvbQc[a(0,774)](e,-1)&&(_0x8a6009[_0xe887a0]=_0x318796[XxvbQc[W("!v3H",1148)](XxvbQc.jIGTg(e,_0x3749e8[_0x587c42]),_0x44b43f)])}else{const e=H1[f(52)+"Of"](d[p]);-1!==e&&(d[p]=H1[i[a(0,679)](i[W("zl9J",1231)](e,l[p])+Z1,Z1)])}function f(e,t){return i4(e-434)}function W(e,t){return F1(t-559,e)}function m(e,t){return F1(e- -999,t)}function h(e,t){return i4(e-1592)}return""+e[a(0,889)](0,c)+d.join("")+e[f(60)](i[F1(790,"$vz1")](c,u))}
+
