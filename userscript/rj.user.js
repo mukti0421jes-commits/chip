@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.3-final
+// @version      10.0.4-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -163,6 +163,15 @@
 
             const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
 
+            // ── When a proxy is connected, route through the local relay so the
+            //    request actually goes out via the proxy IP (browser/userscript
+            //    cannot set a proxy on fetch directly). FormData uploads skip this.
+            const _proxy = (typeof window !== 'undefined') ? window._rjActiveProxy : null;
+            const _bodySimple = (body == null || typeof body === 'string');
+            if (_proxy && !isConnectionCheck && _bodySimple) {
+                return this._relayFetch(url, { method, headers, body }, _proxy, logId);
+            }
+
             try {
                 const fetchInit = { method, headers, credentials: init.credentials || 'omit' };
                 if (body)            fetchInit.body     = body;
@@ -189,6 +198,34 @@
                 }
                 return this._gmFallback(url, init, logId);
             }
+        },
+
+        // POST the request to the local relay; the relay performs it through the
+        // chosen proxy and returns { status, statusText, headers, body }.
+        _relayFetch(url, init, proxy, logId) {
+            return new Promise((resolve, reject) => {
+                const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+                if (!gmApi) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'no GM for relay' }); return reject(new Error('No GM for proxy relay')); }
+                const relays = ['http://127.0.0.1:8781/relay', 'http://localhost:8781/relay'];
+                let i = 0;
+                const tryRelay = () => {
+                    if (i >= relays.length) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'relay unreachable' }); return reject(new Error('Proxy relay not reachable — run proxy-relay.js on :8781')); }
+                    const relayUrl = relays[i++];
+                    const payload = JSON.stringify({ url, method: init.method || 'GET', headers: init.headers || {}, body: (init.body != null && typeof init.body !== 'string') ? String(init.body) : (init.body || null), proxy });
+                    gmApi({ method: 'POST', url: relayUrl, headers: { 'content-type': 'application/json' }, data: payload, timeout: 60000,
+                        onload: (resp) => {
+                            let j; try { j = JSON.parse(resp.responseText); } catch(e) { return tryRelay(); }
+                            if (resp.status >= 200 && resp.status < 300 && j && typeof j.status === 'number') {
+                                const isOk = j.status >= 200 && j.status < 400;
+                                if (logId) netLogUpdate(logId, { status: j.status, state: isOk ? 'ok' : 'fail', note: `HTTP ${j.status} (proxy)` });
+                                resolve(new Response(j.body, { status: j.status, statusText: j.statusText || '' }));
+                            } else if (j && j.error) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'proxy: ' + j.error }); reject(new Error('proxy relay: ' + j.error)); }
+                            else { tryRelay(); }
+                        },
+                        onerror: tryRelay, ontimeout: tryRelay });
+                };
+                tryRelay();
+            });
         },
 
         _gmFallback(url, init, logId) {
@@ -1787,6 +1824,25 @@
     window._rjActiveProxy = null;
     function updateActiveProxyGlobal() { const active = getActiveProxy(); window._rjActiveProxy = (active && _proxyConnected) ? { ...active } : null; }
 
+    // Ask the local relay for the egress IP through the given proxy (proves it works)
+    function proxyRelayCheckIp(proxy) {
+        const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+        if (!gmApi) return;
+        const relays = ['http://127.0.0.1:8781/ip', 'http://localhost:8781/ip'];
+        let i = 0;
+        const tryNext = () => {
+            if (i >= relays.length) { logStatus('⚠ Proxy relay not reachable — run proxy-relay.js on :8781', 'y'); setProxyMsg('⚠ Relay offline — start proxy-relay.js (port 8781)', true); return; }
+            const url = relays[i++];
+            gmApi({ method: 'POST', url, headers: { 'content-type': 'application/json' }, data: JSON.stringify({ proxy }), timeout: 25000,
+                onload: (r) => { let j; try { j = JSON.parse(r.responseText); } catch(e) { return tryNext(); }
+                    if (j && j.ip) { logStatus(`🌍 Proxy egress IP: ${j.ip}`, 'g'); setProxyMsg(`✓ Connected • egress IP ${j.ip}`); }
+                    else { logStatus(`❌ Proxy failed: ${j && j.error ? j.error : 'no IP'}`, 'r'); setProxyMsg(`❌ Proxy error: ${j && j.error ? j.error : 'no IP'}`, true); } },
+                onerror: tryNext, ontimeout: tryNext });
+        };
+        logStatus('🌍 Checking egress IP through proxy…', 'y');
+        tryNext();
+    }
+
     document.getElementById('ivac-proxy-btn-add')?.addEventListener('click', () => {
         const scheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; const host = document.getElementById('ivac-proxy-host')?.value.trim(); const portRaw= document.getElementById('ivac-proxy-port')?.value.trim(); const user = document.getElementById('ivac-proxy-user')?.value.trim(); const password = document.getElementById('ivac-proxy-password')?.value;
         if (!host) { setProxyMsg('❌ Host required', true); return; } const port = parseInt(portRaw, 10); if (isNaN(port) || port < 1 || port > 65535) { setProxyMsg('❌ Invalid port', true); return; }
@@ -1812,8 +1868,8 @@
 
     document.getElementById('ivac-proxy-btn-connect')?.addEventListener('click', () => {
         const picker = document.getElementById('ivac-proxy-picker'); const id = picker?.value;
-        if (!id) { const scheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; const host = document.getElementById('ivac-proxy-host')?.value.trim(); const portRaw= document.getElementById('ivac-proxy-port')?.value.trim(); if (!host || !portRaw) { setProxyMsg('❌ Select a proxy or fill the form first', true); return; } const port = parseInt(portRaw, 10); if (isNaN(port)) { setProxyMsg('❌ Invalid port', true); return; } const ephemeral = { id: '_ephemeral', scheme, host, port, user: document.getElementById('ivac-proxy-user')?.value.trim() || '', password: document.getElementById('ivac-proxy-password')?.value || '', label: `${host}:${port}` }; _proxyConnected = true; window._rjActiveProxy = ephemeral; const line = document.getElementById('ivac-proxy-status-line'); if (line) line.innerHTML = `<span style="color:#4ade80">●</span> Extension proxy: <span style="color:#a78bfa">${formatProxyString(ephemeral)}</span> <span style="color:#facc15">(ephemeral)</span>`; setProxyMsg(`✓ Connected (ephemeral) ${ephemeral.label}`); return; }
-        const p = loadProxies().find(x => x.id === id); if (!p) { setProxyMsg('❌ Proxy not found', true); return; } _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected ${p.label}`);
+        if (!id) { const scheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; const host = document.getElementById('ivac-proxy-host')?.value.trim(); const portRaw= document.getElementById('ivac-proxy-port')?.value.trim(); if (!host || !portRaw) { setProxyMsg('❌ Select a proxy or fill the form first', true); return; } const port = parseInt(portRaw, 10); if (isNaN(port)) { setProxyMsg('❌ Invalid port', true); return; } const ephemeral = { id: '_ephemeral', scheme, host, port, user: document.getElementById('ivac-proxy-user')?.value.trim() || '', password: document.getElementById('ivac-proxy-password')?.value || '', label: `${host}:${port}` }; _proxyConnected = true; window._rjActiveProxy = ephemeral; const line = document.getElementById('ivac-proxy-status-line'); if (line) line.innerHTML = `<span style="color:#4ade80">●</span> Extension proxy: <span style="color:#a78bfa">${formatProxyString(ephemeral)}</span> <span style="color:#facc15">(ephemeral)</span>`; setProxyMsg(`✓ Connected (ephemeral) ${ephemeral.label}`); proxyRelayCheckIp(ephemeral); return; }
+        const p = loadProxies().find(x => x.id === id); if (!p) { setProxyMsg('❌ Proxy not found', true); return; } _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected ${p.label}`); proxyRelayCheckIp(window._rjActiveProxy);
     });
 
     document.getElementById('ivac-proxy-btn-disconnect')?.addEventListener('click', () => { _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg('✓ Disconnected — using system proxy'); });
@@ -1845,13 +1901,13 @@
         const id = e.target.value; if (!id) { setActiveProxyId(''); _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyPicker(); refreshProxyStatusLine(); setProxyMsg('✓ Direct connection'); return; }
         setActiveProxyId(id); const p = loadProxies().find(x => x.id === id);
         if (p) { const schemeEl = document.getElementById('ivac-proxy-scheme'); const hostEl = document.getElementById('ivac-proxy-host'); const portEl = document.getElementById('ivac-proxy-port'); const userEl = document.getElementById('ivac-proxy-user'); const passEl = document.getElementById('ivac-proxy-password'); if (schemeEl) schemeEl.value = p.scheme; if (hostEl) hostEl.value = p.host; if (portEl) portEl.value = p.port; if (userEl) userEl.value = p.user || ''; if (passEl) passEl.value = p.password || ''; }
-        _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyPicker(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected to ${p?.label || ''}`); logStatus(`🔌 Proxy connected: ${p?.label || ''}`, 'g');
+        _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyPicker(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected to ${p?.label || ''}`); logStatus(`🔌 Proxy connected: ${p?.label || ''}`, 'g'); proxyRelayCheckIp(window._rjActiveProxy);
     });
 
     document.getElementById('login-proxy-toggle')?.addEventListener('click', () => {
         const active = getActiveProxy(); if (!active) { setProxyMsg('❌ Select a proxy first', true); return; }
         if (_proxyConnected) { _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); refreshProxyPicker(); setProxyMsg(`✓ Disconnected`); logStatus(`🔌 Disconnected`, 'y'); }
-        else { _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); refreshProxyPicker(); setProxyMsg(`✓ Connected`); logStatus(`🔌 Proxy connected: ${active.label}`, 'g'); }
+        else { _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); refreshProxyPicker(); setProxyMsg(`✓ Connected`); logStatus(`🔌 Proxy connected: ${active.label}`, 'g'); proxyRelayCheckIp(window._rjActiveProxy); }
     });
 
     // ==================== UPLOAD TAB ====================
