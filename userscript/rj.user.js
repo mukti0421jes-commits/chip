@@ -1552,16 +1552,8 @@
         if (!e.target.value) return;
         saveFormToProfile(); loadProfileToForm(e.target.value); refreshProfileSelects();
         logStatus(`✓ Profile: ${e.target.value}`, 'g');
-        // auto-start Signin pipeline right after selecting a profile (if creds present)
-        setTimeout(() => {
-            try {
-                if (pipelineRunning) return;
-                const phone = document.getElementById('login-phone')?.value.trim();
-                const password = document.getElementById('login-password')?.value.trim();
-                if (phone && password) { logStatus('🚀 Profile selected — Signin pipeline starting…', 'g'); startPipelineFrom('signin'); }
-                else { logStatus('⚠ Selected profile has no phone/password — save it first', 'y'); }
-            } catch(err) {}
-        }, 300);
+        // Profile select only loads the data into the form — no auto-start.
+        // The Auto flow starts ONLY when you click the Signin button.
     });
 
     document.getElementById('pm-new-btn')?.addEventListener('click', () => {
