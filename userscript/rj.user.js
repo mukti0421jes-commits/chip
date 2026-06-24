@@ -1364,26 +1364,40 @@
 
     // ==================== DRAGGING ====================
     function makeDraggable(dragHandle, targetElement) {
-        let isDragging = false, startX, startY, initialLeft, initialTop;
-        dragHandle.addEventListener('mousedown', function(e) {
-            if (e.target.closest('button')) return;
-            isDragging = true;
+        let isDragging = false, startX, startY, initialLeft, initialTop, pointerId = null;
+        dragHandle.style.touchAction = 'none';
+        dragHandle.addEventListener('pointerdown', function(e) {
+            if (e.button !== undefined && e.button !== 0) return; // left button only
+            if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+            isDragging = true; pointerId = e.pointerId;
             const rect = targetElement.getBoundingClientRect();
             initialLeft = rect.left; initialTop = rect.top;
             startX = e.clientX; startY = e.clientY;
             targetElement.style.left = initialLeft + 'px';
             targetElement.style.top = initialTop + 'px';
             targetElement.style.right = 'auto';
+            targetElement.style.bottom = 'auto';
             targetElement.style.transform = 'none';
             targetElement.style.transition = 'none';
+            // capture so we keep getting moves even over iframes (captcha) / fast drags
+            try { dragHandle.setPointerCapture(e.pointerId); } catch(err) {}
             e.preventDefault();
         });
-        document.addEventListener('mousemove', function(e) {
-            if (!isDragging) return;
+        dragHandle.addEventListener('pointermove', function(e) {
+            if (!isDragging || e.pointerId !== pointerId) return;
             targetElement.style.left = (initialLeft + e.clientX - startX) + 'px';
             targetElement.style.top = (initialTop + e.clientY - startY) + 'px';
+            e.preventDefault();
         });
-        document.addEventListener('mouseup', function() { if (isDragging) { isDragging = false; targetElement.style.transition = ''; } });
+        const endDrag = function(e) {
+            if (!isDragging) return;
+            if (e && e.pointerId !== undefined && e.pointerId !== pointerId) return;
+            isDragging = false; pointerId = null;
+            targetElement.style.transition = '';
+            try { if (e && e.pointerId !== undefined) dragHandle.releasePointerCapture(e.pointerId); } catch(err) {}
+        };
+        dragHandle.addEventListener('pointerup', endDrag);
+        dragHandle.addEventListener('pointercancel', endDrag);
     }
 
     const panel = document.getElementById('p');
