@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.4-final
+// @version      10.0.5-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -2160,49 +2160,52 @@
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
     });
 
+    // ==================== SIGNUP: ACCOUNT REGISTRATION (direct, no conditions) ====================
     document.getElementById('ivac-btn-submit-info')?.addEventListener('click', async function() {
         const btn = this;
-        const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
-        const email = (document.getElementById('ivac-email')?.value || '').trim();
-        const dobRaw = (document.getElementById('ivac-dob')?.value || '').trim();
-        const passport = (document.getElementById('ivac-passport')?.value || '').trim();
-        const nid = (document.getElementById('ivac-nid')?.value || '').trim();
-        const surName = (document.getElementById('ivac-surname')?.value || '').trim();
+        const phone     = (document.getElementById('ivac-mobile')?.value || '').trim();
+        const email     = (document.getElementById('ivac-email')?.value || '').trim();
+        const dobRaw    = (document.getElementById('ivac-dob')?.value || '').trim();
+        const passport  = (document.getElementById('ivac-passport')?.value || '').trim();
+        const nid       = (document.getElementById('ivac-nid')?.value || '').trim();
+        const surName   = (document.getElementById('ivac-surname')?.value || '').trim();
         const givenName = (document.getElementById('ivac-given-name')?.value || '').trim();
-        const password = document.getElementById('ivac-password')?.value || '';
-        const missing = [];
-        if (!phone) missing.push('Mobile'); if (!email) missing.push('Email'); if (!surName) missing.push('Surname'); if (!givenName) missing.push('Given Name'); if (!password) missing.push('Password'); if (!nid && !passport) missing.push('NID/Passport'); if (!dobRaw) missing.push('DOB');
-        if (missing.length) { suMsg('ivac-msg-submit', `❌ Missing: ${missing.join(', ')}`, 'r'); flashButton(btn, '✗', 'r'); return; }
-        let dobIso;
-        const dobMatch = dobRaw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-        if (dobMatch) { dobIso = new Date(`${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}T00:00:00.000Z`).toISOString(); }
-        else { try { dobIso = new Date(dobRaw + 'T00:00:00.000Z').toISOString(); } catch(e) { suMsg('ivac-msg-submit', '❌ DOB format: DD.MM.YYYY', 'r'); flashButton(btn, '✗', 'r'); return; } }
-        if (!signupState.mobileVerified) { suMsg('ivac-msg-submit', '⚠ Mobile not verified! Please verify mobile first.', 'y'); return; }
-        if (!signupState.emailVerified) { suMsg('ivac-msg-submit', '⚠ Email not verified! Please verify email first.', 'y'); return; }
-        if (signupState.stopRequested) { suMsg('ivac-msg-submit', '⏹ Stopped', 'y'); return; }
-        suMsg('ivac-msg-submit', '⏳ Creating account...', 'y'); logStatus(`📝 Creating account for ${email}...`, 'y');
+        const password  = document.getElementById('ivac-password')?.value || '';
+
+        // DOB -> ISO. DD.MM.YYYY or YYYY-MM-DD; otherwise sent as typed.
+        let dob = dobRaw;
+        const m = dobRaw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        if (m) { try { dob = new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString(); } catch(e) {} }
+        else if (/^\d{4}-\d{2}-\d{2}/.test(dobRaw)) { try { dob = new Date(dobRaw).toISOString(); } catch(e) {} }
+
+        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password };
+        suMsg('ivac-msg-submit', '⏳ Submitting…', 'y');
+        logStatus(`📝 Account Registration → ${email || phone}`, 'y');
+        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
         const logId = netLogAdd({ method: 'POST', url: API_SIGNUP, tag: 'signup', state: 'pending', note: 'account-registration' });
         try {
-            let captchaToken;
-            try { captchaToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-submit', `❌ Captcha: ${e.message}`, 'r'); netLogUpdate(logId, { state: 'fail', note: 'captcha failed' }); flashButton(btn, '✗', 'r'); return; }
-            const encryptedCaptcha = encManager.encryptToken(captchaToken, 'Signin');
-            const signupBody = { phone: phone, email: email, nid: nid || '', passport: passport || '', givenName: givenName, surName: surName, dob: dobIso, password: password, c: encryptedCaptcha };
-            console.log('[RJ Signup] Request:', { ...signupBody, password: '***', c: encryptedCaptcha.substring(0, 10) + '...' });
-            const response = await H2.fetchH2(API_SIGNUP, { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify(signupBody) });
+            const response = await H2.fetchH2(API_SIGNUP, {
+                method: 'POST',
+                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() },
+                referrer: API_REFERRER,
+                body: JSON.stringify(signupBody)
+            });
             let body; try { body = await response.json(); } catch(e) { body = { message: 'Invalid response from server' }; }
             const ok = response.ok && (body.successFlag === true || body.statusCode === 200 || body.statusCode === 201);
+            netLogUpdate(logId, { status: response.status, state: ok ? 'ok' : 'fail', note: body?.message || `HTTP ${response.status}` });
             if (ok) {
-                signupState.mobileVerified = false; signupState.emailVerified = false; updateMobileBadge(); updateEmailBadge();
-                const msg = body.message || 'Account created successfully!';
-                suMsg('ivac-msg-submit', `✅ ${msg}`, 'g'); logStatus(`✅ Account created: ${email}`, 'g'); flashButton(btn, '✓', 'g');
-                const lp = document.getElementById('login-phone'); const lpass = document.getElementById('login-password');
-                if (lp && !lp.value) lp.value = phone; if (lpass && !lpass.value) lpass.value = password;
-                try { const prof = profiles[activeProfileName]; if (prof) { if (!prof.phone1) prof.phone1 = phone; if (!prof.email) prof.email = email; if (!prof.mobilePass) prof.mobilePass = password; if (!prof.name) prof.name = `${givenName} ${surName}`; persistProfiles(); loadProfileToForm(activeProfileName); } } catch(e) {}
-                showMilestonePopup('Account Created', `Signup successful for ${email}`, '🎉');
-                document.getElementById('ivac-mobile-otp').value = ''; document.getElementById('ivac-email-otp').value = ''; document.getElementById('ivac-mobile').value = ''; document.getElementById('ivac-email').value = '';
-                netLogUpdate(logId, { status: response.status, state: 'ok', note: `Account created: ${email}` });
-            } else { const msg = body.message || body.error || `HTTP ${response.status}`; suMsg('ivac-msg-submit', `❌ ${msg}`, 'r'); logStatus(`❌ Signup failed: ${msg}`, 'r'); flashButton(btn, '✗', 'r'); netLogUpdate(logId, { status: response.status, state: 'fail', note: msg }); }
-        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-submit', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Signup error: ${err.message}`, 'r'); flashButton(btn, '✗', 'r'); }
+                suMsg('ivac-msg-submit', `✅ ${body.message || 'Created'}`, 'g');
+                logStatus(`✅ Account created: ${email || phone}`, 'g'); flashButton(btn, '✓', 'g');
+                try { showMilestonePopup('Account Created', `Signup successful for ${email || phone}`, '🎉'); } catch(e) {}
+                try { const prof = profiles[activeProfileName]; if (prof) { if (!prof.phone1) prof.phone1 = phone; if (!prof.email) prof.email = email; if (!prof.mobilePass) prof.mobilePass = password; if (!prof.name && (givenName||surName)) prof.name = `${givenName} ${surName}`.trim(); persistProfiles(); } } catch(e) {}
+            } else {
+                const msg = body?.message || body?.error || `HTTP ${response.status}`;
+                suMsg('ivac-msg-submit', `❌ ${msg}`, 'r'); logStatus(`❌ Signup failed: ${msg}`, 'r'); flashButton(btn, '✗', 'r');
+            }
+        } catch (err) {
+            netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message });
+            suMsg('ivac-msg-submit', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Signup error: ${err.message}`, 'r'); flashButton(btn, '✗', 'r');
+        }
     });
 
     document.querySelectorAll('#p .t[data-t="s"]').forEach(t => { t.addEventListener('click', () => { setTimeout(() => { const prof = profiles[activeProfileName] || {}; const fields = { 'ivac-mobile': prof.phone1 || '', 'ivac-email': prof.email || '', 'ivac-surname': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(-1)[0] : prof.name || ''; })(), 'ivac-given-name': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(0,-1).join(' ') : ''; })(), 'ivac-password': prof.mobilePass || '' }; Object.entries(fields).forEach(([id, val]) => { const el = document.getElementById(id); if (el && !el.value && val) el.value = val; }); }, 50); }); });
