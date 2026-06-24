@@ -2830,19 +2830,7 @@
     // ==================== SESSION RESTORE ====================
     setTimeout(() => { try { const restored = restoreSession(); if (restored) { const ageMin = Math.floor((Date.now() - sessionState.loggedInAt) / 60000); const ageSec = Math.floor(((Date.now() - sessionState.loggedInAt) % 60000) / 1000); const status = sessionState.isVerified ? 'verified' : 'unverified (need OTP)'; const h2Status = H2.getStats().h2Confirmed ? 'H/2 ✅' : 'H/2 ⏳'; logStatus(`🔓 Session restored • ${status} • ${ageMin}m ${ageSec}s old • ${h2Status}`, 'g'); if (sessionState.phone) { const phoneInp = document.getElementById('login-phone'); if (phoneInp && !phoneInp.value) phoneInp.value = sessionState.phone; } } } catch(e) {} }, 600);
 
-    // ==================== AUTO-START PIPELINE ON RELOAD ====================
-    // First profile is already auto-selected & loaded into the form above.
-    // If it has phone+password, the full Auto flow (Signin→Verify→Reserve→Book→Initiate) starts automatically.
-    setTimeout(() => {
-        try {
-            if (pipelineRunning) return;
-            const phone = document.getElementById('login-phone')?.value.trim();
-            const password = document.getElementById('login-password')?.value.trim();
-            if (!phone || !password) { logStatus('⚠ Auto-start skipped — first profile has no phone/password', 'y'); return; }
-            logStatus('🚀 Auto-start on reload — Signin pipeline running…', 'g');
-            startPipelineFrom('signin');
-        } catch(e) {}
-    }, 2500);
+    // Auto-start on reload removed — the Auto flow now starts ONLY when you click Signin.
 
     // ==================================================================
     //  ★★★ MANUAL PANEL MODULE (clone UI, wired to RJ engine) ★★★
