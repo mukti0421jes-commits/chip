@@ -630,24 +630,27 @@ function encryptTokenByPurpose(rawToken, purpose) {
     }
 }
 
+const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
+
 function encConfigInit() {
     encConfigLoad('signin');
     encConfigLoad('reserve');
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
-        // Auto-fetch from IVAC bundle if either config has no key yet
-        if (!encConfig.signin.key || !encConfig.reserve.key) {
-            encConfigAutoFetch();
-        }
+        encConfigAutoFetch(); // always check — detects bundle updates via URL hash
     }, 500);
 }
 
 async function encConfigAutoFetch() {
-    // Find the already-loaded IVAC bundle script URL
     const BUNDLE_RE = /\/assets\/[a-zA-Z0-9]{8,}-[a-zA-Z0-9]+\.js$/;
     const bundleEl  = [...document.querySelectorAll('script[src]')].find(s => BUNDLE_RE.test(s.src));
     if (!bundleEl) { logStatus('⚠ Auto-config: bundle not found', 'y'); return; }
+
+    const currentHash = bundleEl.src;
+    const storedHash  = localStorage.getItem(ENC_BUNDLE_HASH_KEY);
+    const alreadyFresh = storedHash === currentHash && encConfig.signin.key && encConfig.reserve.key;
+    if (alreadyFresh) return; // same bundle, configs already loaded
 
     logStatus('🔍 Loading encryption config from IVAC bundle…', 'y');
     try {
@@ -656,15 +659,14 @@ async function encConfigAutoFetch() {
             return r.text();
         });
 
-        // Inject exposure code right after each config declaration.
-        // XQ = signin config, JZ = reserve config.
-        // [^}]+ works because the secret value uses only () + "" chars, no literal }
-        const patched = text
-            .replace(/(const XQ=\{[^}]+\})/, '$1;try{window.__rjS=XQ}catch(_){}')
-            .replace(/(const JZ=\{[^}]+\})/, '$1;try{window.__rjR=JZ}catch(_){}');
+        // Generic pattern: captures ANY const VAR={secret:...,startAt:N,length:N,version:N}
+        // This works regardless of minified variable name changes after a bundle update.
+        // [^}]+ is safe because secret values only contain (), "", +, digits, letters — no literal }
+        const CFG_RE = /(const (\w+)=\{[^}]+,startAt:\d+,length:\d+,version:\d+\})/g;
+        const patched = text.replace(CFG_RE, (match, full, varName) =>
+            `${full};try{(window.__rjCfgs=window.__rjCfgs||[]).push(${varName})}catch(_){}`
+        );
 
-        // Run patched bundle in a hidden same-origin iframe.
-        // The inline script executes synchronously, so values are ready immediately.
         const iframe = document.createElement('iframe');
         iframe.style.cssText = 'display:none;position:absolute;width:0;height:0;';
         document.body.appendChild(iframe);
@@ -673,25 +675,32 @@ async function encConfigAutoFetch() {
             const s = iframe.contentDocument.createElement('script');
             s.textContent = patched;
             iframe.contentDocument.head.appendChild(s); // synchronous execution
-        } catch (inner) { /* React mount errors are expected & harmless */ }
+        } catch (_) { /* React mount errors inside iframe are expected & harmless */ }
 
-        const signin  = iframe.contentWindow.__rjS;
-        const reserve = iframe.contentWindow.__rjR;
+        const cfgs = iframe.contentWindow.__rjCfgs || [];
         document.body.removeChild(iframe);
 
-        if (!signin && !reserve) {
-            logStatus('⚠ Auto-config: config not found in bundle', 'y');
+        if (!cfgs.length) {
+            logStatus('⚠ Auto-config: no config found in bundle', 'y');
             return;
         }
 
-        if (signin && !encConfig.signin.key) {
-            encConfig.signin = { active: true, key: signin.secret, skip: signin.startAt, length: signin.length, version: signin.version };
-            encConfigSave('signin');
-        }
-        if (reserve && !encConfig.reserve.key) {
-            encConfig.reserve = { active: true, key: reserve.secret, skip: reserve.startAt, length: reserve.length, version: reserve.version };
-            encConfigSave('reserve');
-        }
+        // Deduplicate by secret value, then sort by startAt ascending.
+        // Heuristic: smaller startAt = signin, larger startAt = reserve.
+        const unique = [...new Map(cfgs.map(c => [c.secret, c])).values()]
+                         .sort((a, b) => a.startAt - b.startAt);
+
+        const signinCfg  = unique[0];
+        const reserveCfg = unique.length > 1 ? unique[unique.length - 1] : null;
+
+        encConfig.signin  = { active: true, key: signinCfg.secret,  skip: signinCfg.startAt,  length: signinCfg.length,  version: signinCfg.version  };
+        encConfig.reserve = reserveCfg
+            ? { active: true, key: reserveCfg.secret, skip: reserveCfg.startAt, length: reserveCfg.length, version: reserveCfg.version }
+            : encConfig.signin;
+
+        encConfigSave('signin');
+        encConfigSave('reserve');
+        localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash); // remember this bundle version
 
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
