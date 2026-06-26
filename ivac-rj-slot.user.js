@@ -1310,7 +1310,7 @@ const h2html = `
 <div id="p-fab">RJ</div>
 <div id="p" class="hidden">
 <div class="dh" id="dh"> <span class="dt">RJ SLOT v7.5 H2</span>
-<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry on timeout" style="width:28px;height:16px;margin:0 2px"><div class="tg-dot"></div></div> <button class="db" id="mb">&minus;</button>
+<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <button class="db" id="mb">&minus;</button>
 </div>
 </div>
 
@@ -1487,7 +1487,7 @@ const h2html = `
 </div>
 
 <div class="ft">
-<div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <span>RJ SLOT PRO H2</span>
+<div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <span>RJ SLOT PRO H2</span> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div>
 </div>
 
 <div class="cdbar" id="cdbar">
