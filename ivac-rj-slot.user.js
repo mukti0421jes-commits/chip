@@ -1338,7 +1338,7 @@ const h2html = `
 <div class="cl"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
 <div class="cr2">
 <div class="tg" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
-<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button>
+<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="fa2" title="Delete Appointment ID from selected profile" style="margin-left:3px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
 </div>
 </div>
 
@@ -1468,7 +1468,7 @@ const h2html = `
 </div>
 
 <div class="ft">
-<div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button><button id="fa2" title="Delete Appointment ID from selected profile">A</button></div> <span>RJ SLOT PRO H2</span>
+<div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <span>RJ SLOT PRO H2</span>
 </div>
 
 <div class="cdbar" id="cdbar">
