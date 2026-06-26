@@ -1194,10 +1194,30 @@ function resetCaptcha() {
     }
 }
 
+function showManualCaptcha() {
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (useApi) return;
+    _lastRenderAt = 0;
+    const tryRender = (attempts) => {
+        if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;
+        if (typeof turnstile !== 'undefined') { renderCaptcha(); }
+        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 500); }
+    };
+    tryRender(60);
+}
+function hideManualCaptcha() {
+    try {
+        if (typeof turnstile !== 'undefined' && cfWidgetId !== null) {
+            turnstile.remove(cfWidgetId);
+            cfWidgetId = null; cfToken = null;
+            const c = document.getElementById('cfTurnstile'); if (c) c.innerHTML = '';
+        }
+    } catch(e) {}
+}
 const cfCheck = setInterval(() => {
     if (typeof turnstile !== 'undefined') {
         clearInterval(cfCheck);
-        renderCaptcha();
+        // NOTE: do NOT auto-render here
     }
 }, 3000);
 
@@ -1310,7 +1330,7 @@ const h2html = `
 <div class="sc">
 <div class="fr"><select id="login-proxy-picker" style="flex:2;min-width:0" title="Active proxy (synced with Proxy tab)"><option value="">-- Direct (no proxy) --</option></select><button class="b2 bh" id="login-proxy-toggle" title="Toggle connect/disconnect">Disconnect</button></div>
 <div class="fr"><select id="main-profile-select" style="width:100%;min-width:0"><option value="">-- Select Profile --</option></select></div>
-<div class="fr sa-row"> <input type="number" id="rt-signin" value="1" min="0" max="999" title="Signin retry delay (seconds)"> <input type="number" id="rt-verify" value="1" min="0" max="999" title="Verify retry delay (seconds)"> <input type="number" id="rt-reserve" value="1" min="0" max="999" title="Reserve retry delay (seconds)"> <input type="number" id="rt-book" value="1" min="0" max="999" title="Book retry delay (seconds)"> <input type="number" id="rt-initiate" value="1" min="0" max="999" title="Initiate retry delay (seconds)"> <button class="b8 toggle-btn sa-btn" id="btn-single" title="Single ON: retry on failure. OFF: no retry, fail = stop">Single</button> <input type="number" id="rt-auto-loops" value="0" min="0" max="999" title="Reserved (currently unused)"> <button class="b8 toggle-btn sa-btn" id="btn-auto" title="Auto ON: after a step wins, automatically continues to next step. Manual button starts the flow.">Auto</button>
+<div class="fr sa-row"> <input type="number" id="rt-signin" value="1" min="0" max="999" title="Signin retry delay (seconds)"> <input type="number" id="rt-verify" value="1" min="0" max="999" title="Verify retry delay (seconds)"> <input type="number" id="rt-reserve" value="1" min="0" max="999" title="Reserve retry delay (seconds)"> <input type="number" id="rt-book" value="1" min="0" max="999" title="Book retry delay (seconds)"> <input type="number" id="rt-initiate" value="1" min="0" max="999" title="Initiate retry delay (seconds)"> <button class="b5 toggle-btn sa-btn" id="btn-single" title="Single ON: retry on failure. OFF: no retry, fail = stop">Single</button> <input type="number" id="rt-auto-loops" value="0" min="0" max="999" title="Reserved (currently unused)"> <button class="b5 toggle-btn sa-btn" id="btn-auto" title="Auto ON: after a step wins, automatically continues to next step. Manual button starts the flow.">Auto</button>
 </div>
 
 <div class="fr-phone"> <select id="login-phone-type" class="phone-type-sel"> <option value="phone1">📞 P1</option> <option value="email">✉️ Em</option> <option value="phone2">📞 P2</option> </select> <input type="tel" id="login-phone" placeholder="Phone 1">
@@ -1337,13 +1357,12 @@ const h2html = `
 <div class="cr">
 <div class="cl"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
 <div class="cr2">
-<div class="tg" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
-<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="fa2" title="Delete Appointment ID from selected profile" style="margin-left:3px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
+<div class="tg on" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
+<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
 </div>
 </div>
 
 <div class="cf-wrap" id="cfWidget"><div class="cf-turnstile" id="cfTurnstile"></div></div>
-<div id="manual-cap-wrap" style="display:none;padding:4px 0"><input type="text" id="manual-cap-token" placeholder="Paste captcha token here" autocomplete="off" style="width:100%;box-sizing:border-box;background:#0a0a1f;border:1px solid #3a3a6a;color:#e0e0ff;border-radius:5px;padding:5px 8px;font-size:.65rem;font-family:monospace"></div>
 <div class="tq-row" id="tq-row" title="Captcha token queue status"> <span class="tq-label">🎫 Queue</span> <span class="tq-slots" id="tq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="tq-info">0/5 • idle</span>
 </div>
 
@@ -1626,16 +1645,8 @@ document.querySelectorAll('#p .tg').forEach(el => {
     el.addEventListener('click', () => el.classList.toggle('on'));
 });
 
-// Default ON: popup-toggle, captcha-toggle
-['popup-toggle', 'captcha-toggle'].forEach(id => {
-    document.getElementById(id)?.classList.add('on');
-});
-
-// Default ACTIVE: Single, Auto buttons (b5 = active/green)
-['btn-single', 'btn-auto'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) { el.classList.remove('b8'); el.classList.add('b5'); }
-});
+// Default ON: popup-toggle
+document.getElementById('popup-toggle')?.classList.add('on');
 
 // ==================== ADVANCE-TOGGLE SPECIAL ====================
 document.getElementById('advance-toggle')?.addEventListener('click', () => {
@@ -1656,16 +1667,12 @@ const csi = document.getElementById('csi'), csr = document.getElementById('csr')
 csi?.addEventListener('click', () => { csi.classList.add('a'); csr?.classList.remove('a'); cfMode = 'signin'; resetCaptcha(); });
 csr?.addEventListener('click', () => { csr.classList.add('a'); csi?.classList.remove('a'); cfMode = 'reserve'; resetCaptcha(); });
 
-// Show/hide manual captcha div based on captcha-toggle state
-function syncCaptchaMode() {
-    const isApi = document.getElementById('captcha-toggle')?.classList.contains('on');
-    const widget = document.getElementById('cfWidget');
-    const manual = document.getElementById('manual-cap-wrap');
-    if (widget) widget.style.display = isApi ? '' : 'none';
-    if (manual) manual.style.display = isApi ? 'none' : '';
-}
-document.getElementById('captcha-toggle')?.addEventListener('click', () => setTimeout(syncCaptchaMode, 50));
-syncCaptchaMode(); // apply on load (captcha-toggle is ON by default)
+document.getElementById('captcha-toggle')?.addEventListener('click', () => {
+    setTimeout(() => {
+        const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+        if (useApi) hideManualCaptcha();
+    }, 60);
+});
 
 // ==================== SINGLE / AUTO TOGGLE ====================
 document.querySelectorAll('#p .toggle-btn').forEach(btn => {
@@ -1885,23 +1892,14 @@ document.getElementById('fc')?.addEventListener('click', () => {
 document.getElementById('fl2')?.addEventListener('click', () => { document.getElementById('profile-manager')?.classList.add('open'); logStatus('📋 Profile Manager opened', 'g'); });
 document.getElementById('fr2')?.addEventListener('click', () => { try { resetCaptcha(); logStatus('↻ Captcha reset', 'y'); } catch(e) {} });
 
-// "A" button: delete appointment ID from selected profile
-document.getElementById('fa2')?.addEventListener('click', () => {
-    const sel = document.getElementById('pm-profile-select');
-    const key = sel?.value;
-    if (!key) { logStatus('⚠ No profile selected', 'y'); return; }
-    if (!confirm('Delete Appointment ID from profile "' + key + '"?')) return;
+// "A" button: delete appointment ID from active profile + clear session state
+document.getElementById('pl-del-appt')?.addEventListener('click', () => {
     try {
-        const raw = localStorage.getItem('rj_profiles');
-        const profiles = raw ? JSON.parse(raw) : {};
-        if (profiles[key]) {
-            delete profiles[key].appointmentId;
-            localStorage.setItem('rj_profiles', JSON.stringify(profiles));
-            const apptInp = document.getElementById('pm-appointment-id');
-            if (apptInp) apptInp.value = '';
-            logStatus('🗑 Appointment ID deleted from profile', 'g');
-        }
-    } catch(e) { logStatus('⚠ Failed: ' + e.message, 'r'); }
+        if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = ''; persistProfiles(); }
+        if (pmAppointmentId) pmAppointmentId.value = '';
+        sessionState.appointmentId = null; sessionState.bookedAt = null; persistSession();
+        logStatus(`🗑 Appointment ID deleted from profile "${activeProfileName}"`, 'y');
+    } catch(e) {}
 });
 
 // SCAN button: force re-scan bundle for encryption config
@@ -2900,19 +2898,9 @@ const SILENT_SOLVE_COOLDOWN = 500;
 async function getCaptchaTokenSmart() {
     const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
     if (!useApi) {
-        // Check manual token input first
-        const manualInp = document.getElementById('manual-cap-token');
-        if (manualInp?.value?.trim()) {
-            const tok = manualInp.value.trim();
-            manualInp.value = '';
-            tokenQueueAddTagged(tok, 'turnstile');
-            return tok;
-        }
-        // Fall back to waiting for cfToken (turnstile widget)
+        showManualCaptcha();
         for (let i = 0; i < 60; i++) {
             if (cfToken) { tokenQueueAddTagged(cfToken, 'turnstile'); return cfToken; }
-            const v = document.getElementById('manual-cap-token')?.value?.trim();
-            if (v) { document.getElementById('manual-cap-token').value = ''; tokenQueueAddTagged(v, 'turnstile'); return v; }
             await new Promise(r => setTimeout(r, 1000));
         }
         throw new Error('Manual captcha not solved within 60s');
