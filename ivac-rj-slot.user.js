@@ -1,4 +1,30 @@
-// ==UserScript== // @name IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition // @namespace http://tampermonkey.net/ // @version 10.1.0-enc-tab // @description RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip // @author RJ SLOT // @match https://appointment.ivacbd.com/* // @match https://appointment-dev-ivacbd-v2.dgi-rnd.com // @match https://appointment-dev-ivacbd-v2.dgi-rnd.com/* // @match https://.ivacbd.com/ // @match https://ivacbd.com/* // @connect api.ivacbd.com // @connect capsolver.com // @connect api.capmonster.cloud // @connect challenges.cloudflare.com // @connect duttauzzal.shop // @connect localhost // @connect 127.0.0.1 // @grant GM_xmlhttpRequest // @grant GM.xmlHttpRequest // @grant GM_setValue // @grant GM_getValue // @grant GM_deleteValue // @grant unsafeWindow // @run-at document-end // @noframes // ==/UserScript==
+// ==UserScript==
+// @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
+// @namespace    http://tampermonkey.net/
+// @version      10.1.0-enc-tab
+// @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
+// @author       RJ SLOT
+// @match        https://appointment.ivacbd.com/*
+// @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
+// @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com/*
+// @match        https://*.ivacbd.com/*
+// @match        https://ivacbd.com/*
+// @connect      api.ivacbd.com
+// @connect      capsolver.com
+// @connect      api.capmonster.cloud
+// @connect      challenges.cloudflare.com
+// @connect      duttauzzal.shop
+// @connect      localhost
+// @connect      127.0.0.1
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        unsafeWindow
+// @run-at       document-end
+// @noframes
+// ==/UserScript==
 (function() { 'use strict';
 
 // ==================== PAGE-CONTEXT FETCH (HTTP/2 CAPABLE) ====================
