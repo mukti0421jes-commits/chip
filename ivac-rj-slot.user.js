@@ -1310,7 +1310,7 @@ const h2html = `
 <div id="p-fab">RJ</div>
 <div id="p" class="hidden">
 <div class="dh" id="dh"> <span class="dt">RJ SLOT v7.5 H2</span>
-<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <button class="db" id="mb">&minus;</button>
+<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry on timeout" style="width:28px;height:16px;margin:0 2px"><div class="tg-dot"></div></div> <button class="db" id="mb">&minus;</button>
 </div>
 </div>
 
@@ -2996,14 +2996,20 @@ async function runStepOnce(stepName, fnFactory) {
     return winResult || { win: false };
 }
 
+let _postVerifyFastChain = false;
+const POST_VERIFY_STEPS = new Set(['reserve', 'book', 'initiate']);
+
 async function runStepSmart(stepName, fnFactory) {
     raceCoord.reset(stepName); setStepStatus(stepName, 'active');
     while (!stopFlag.value) {
         const result = await runStepOnce(stepName, fnFactory);
-        if (result.win) { setStepStatus(stepName, 'success'); return result; }
-        if (stopFlag.value) { setStepStatus(stepName, ''); return result; }
-        if (!isSingleOn()) { setStepStatus(stepName, 'fail'); logStatus(`✗ ${stepName} failed — retry OFF`, 'r'); return result; }
-        const delay = getStepDelaySec(stepName); logStatus(`↻ ${stepName} retry in ${delay}s`, 'y'); raceCoord.reset(stepName);
+        if (result.win) { setStepStatus(stepName, 'success'); if (stepName === 'initiate') _postVerifyFastChain = false; return result; }
+        if (stopFlag.value) { setStepStatus(stepName, ''); _postVerifyFastChain = false; return result; }
+        if (!isSingleOn()) { setStepStatus(stepName, 'fail'); logStatus(`✗ ${stepName} failed — retry OFF`, 'r'); _postVerifyFastChain = false; return result; }
+        const fastChain = _postVerifyFastChain && POST_VERIFY_STEPS.has(stepName);
+        const delay = fastChain ? 0 : getStepDelaySec(stepName);
+        if (delay > 0) { logStatus(`↻ ${stepName} retry in ${delay}s`, 'y'); } else { logStatus(`↻ ${stepName} retry…`, 'y'); }
+        raceCoord.reset(stepName);
         for (let s = 0; s < delay && !stopFlag.value; s++) { await new Promise(r => setTimeout(r, 1000)); }
     }
     return { win: false, cancelled: true };
@@ -3017,10 +3023,14 @@ async function stepSignin(signal) {
     let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ captcha: ${e.message}`, 'r'); return { win: false }; }
     if (raceCoord.hasWon('signin')) { logStatus(`⏭ Signin race already won — bailing`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'turnstile'); return { win: false, cancelled: true }; }
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+    const signinTimeoutOn = document.getElementById('signin-timeout-toggle')?.classList.contains('on');
+    let signinTimeoutId = null;
+    if (signinTimeoutOn) { signinTimeoutId = setTimeout(() => { logStatus('⏱ Signin timeout (20s) — forcing retry', 'y'); localAc.abort(); }, 20000); }
     const logId = netLogAdd({ method: 'POST', url: API_SIGNIN_V2, tag: 'signin', state: 'pending' });
     try {
         const encryptedCaptcha = encryptTokenByPurpose(captchaToken, 'signin');
         const r = await H2.fetchH2(API_SIGNIN_V2, { method: 'POST', signal: localAc.signal, headers: { 'accept':'application/json','content-type':'application/json','x-device-id':getDeviceId(),'cache-control':'no-cache','pragma':'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ phone, password, c: encryptedCaptcha }) });
+        if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; }
         const body = await r.json(); netLogUpdate(logId, { status: r.status, state: r.ok && body.successFlag ? 'ok' : 'fail' });
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
         if (r.ok && body.successFlag && body.data?.accessToken) {
@@ -3030,7 +3040,7 @@ async function stepSignin(signal) {
             if (isAutoOn()) startSmsFetcher(phone, async (otp) => { return undefined; }, false);
             return { win: true, data: body };
         } return { win: false };
-    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+    } catch (err) { if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; } if (err.name === 'AbortError') { netLogUpdate(logId, { state: 'cancel', status: '⊘' }); return { win: false, cancelled: false }; } netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: false }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
 }
 
 async function stepVerify(signal) {
@@ -3058,6 +3068,7 @@ async function stepVerify(signal) {
             try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
             try { stopSmsFetcher('OTP verified'); } catch(e) {}
             document.getElementById('login-otp').value = '';
+            if (isAutoOn()) { _postVerifyFastChain = true; logStatus('⚡ Fast-chain activated: reserve→book→initiate (0-delay)', 'g'); }
             markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅');
             if (sessionState.loggedInAt) { const sessionExpiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; const remainingMs = sessionExpiresAt - Date.now(); if (remainingMs > 0) { startTokenTimerWithExpiry(sessionExpiresAt); const min = Math.floor(remainingMs / 60000); const sec = Math.floor((remainingMs % 60000) / 1000); logStatus(`✅ Verified • session ${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')} left`, 'g'); } }
         } else { if (!_forceStep && isAutoOn() && sessionState.phone) { document.getElementById('login-otp').value = ''; logStatus('⚠ Verify failed — restarting SMS fetcher', 'y'); startSmsFetcher(sessionState.phone, async () => { return undefined; }, true); } }
@@ -3238,7 +3249,7 @@ let pipelineRunning = false; let pipelineConcurrentCount = 0;
 async function startPipelineFrom(startStep) {
     if (!STEP_FACTORY[startStep]) { logStatus(`❌ Unknown step: ${startStep}`, 'r'); return; }
     pipelineConcurrentCount++; pipelineRunning = true;
-    if (pipelineConcurrentCount === 1) { stopFlag.value = false; raceCoord.resetAll(); resetAllStepStatus(); }
+    if (pipelineConcurrentCount === 1) { stopFlag.value = false; raceCoord.resetAll(); resetAllStepStatus(); _postVerifyFastChain = false; }
     try {
         const startIdx = STEP_ORDER.indexOf(startStep); const auto = isAutoOn(); const endIdx = auto ? STEP_ORDER.length - 1 : startIdx;
         for (let i = startIdx; i <= endIdx && !stopFlag.value; i++) { const step = STEP_ORDER[i]; logStatus(`▶ Step ${i+1}/${endIdx+1}: ${step}`, 'y'); const result = await runStepSmart(step, STEP_FACTORY[step]); if (!result.win) { if (!stopFlag.value) logStatus(`⏹ Stopped at ${step}`, 'r'); break; } }
