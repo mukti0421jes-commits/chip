@@ -659,14 +659,40 @@ async function encConfigAutoFetch() {
             return r.text();
         });
 
-        // Generic pattern: captures ANY const VAR={secret:...,startAt:N,length:N,version:N}
-        // This works regardless of minified variable name changes after a bundle update.
-        // [^}]+ is safe because secret values only contain (), "", +, digits, letters — no literal }
-        const CFG_RE = /(const (\w+)=\{[^}]+,startAt:\d+,length:\d+,version:\d+\})/g;
-        const patched = text.replace(CFG_RE, (match, full, varName) =>
-            `${full};try{(window.__rjCfgs=window.__rjCfgs||[]).push(${varName})}catch(_){}`
-        );
+        // Step A: scan bundle text to identify which variable is signin vs reserve.
+        // For each config declaration, read surrounding context (3000 chars each side)
+        // and count signin/reserve keyword hits — the side with more hits wins.
+        const CFG_RE      = /const (\w+)=\{[^}]+,startAt:\d+,length:\d+,version:\d+\}/g;
+        const SIGNIN_KW   = ['signin', 'signin', 'login'];   // lowercase for .includes()
+        const RESERVE_KW  = ['reserv'];
+        const CTX         = 3000;
 
+        let signinVar = null, reserveVar = null;
+
+        for (const m of text.matchAll(CFG_RE)) {
+            const varName = m[1];
+            const ctx = text.slice(Math.max(0, m.index - CTX), m.index + m[0].length + CTX).toLowerCase();
+            const sc  = SIGNIN_KW.reduce( (n, w) => n + ctx.split(w).length - 1, 0);
+            const rc  = RESERVE_KW.reduce((n, w) => n + ctx.split(w).length - 1, 0);
+
+            if (sc > rc && !signinVar)  signinVar  = varName;
+            if (rc > sc && !reserveVar) reserveVar = varName;
+        }
+
+        if (!signinVar && !reserveVar) {
+            logStatus('⚠ Auto-config: no config found in bundle', 'y');
+            return;
+        }
+
+        // Step B: patch only the identified variables to expose their values.
+        let patched = text;
+        const exposeVar = (name, win) =>
+            new RegExp(`(const ${name}=\\{[^}]+,startAt:\\d+,length:\\d+,version:\\d+\\})`);
+
+        if (signinVar)  patched = patched.replace(exposeVar(signinVar),  `$1;try{window.__rjS=${signinVar}}catch(_){}`);
+        if (reserveVar) patched = patched.replace(exposeVar(reserveVar), `$1;try{window.__rjR=${reserveVar}}catch(_){}`);
+
+        // Step C: run patched bundle in a hidden iframe (synchronous inline script).
         const iframe = document.createElement('iframe');
         iframe.style.cssText = 'display:none;position:absolute;width:0;height:0;';
         document.body.appendChild(iframe);
@@ -674,34 +700,22 @@ async function encConfigAutoFetch() {
         try {
             const s = iframe.contentDocument.createElement('script');
             s.textContent = patched;
-            iframe.contentDocument.head.appendChild(s); // synchronous execution
-        } catch (_) { /* React mount errors inside iframe are expected & harmless */ }
+            iframe.contentDocument.head.appendChild(s);
+        } catch (_) { /* React mount errors inside bare iframe are expected & harmless */ }
 
-        const cfgs = iframe.contentWindow.__rjCfgs || [];
+        const signin  = iframe.contentWindow.__rjS;
+        const reserve = iframe.contentWindow.__rjR;
         document.body.removeChild(iframe);
 
-        if (!cfgs.length) {
-            logStatus('⚠ Auto-config: no config found in bundle', 'y');
+        if (!signin && !reserve) {
+            logStatus('⚠ Auto-config: could not extract config values from bundle', 'y');
             return;
         }
 
-        // Deduplicate by secret value, preserving bundle order (insertion order).
-        // The signin config always appears BEFORE the reserve config in the bundle
-        // regardless of startAt/length/version values — so order of appearance is reliable.
-        const unique = [...new Map(cfgs.map(c => [c.secret, c])).values()];
+        if (signin)  { encConfig.signin  = { active: true, key: signin.secret,  skip: signin.startAt,  length: signin.length,  version: signin.version  }; encConfigSave('signin');  }
+        if (reserve) { encConfig.reserve = { active: true, key: reserve.secret, skip: reserve.startAt, length: reserve.length, version: reserve.version }; encConfigSave('reserve'); }
 
-        const signinCfg  = unique[0];
-        const reserveCfg = unique.length > 1 ? unique[unique.length - 1] : null;
-
-        encConfig.signin  = { active: true, key: signinCfg.secret,  skip: signinCfg.startAt,  length: signinCfg.length,  version: signinCfg.version  };
-        encConfig.reserve = reserveCfg
-            ? { active: true, key: reserveCfg.secret, skip: reserveCfg.startAt, length: reserveCfg.length, version: reserveCfg.version }
-            : encConfig.signin;
-
-        encConfigSave('signin');
-        encConfigSave('reserve');
-        localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash); // remember this bundle version
-
+        localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
         logStatus('✅ Encryption config auto-loaded from IVAC bundle!', 'g');
