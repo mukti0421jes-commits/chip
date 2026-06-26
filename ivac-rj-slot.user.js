@@ -636,7 +636,71 @@ function encConfigInit() {
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
-    }, 200);
+        // Auto-fetch from IVAC bundle if either config has no key yet
+        if (!encConfig.signin.key || !encConfig.reserve.key) {
+            encConfigAutoFetch();
+        }
+    }, 500);
+}
+
+async function encConfigAutoFetch() {
+    // Find the already-loaded IVAC bundle script URL
+    const BUNDLE_RE = /\/assets\/[a-zA-Z0-9]{8,}-[a-zA-Z0-9]+\.js$/;
+    const bundleEl  = [...document.querySelectorAll('script[src]')].find(s => BUNDLE_RE.test(s.src));
+    if (!bundleEl) { logStatus('⚠ Auto-config: bundle not found', 'y'); return; }
+
+    logStatus('🔍 Loading encryption config from IVAC bundle…', 'y');
+    try {
+        const text = await pageFetch(bundleEl.src).then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+        });
+
+        // Inject exposure code right after each config declaration.
+        // XQ = signin config, JZ = reserve config.
+        // [^}]+ works because the secret value uses only () + "" chars, no literal }
+        const patched = text
+            .replace(/(const XQ=\{[^}]+\})/, '$1;try{window.__rjS=XQ}catch(_){}')
+            .replace(/(const JZ=\{[^}]+\})/, '$1;try{window.__rjR=JZ}catch(_){}');
+
+        // Run patched bundle in a hidden same-origin iframe.
+        // The inline script executes synchronously, so values are ready immediately.
+        const iframe = document.createElement('iframe');
+        iframe.style.cssText = 'display:none;position:absolute;width:0;height:0;';
+        document.body.appendChild(iframe);
+
+        try {
+            const s = iframe.contentDocument.createElement('script');
+            s.textContent = patched;
+            iframe.contentDocument.head.appendChild(s); // synchronous execution
+        } catch (inner) { /* React mount errors are expected & harmless */ }
+
+        const signin  = iframe.contentWindow.__rjS;
+        const reserve = iframe.contentWindow.__rjR;
+        document.body.removeChild(iframe);
+
+        if (!signin && !reserve) {
+            logStatus('⚠ Auto-config: config not found in bundle', 'y');
+            return;
+        }
+
+        if (signin && !encConfig.signin.key) {
+            encConfig.signin = { active: true, key: signin.secret, skip: signin.startAt, length: signin.length, version: signin.version };
+            encConfigSave('signin');
+        }
+        if (reserve && !encConfig.reserve.key) {
+            encConfig.reserve = { active: true, key: reserve.secret, skip: reserve.startAt, length: reserve.length, version: reserve.version };
+            encConfigSave('reserve');
+        }
+
+        encConfigApplyToUI('signin');
+        encConfigApplyToUI('reserve');
+        logStatus('✅ Encryption config auto-loaded from IVAC bundle!', 'g');
+
+    } catch (e) {
+        console.error('[RJ EncAuto]', e);
+        logStatus('⚠ Auto-config failed: ' + e.message, 'y');
+    }
 }
 
 // ==================== SESSION STATE & PERSISTENCE ====================
