@@ -1591,7 +1591,7 @@ tick(); setInterval(tick, 1000);
 function makeDraggable(dragHandle, targetElement) {
     let isDragging = false, startX, startY, initialLeft, initialTop;
     dragHandle.addEventListener('mousedown', function(e) {
-        if (e.target.closest('button')) return;
+        if (e.target.closest('button, .tg')) return;
         isDragging = true;
         const rect = targetElement.getBoundingClientRect();
         initialLeft = rect.left; initialTop = rect.top;
