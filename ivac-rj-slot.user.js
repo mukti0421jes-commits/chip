@@ -685,10 +685,10 @@ async function encConfigAutoFetch() {
             return;
         }
 
-        // Deduplicate by secret value, then sort by startAt ascending.
-        // Heuristic: smaller startAt = signin, larger startAt = reserve.
-        const unique = [...new Map(cfgs.map(c => [c.secret, c])).values()]
-                         .sort((a, b) => a.startAt - b.startAt);
+        // Deduplicate by secret value, preserving bundle order (insertion order).
+        // The signin config always appears BEFORE the reserve config in the bundle
+        // regardless of startAt/length/version values — so order of appearance is reliable.
+        const unique = [...new Map(cfgs.map(c => [c.secret, c])).values()];
 
         const signinCfg  = unique[0];
         const reserveCfg = unique.length > 1 ? unique[unique.length - 1] : null;
