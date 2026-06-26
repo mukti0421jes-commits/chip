@@ -684,28 +684,44 @@ async function encConfigAutoFetch() {
             return;
         }
 
-        // Step B: patch only the identified variables to expose their values.
-        let patched = text;
-        const exposeVar = (name, win) =>
-            new RegExp(`(const ${name}=\\{[^}]+,startAt:\\d+,length:\\d+,version:\\d+\\})`);
+        // Step B: try fast regex extraction first (no iframe needed if secret is a plain string).
+        // Pattern: secret:"value" or secret:'value' inside the config object.
+        const extractByRegex = (varName) => {
+            const re = new RegExp(
+                `const ${varName}=\\{[^}]*secret:(["\'])([\\s\\S]*?)\\1[^}]*,startAt:(\\d+),length:(\\d+),version:(\\d+)`
+            );
+            const m = text.match(re);
+            if (!m) return null;
+            return { secret: m[2], startAt: parseInt(m[3]), length: parseInt(m[4]), version: parseInt(m[5]) };
+        };
 
-        if (signinVar)  patched = patched.replace(exposeVar(signinVar),  `$1;try{window.__rjS=${signinVar}}catch(_){}`);
-        if (reserveVar) patched = patched.replace(exposeVar(reserveVar), `$1;try{window.__rjR=${reserveVar}}catch(_){}`);
+        let signin  = signinVar  ? extractByRegex(signinVar)  : null;
+        let reserve = reserveVar ? extractByRegex(reserveVar) : null;
 
-        // Step C: run patched bundle in a hidden iframe (synchronous inline script).
-        const iframe = document.createElement('iframe');
-        iframe.style.cssText = 'display:none;position:absolute;width:0;height:0;';
-        document.body.appendChild(iframe);
+        // Step C: fall back to iframe only if regex couldn't extract (obfuscated secret).
+        const needIframe = (signinVar && !signin) || (reserveVar && !reserve);
+        if (needIframe) {
+            const exposeVar = (name) =>
+                new RegExp(`(const ${name}=\\{[^}]+,startAt:\\d+,length:\\d+,version:\\d+\\})`);
 
-        try {
-            const s = iframe.contentDocument.createElement('script');
-            s.textContent = patched;
-            iframe.contentDocument.head.appendChild(s);
-        } catch (_) { /* React mount errors inside bare iframe are expected & harmless */ }
+            let patched = text;
+            if (signinVar  && !signin)  patched = patched.replace(exposeVar(signinVar),  `$1;try{window.__rjS=${signinVar}}catch(_){}`);
+            if (reserveVar && !reserve) patched = patched.replace(exposeVar(reserveVar), `$1;try{window.__rjR=${reserveVar}}catch(_){}`);
 
-        const signin  = iframe.contentWindow.__rjS;
-        const reserve = iframe.contentWindow.__rjR;
-        document.body.removeChild(iframe);
+            const iframe = document.createElement('iframe');
+            iframe.style.cssText = 'display:none;position:absolute;width:0;height:0;';
+            document.body.appendChild(iframe);
+
+            try {
+                const s = iframe.contentDocument.createElement('script');
+                s.textContent = patched;
+                iframe.contentDocument.head.appendChild(s);
+            } catch (_) {}
+
+            if (!signin  && iframe.contentWindow.__rjS) signin  = iframe.contentWindow.__rjS;
+            if (!reserve && iframe.contentWindow.__rjR) reserve = iframe.contentWindow.__rjR;
+            document.body.removeChild(iframe);
+        }
 
         if (!signin && !reserve) {
             logStatus('⚠ Auto-config: could not extract config values from bundle', 'y');
