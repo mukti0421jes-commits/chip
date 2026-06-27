@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Appointment - Turnstile Solver with Login/Reserve
 // @namespace    http://tampermonkey.net/
-// @version      34.5
+// @version      34.6
 // @description  Full Turnstile Solver with Login & Reserve - Cipher Enabled
 // @author       YourName
 // @match        https://appointment.ivacbd.com/*
@@ -589,8 +589,8 @@
                 return rawToken;
             `);
             fn('test_token', 'Signin');
-            cipherFunctions.login   = (data) => { try { const r = fn(data, 'Signin');  return (r && typeof r === 'object') ? r : { c: String(r) }; } catch(e) { return { c: btoa(data) }; } };
-            cipherFunctions.reserve = (data) => { try { const r = fn(data, 'Reserve'); return (r && typeof r === 'object') ? r : { c: String(r) }; } catch(e) { return { c: btoa(data) }; } };
+            cipherFunctions.login   = (data) => { const r = fn(data, 'Signin');  return (r && typeof r === 'object') ? r : { c: String(r) }; };
+            cipherFunctions.reserve = (data) => { const r = fn(data, 'Reserve'); return (r && typeof r === 'object') ? r : { c: String(r) }; };
             cipherFunctions.loaded = true;
             cipherFunctions.rawCode = scriptText;
             console.log('[Cipher] ✅ Loaded via encryptToken router');
@@ -684,95 +684,55 @@
     // ENCRYPT TOKEN - Uses cipher functions
     // ==========================================
     async function encryptTokenWithCipher(token, type) {
+        // Make sure the REAL cipher from the server file is loaded first.
         if (!cipherFunctions.loaded) {
-            console.warn('⚠️ Cipher not loaded, loading from server...');
+            console.warn('⚠️ Cipher not loaded yet — fetching from server file...');
             await new Promise((resolve) => {
                 loadCipherFromServer(true);
                 setTimeout(resolve, 2000);
             });
         }
 
-        if (cipherFunctions.loaded) {
-            try {
-                let encrypted;
-
-                console.log(`🔐 Encrypting ${type} token using cipher...`);
-                console.log(`📝 Raw token: ${token.substring(0, 30)}...`);
-
-                if (type === 'login' && cipherFunctions.login) {
-                    console.log(`🔐 Using encryptToken('Signin') from cipher`);
-                    encrypted = cipherFunctions.login(token);
-                } else if (type === 'reserve' && cipherFunctions.reserve) {
-                    console.log(`🔐 Using encryptToken('Reserve') from cipher`);
-                    encrypted = cipherFunctions.reserve(token);
-                } else {
-                    console.warn(`⚠️ No specific cipher function for ${type}`);
-                    if (cipherFunctions.login) {
-                        encrypted = cipherFunctions.login(token);
-                    } else if (cipherFunctions.reserve) {
-                        encrypted = cipherFunctions.reserve(token);
-                    } else {
-                        throw new Error('No cipher function available');
-                    }
-                }
-
-                if (encrypted && typeof encrypted === 'object' && encrypted.c) {
-                    console.log(`✅ ${type} encryption successful`);
-                    console.log(`🔐 Encrypted 'c': ${encrypted.c.substring(0, 80)}...`);
-
-                    if (encrypted.c === token) {
-                        console.warn(`⚠️ Encryption produced same as raw token! Using fallback.`);
-                        return createFallbackEncryption(token, type);
-                    }
-
-                    console.log(`📊 Token vs Encrypted: ✅ DIFFERENT`);
-                    return encrypted;
-                } else if (typeof encrypted === 'string') {
-                    if (encrypted === token) {
-                        console.warn(`⚠️ Encryption produced same as raw token! Using fallback.`);
-                        return createFallbackEncryption(token, type);
-                    }
-                    console.log(`📊 Token vs Encrypted: ✅ DIFFERENT`);
-                    return { c: encrypted };
-                } else {
-                    console.warn(`⚠️ Unexpected encryption result, using fallback`);
-                    return createFallbackEncryption(token, type);
-                }
-            } catch (error) {
-                console.error(`❌ Cipher encryption error:`, error);
-                return createFallbackEncryption(token, type);
-            }
+        // No fabricated fallback. If the cipher file is not loaded we must NOT
+        // send a fake token to the API — surface a clear error instead.
+        if (!cipherFunctions.loaded) {
+            const msg = 'Cipher not loaded — start the cipher server (port 8799) or paste your cipher.js, then retry.';
+            showNotification('❌ ' + msg, 'error');
+            throw new Error(msg);
         }
 
-        console.warn(`⚠️ Cipher not loaded, using fallback for ${type}`);
-        return createFallbackEncryption(token, type);
-    }
+        const purpose = type === 'reserve' ? 'Reserve' : 'Signin';
+        console.log(`🔐 Encrypting ${type} token using encryptToken('${purpose}') from your cipher file...`);
+        console.log(`📝 Raw token: ${token.substring(0, 30)}...`);
 
-    function createFallbackEncryption(token, type) {
-        try {
-            const timestamp = Date.now();
-            const randomNonce = Math.random().toString(36).substring(2, 10);
-
-            const payload = {
-                token: token,
-                type: type,
-                timestamp: timestamp,
-                nonce: randomNonce,
-                version: '2.0'
-            };
-
-            const jsonString = JSON.stringify(payload);
-            const base64Encoded = btoa(jsonString);
-            const encrypted = `enc_${type}_${base64Encoded}`;
-
-            console.log(`🔐 Fallback encryption created for ${type}`);
-            console.log(`🔐 Encrypted: ${encrypted.substring(0, 80)}...`);
-
-            return { c: encrypted, _fallback: true };
-        } catch (error) {
-            console.error('❌ Fallback encryption error:', error);
-            return { c: btoa(token + '_' + Date.now()), _fallback: true };
+        const fn = (type === 'reserve') ? cipherFunctions.reserve : cipherFunctions.login;
+        if (typeof fn !== 'function') {
+            const msg = `No cipher function available for ${type}`;
+            showNotification('❌ ' + msg, 'error');
+            throw new Error(msg);
         }
+
+        let encrypted = fn(token);
+
+        // Normalise to { c: ... }
+        if (typeof encrypted === 'string') encrypted = { c: encrypted };
+        if (!encrypted || typeof encrypted !== 'object' || !encrypted.c) {
+            const msg = `Cipher returned an unexpected result for ${type}`;
+            console.error('❌', msg, encrypted);
+            showNotification('❌ ' + msg, 'error');
+            throw new Error(msg);
+        }
+
+        if (encrypted.c === token) {
+            const msg = `Cipher returned the raw token unchanged for ${type} — check your cipher.js`;
+            console.error('❌', msg);
+            showNotification('❌ ' + msg, 'error');
+            throw new Error(msg);
+        }
+
+        console.log(`✅ ${type} encryption successful (encryptToken/${purpose})`);
+        console.log(`🔐 Encrypted 'c': ${String(encrypted.c).substring(0, 80)}...`);
+        return encrypted;
     }
 
     // ==========================================
