@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Appointment - Turnstile Solver with Login/Reserve
 // @namespace    http://tampermonkey.net/
-// @version      34.7
+// @version      34.8
 // @description  Full Turnstile Solver with Login & Reserve - Cipher Enabled
 // @author       YourName
 // @match        https://appointment.ivacbd.com/*
@@ -9,6 +9,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function() {
