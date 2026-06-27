@@ -1524,7 +1524,7 @@
         loginSection.innerHTML = `
             <div class="section-header">
                 <span class="icon">🔑</span>
-                <span class="label login">Login Renders (encryptLogin)</span>
+                <span class="label login">Login Renders (encryptToken · Signin)</span>
                 <span class="status-badge">🔐 Encrypted</span>
                 <span class="sub">Solve → Login API</span>
             </div>
@@ -1608,7 +1608,7 @@
         reserveSection.innerHTML = `
             <div class="section-header">
                 <span class="icon">📅</span>
-                <span class="label reserve">Reserve Renders (encryptReserve)</span>
+                <span class="label reserve">Reserve Renders (encryptToken · Reserve)</span>
                 <span class="status-badge">🔐 Encrypted</span>
                 <span class="sub">Solve → Reserve API</span>
             </div>
@@ -1667,8 +1667,8 @@
         const footer = document.createElement('div');
         footer.className = 'modern-footer';
         footer.innerHTML = `
-            <span>🔐 Login → encryptLogin → 'c' → Login API</span>
-            <span>🔐 Reserve → encryptReserve → 'c' → Reserve API</span>
+            <span>🔐 Login → encryptToken(Signin) → 'c' → Login API</span>
+            <span>🔐 Reserve → encryptToken(Reserve) → 'c' → Reserve API</span>
             <span>🌐 Requests visible in Network tab</span>
             <span>🛡️ Uses fetch() for API calls</span>
         `;
@@ -1699,8 +1699,8 @@
     function init() {
         console.log('🚀 Starting Turnstile Solver with Login/Reserve...');
         console.log('📌 Flow: Solve Turnstile → Encrypt → Login/Reserve API');
-        console.log('🔐 Login uses encryptLogin from Cipher Code section');
-        console.log('🔐 Reserve uses encryptReserve from Cipher Code section');
+        console.log('🔐 Login uses encryptToken(token, "Signin") from Cipher Code section');
+        console.log('🔐 Reserve uses encryptToken(token, "Reserve") from Cipher Code section');
         console.log('🌐 API requests use fetch() - visible in Network tab');
 
         if (document.readyState === 'loading') {
