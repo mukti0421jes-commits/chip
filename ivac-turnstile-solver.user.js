@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Appointment - Turnstile Solver with Login/Reserve
 // @namespace    http://tampermonkey.net/
-// @version      34.8
+// @version      34.9
 // @description  Full Turnstile Solver with Login & Reserve - Cipher Enabled
 // @author       YourName
 // @match        https://appointment.ivacbd.com/*
@@ -564,8 +564,8 @@
     // ==========================================
     // CIPHER FUNCTIONS
     // ==========================================
-    // Mirrors RJ SLOT's encManager: _unifiedFn is the optional server cipher;
-    // when not loaded, encryptToken falls back to the REAL hardcode algorithm.
+    // Server cipher file ONLY — no hardcode fallback. encryptToken throws if
+    // the cipher file is not loaded, so a fake token is never sent.
     let cipherFunctions = {
         _unifiedFn: null,
         loaded: false,       // true when the server cipher file is loaded
@@ -573,70 +573,18 @@
         // Returns the encrypted STRING that goes straight into `c`.
         encryptToken(rawToken, purpose) {
             if (!rawToken || typeof rawToken !== 'string') return rawToken;
-            if (this._unifiedFn) {
-                try {
-                    const result = this._unifiedFn(rawToken, purpose);
-                    console.log(`[Cipher] ${purpose} encryption applied (server file)`);
-                    return (result && typeof result === 'object' && 'c' in result) ? result.c : result;
-                } catch(e) {
-                    console.error(`[Cipher] ${purpose} encryption error:`, e);
-                    logStatus(`⚠ ${purpose} encryption error — falling back to hardcode`, 'y');
-                    return encryptCaptchaTokenHardcode(rawToken);
-                }
+            if (!this._unifiedFn) {
+                throw new Error('Cipher file not loaded — start the cipher server (port 8799) and reload');
             }
-            console.log(`[Cipher] ${purpose} encryption applied (hardcode)`);
-            return encryptCaptchaTokenHardcode(rawToken);
+            const result = this._unifiedFn(rawToken, purpose);
+            console.log(`[Cipher] ${purpose} encryption applied (server file)`);
+            return (result && typeof result === 'object' && 'c' in result) ? result.c : result;
         }
     };
 
     function logStatus(message, color = 'w') {
         const colors = { w: '#ffffff', y: '#fbbf24', r: '#ef4444', g: '#4ade80', b: '#60a5fa' };
         console.log(`%c${message}`, `color: ${colors[color] || colors.w}`);
-    }
-
-    // ==========================================
-    // REAL BUILT-IN CIPHER (from RJ SLOT — encryptCaptchaTokenHardcode)
-    // This is the genuine IVAC char-shift algorithm. It always works even
-    // without the server cipher file, exactly like RJ SLOT's hardcode path.
-    // ==========================================
-    const CAPTCHA_CHARSET         = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
-    const CAPTCHA_ALPHABET_LEN    = CAPTCHA_CHARSET.length;
-    const CAPTCHA_KEEP_FIRST      = 8;
-    const CAPTCHA_TRANSFORM_COUNT = 25;
-    const CAPTCHA_SECRET          = "A#E(*7K8In+52m3&Q$dg<vl1Y|828M|uG&K-+9Q0Ot]74s5_W*jm`br3E.040S.a";
-
-    function computeCaptchaOffsets(key, midLen) {
-        let i = 123456789;
-        let c = 1103515245;
-        for (let w = 0; w < key.length; w++) {
-            i = (i + key.charCodeAt(w)) >>> 0;
-        }
-        const offsets = new Array(midLen);
-        for (let w = 0; w < midLen; w++) {
-            i = (Math.imul(i, c) + 12345) >>> 0;
-            c = (((c + i) >>> 0) | 1) >>> 0;
-            offsets[w] = (i >>> 16) % CAPTCHA_ALPHABET_LEN;
-        }
-        return offsets;
-    }
-
-    function encryptCaptchaTokenHardcode(rawToken, key, skip, encryptLen) {
-        const keepFirst      = (skip       !== undefined) ? skip       : CAPTCHA_KEEP_FIRST;
-        const transformCount = (encryptLen !== undefined) ? encryptLen : CAPTCHA_TRANSFORM_COUNT;
-        const encryptionKey  = key || CAPTCHA_SECRET;
-        if (!rawToken) return rawToken;
-        const u = Math.max(0, Math.min(keepFirst, rawToken.length));
-        const h = Math.max(0, Math.min(transformCount, rawToken.length - u));
-        if (h === 0) return rawToken;
-        const offsets = computeCaptchaOffsets(encryptionKey, h);
-        const mid = rawToken.slice(u, u + h).split('');
-        for (let x = 0; x < mid.length; x++) {
-            const idx = CAPTCHA_CHARSET.indexOf(mid[x]);
-            if (idx !== -1) {
-                mid[x] = CAPTCHA_CHARSET[(idx + offsets[x]) % CAPTCHA_ALPHABET_LEN];
-            }
-        }
-        return rawToken.slice(0, u) + mid.join('') + rawToken.slice(u + h);
     }
 
     // Mirrors encManager.loadUnifiedScript — embeds the whole cipher.js in a
@@ -686,12 +634,10 @@
     }
 
     function updateCipherUI(loaded) {
-        // loaded === server cipher file active; otherwise the real hardcode
-        // algorithm is used (still fully working), so never show "Failed".
         const statusEl = document.getElementById('cipher-status');
         if (statusEl) {
-            statusEl.textContent = loaded ? '🔑 File Loaded' : '🔐 Hardcode';
-            statusEl.className = `modern-badge cipher active`;
+            statusEl.textContent = loaded ? '🔑 Loaded' : '❌ Not loaded';
+            statusEl.className = `modern-badge cipher ${loaded ? 'active' : ''}`;
         }
     }
 
@@ -714,13 +660,13 @@
                     const savedCode = localStorage.getItem('turnstile_cipher_code');
                     if (savedCode) { applyCipherScript(savedCode, auto); return; }
                 } catch(e) {}
-                // Server unreachable & no cache — that's fine: the built-in
-                // hardcode cipher still works (same as RJ SLOT's hardcode path).
+                // Server unreachable & no cache — no fallback. Encryption will
+                // fail until the cipher server (port 8799) is running.
                 cipherFunctions._unifiedFn = null;
                 cipherFunctions.loaded = false;
                 updateCipherUI(false);
-                if (!auto) logStatus('ℹ️ Cipher server not reachable — using built-in hardcode cipher', 'y');
-                if (statusText) statusText.innerHTML = `<span class="dot loaded"></span> 🔐 Using built-in hardcode cipher (server file optional)`;
+                if (!auto) logStatus('❌ Cipher server not reachable — start cipher server on port 8799', 'r');
+                if (statusText) statusText.innerHTML = `<span class="dot error"></span> ❌ Server unreachable — start cipher server (port 8799)`;
                 return;
             }
             const url = CIPHER_SERVER_URLS[idx++];
@@ -757,12 +703,15 @@
     // ENCRYPT TOKEN - Uses cipher functions
     // ==========================================
     async function encryptTokenWithCipher(token, type) {
-        // Exactly like RJ SLOT: use the server cipher file if loaded, otherwise
-        // the REAL built-in hardcode algorithm. Either way we get a valid token.
+        // Server cipher file only. If it isn't loaded, encryptToken throws and
+        // the login/reserve flow reports the error — no fake token is sent.
         const purpose = (type === 'reserve') ? 'Reserve' : 'Signin';
         console.log(`🔐 Encrypting ${type} token (purpose=${purpose})...`);
         console.log(`📝 Raw token: ${token.substring(0, 30)}...`);
 
+        if (!cipherFunctions.loaded) {
+            showNotification('❌ Cipher not loaded — start cipher server (port 8799) & reload', 'error');
+        }
         const encryptedStr = cipherFunctions.encryptToken(token, purpose);
         console.log(`✅ ${type} encryption done`);
         console.log(`🔐 Encrypted 'c': ${String(encryptedStr).substring(0, 80)}...`);
