@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.1.1-enc-tab
+// @version      10.1.2-enc-tab
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -718,7 +718,11 @@ async function encConfigAutoFetch() {
             const om = text.match(new RegExp(`const ${varName}=(\\{[^}]*\\})`));
             if (!om) return null;
             const obj = om[1];
-            const sec = obj.match(/secret:\s*(["'])([\s\S]*?)\1/);
+            // Secret = the only STRING value in the object (startAt/length/version
+            // are numbers). Works even if the key name is minified (e.g. a:"...").
+            // Prefer an explicit secret/key field if present, else first string.
+            let sec = obj.match(/(?:secret|key)\s*:\s*(["'])((?:\\.|(?!\1).)*)\1/);
+            if (!sec) sec = obj.match(/:\s*(["'])((?:\\.|(?!\1).)*)\1/);
             const sa  = obj.match(/startAt:\s*(\d+)/);
             const ln  = obj.match(/length:\s*(\d+)/);
             const ver = obj.match(/version:\s*(\d+)/);
