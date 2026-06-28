@@ -1951,12 +1951,11 @@
         const formData = new FormData();
         if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
         formData.append('isPrimary', String(isPrimary));
-        let uploadCaptcha; try { const t = await getCaptchaTokenSmart(); uploadCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
-        formData.append('c', uploadCaptcha);
+        let uploadToken; try { uploadToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
         logStatus(`📄 Uploading ${label}…`, 'y');
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
         try {
-            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: formData });
+            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
@@ -2103,9 +2102,10 @@
         const phone = (document.getElementById('ivac-mobile')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
         if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number', 'r'); return; } if (!/^01[3-9]\d{8}$/.test(phone)) { suMsg('ivac-msg-mobile', '❌ Invalid BD mobile', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Sending OTP to mobile…', 'y'); logStatus('📱 Sending mobile OTP…', 'y');
+        let mobileOtpToken; try { mobileOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'mobile-otp' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, email, otpChannel: "PHONE" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, email, otpChannel: "PHONE" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
@@ -2141,9 +2141,10 @@
         const email = (document.getElementById('ivac-email')?.value || '').trim();
         if (!email) { suMsg('ivac-msg-email', '❌ Enter email', 'r'); return; } if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { suMsg('ivac-msg-email', '❌ Invalid email', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Sending OTP to email…', 'y'); logStatus('📧 Sending email OTP…', 'y');
+        let emailOtpToken; try { emailOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'email-otp' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ email, otpChannel: "EMAIL" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': emailOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ email, otpChannel: "EMAIL" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
@@ -2158,10 +2159,10 @@
         const otp = (document.getElementById('ivac-email-otp')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
         if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
-        let emailVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); emailVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        let emailVerifyToken; try { emailVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL", c: emailVerifyCaptcha }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': emailVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
@@ -2190,14 +2191,14 @@
 
         suMsg('ivac-msg-submit', '⏳ Submitting…', 'y');
         logStatus(`📝 Account Registration → ${email || phone}`, 'y');
-        let signupCaptcha; try { const t = await getCaptchaTokenSmart(); signupCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-submit', `❌ Captcha: ${e.message}`, 'r'); flashButton(btn, '✗', 'r'); return; }
-        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password, c: signupCaptcha };
-        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***', c: '***' });
+        let signupToken; try { signupToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-submit', `❌ Captcha: ${e.message}`, 'r'); flashButton(btn, '✗', 'r'); return; }
+        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password };
+        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
         const logId = netLogAdd({ method: 'POST', url: API_SIGNUP, tag: 'signup', state: 'pending', note: 'account-registration' });
         try {
             const response = await H2.fetchH2(API_SIGNUP, {
                 method: 'POST',
-                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() },
+                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': signupToken },
                 referrer: API_REFERRER,
                 body: JSON.stringify(signupBody)
             });
