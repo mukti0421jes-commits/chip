@@ -695,8 +695,12 @@ async function encConfigAutoFetch() {
 
         let signinVar = null, reserveVar = null;
 
+        // DEBUG: dump every config object literal found in the bundle so the
+        // exact structure (incl. how `secret` is stored) is visible in console.
+        const _dbgMatches = [];
         for (const m of text.matchAll(CFG_RE)) {
             const varName = m[1];
+            _dbgMatches.push({ varName, obj: m[0] });
             const ctx = text.slice(Math.max(0, m.index - CTX), m.index + m[0].length + CTX).toLowerCase();
             const sc  = SIGNIN_KW.reduce( (n, w) => n + ctx.split(w).length - 1, 0);
             const rc  = RESERVE_KW.reduce((n, w) => n + ctx.split(w).length - 1, 0);
@@ -704,6 +708,13 @@ async function encConfigAutoFetch() {
             if (sc > rc && !signinVar)  signinVar  = varName;
             if (rc > sc && !reserveVar) reserveVar = varName;
         }
+        console.log('[RJ EncDebug] CFG_RE matches:', _dbgMatches.length, _dbgMatches);
+        console.log('[RJ EncDebug] signinVar =', signinVar, ' reserveVar =', reserveVar);
+        // Also show a wider slice around the first match so secret references resolve
+        try {
+            const first = text.search(/const \w+=\{[^}]+,startAt:\d+,length:\d+,version:\d+\}/);
+            if (first !== -1) console.log('[RJ EncDebug] context:\n', text.slice(Math.max(0, first - 400), first + 400));
+        } catch(_) {}
 
         if (!signinVar && !reserveVar) {
             logStatus('⚠ Auto-config: no config found in bundle', 'y');
