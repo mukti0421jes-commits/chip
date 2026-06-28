@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.1.3-enc-tab
+// @version      10.2.0-enc-dynamic
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -659,14 +659,14 @@ function encryptTokenByPurpose(rawToken, purpose) {
 const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
 
 // ===================================================================
-//  ✏️ EDIT HERE — hardcoded encryption config (bundle secret is
-//  obfuscated, so it can't be auto-extracted). These values are
-//  auto-filled into the Encrypt tab (Signin & Reserve) and activated
-//  on page load. Replace KEY/SKIP/LENGTH/VERSION with the live ones.
+//  FALLBACK ONLY — the script resolves the REAL secret live from the
+//  bundle every load (see encConfigAutoFetch). These values are used
+//  only if live resolution fails (e.g. CSP blocks new Function). They
+//  are the last-known-good values resolved from the bundle.
 // ===================================================================
 const ENC_DEFAULTS = {
-    signin:  { key: "o)1*k1z*t&cj9cya7dewiw-gf!iv8@d))zbduztrk_uq7!=ld0", skip: 3, length: 23, version: 6 },
-    reserve: { key: "7#!2zg*vc*h(m%qve9v3fg2l-x#b+&ri&$)tyw9+x^bndjn5b^", skip: 6, length: 26, version: 6 }
+    signin:  { key: "sn=22u3=hfq6q&ld_g=$h)72o33xkobez7bi3ksd^7rkaqa8)g", skip: 3, length: 21, version: 6 },
+    reserve: { key: "%=8ofq7fr=+9q)$b6ih4cdij^4bug!b7doz=zft^*1a9f7^8(k", skip: 5, length: 23, version: 5 }
 };
 
 function encConfigApplyDefaults(purpose) {
@@ -678,13 +678,12 @@ function encConfigApplyDefaults(purpose) {
 function encConfigInit() {
     encConfigLoad('signin');
     encConfigLoad('reserve');
-    // If nothing usable was saved, seed from the hardcoded defaults and activate.
-    if (!encConfig.signin.key)  encConfigApplyDefaults('signin');  else encConfig.signin.active  = true;
-    if (!encConfig.reserve.key) encConfigApplyDefaults('reserve'); else encConfig.reserve.active = true;
-    encConfigSave('signin'); encConfigSave('reserve');
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
+        // Dynamically resolve the real secret from the live bundle. Detects
+        // bundle updates via URL hash and re-extracts automatically.
+        encConfigAutoFetch();
     }, 500);
 }
 
@@ -714,74 +713,107 @@ async function encConfigAutoFetch() {
         const CTX         = 3000;
 
         let signinVar = null, reserveVar = null;
-
-        // DEBUG: dump every config object literal found in the bundle so the
-        // exact structure (incl. how `secret` is stored) is visible in console.
-        const _dbgMatches = [];
         for (const m of text.matchAll(CFG_RE)) {
             const varName = m[1];
-            _dbgMatches.push({ varName, obj: m[0] });
             const ctx = text.slice(Math.max(0, m.index - CTX), m.index + m[0].length + CTX).toLowerCase();
             const sc  = SIGNIN_KW.reduce( (n, w) => n + ctx.split(w).length - 1, 0);
             const rc  = RESERVE_KW.reduce((n, w) => n + ctx.split(w).length - 1, 0);
-
             if (sc > rc && !signinVar)  signinVar  = varName;
             if (rc > sc && !reserveVar) reserveVar = varName;
         }
-        console.log('[RJ EncDebug] CFG_RE matches:', _dbgMatches.length, _dbgMatches);
-        console.log('[RJ EncDebug] signinVar =', signinVar, ' reserveVar =', reserveVar);
-        // Also show a wider slice around the first match so secret references resolve
-        try {
-            const first = text.search(/const \w+=\{[^}]+,startAt:\d+,length:\d+,version:\d+\}/);
-            if (first !== -1) console.log('[RJ EncDebug] context:\n', text.slice(Math.max(0, first - 400), first + 400));
-        } catch(_) {}
-
         if (!signinVar && !reserveVar) {
             logStatus('⚠ Auto-config: no config found in bundle', 'y');
             return;
         }
 
-        // Step B: order-independent regex extraction. Grab the whole config
-        // object literal {...} for the var, then pull secret/startAt/length/
-        // version from it regardless of the key order. (CFG_RE already proved
-        // the object contains no inner "}" — it's a flat literal.)
-        const extractByRegex = (varName) => {
-            const om = text.match(new RegExp(`const ${varName}=(\\{[^}]*\\})`));
-            if (!om) return null;
-            const obj = om[1];
-            // Secret = the only STRING value in the object (startAt/length/version
-            // are numbers). Works even if the key name is minified (e.g. a:"...").
-            // Prefer an explicit secret/key field if present, else first string.
-            let sec = obj.match(/(?:secret|key)\s*:\s*(["'])((?:\\.|(?!\1).)*)\1/);
-            if (!sec) sec = obj.match(/:\s*(["'])((?:\\.|(?!\1).)*)\1/);
-            const sa  = obj.match(/startAt:\s*(\d+)/);
-            const ln  = obj.match(/length:\s*(\d+)/);
-            const ver = obj.match(/version:\s*(\d+)/);
-            if (!sec || !sa || !ln || !ver) return null;
-            return { secret: sec[2], startAt: parseInt(sa[1]), length: parseInt(ln[1]), version: parseInt(ver[1]) };
+        // ── DYNAMIC SECRET RESOLVER ────────────────────────────────────────
+        // The secret is a concatenation of obfuscated string-decoder calls
+        // (e.g. zQ(627)+CQ(0,755)+...). To get the real value we extract ONLY
+        // the relevant decoder machinery from the bundle (the wrapper fns they
+        // call, the base decoders, the string-array fn, and that array's
+        // rotation IIFE), then eval that self-contained slice — never the whole
+        // app — so it can't crash. This survives bundle/secret updates.
+        const _braceFn = (name) => {
+            const s = text.indexOf('function ' + name + '(');
+            if (s < 0) return null;
+            let i = text.indexOf('{', s), depth = 0;
+            for (; i < text.length; i++) {
+                const c = text[i];
+                if (c === '{') depth++;
+                else if (c === '}') { if (--depth === 0) return text.slice(s, i + 1); }
+            }
+            return null;
+        };
+        const _idents = (str) => {
+            const set = new Set(); let m;
+            const re = /([A-Za-z_$][\w$]*)\(/g;
+            while ((m = re.exec(str))) set.add(m[1]);
+            return [...set];
+        };
+        const resolveConfig = (varName) => {
+            const key = 'const ' + varName + '={secret:';
+            const s = text.indexOf(key);
+            if (s < 0) return null;
+            const exprStart = s + key.length;
+            const exprEnd = text.indexOf(',startAt:', exprStart);
+            const expr = text.slice(exprStart, exprEnd);
+            const objSeg = text.slice(s, s + 400);
+            const sa = objSeg.match(/startAt:(\d+)/), ln = objSeg.match(/length:(\d+)/), ver = objSeg.match(/version:(\d+)/);
+            if (!sa || !ln || !ver) return null;
+
+            const pieces = {};               // name -> function source
+            // 1) wrapper functions used in the secret expression
+            for (const w of _idents(expr)) { const c = _braceFn(w); if (c) pieces[w] = c; }
+            // 2) base decoders the wrappers call (return X(...))
+            const bases = new Set();
+            for (const code of Object.values(pieces)) {
+                let m; const re = /return\s+([A-Za-z_$][\w$]*)\(/g;
+                while ((m = re.exec(code))) bases.add(m[1]);
+            }
+            for (const b of bases) { if (!pieces[b]) { const c = _braceFn(b); if (c) pieces[b] = c; } }
+            // 3) string-array functions referenced by the decoders (var/const/let n=ARR())
+            const arrays = new Set();
+            for (const code of Object.values(pieces)) {
+                let m;
+                const r1 = /(?:var|const|let)\s+\w+=([A-Za-z_$][\w$]*)\(\)/g;
+                while ((m = r1.exec(code))) arrays.add(m[1]);
+                const r2 = /=([A-Za-z_$][\w$]*)\(\),/g;
+                while ((m = r2.exec(code))) arrays.add(m[1]);
+            }
+            // 4) array fns + their rotation IIFE  !function(e){...}(ARR)
+            const rotations = [];
+            for (const a of arrays) {
+                if (!pieces[a]) { const c = _braceFn(a); if (c) pieces[a] = c; }
+                const end = text.indexOf('}(' + a + ')');
+                if (end !== -1) {
+                    const rs = text.lastIndexOf('!function(e){', end);
+                    if (rs !== -1 && rs > end - 6000) rotations.push(text.slice(rs, end + ('}(' + a + ')').length));
+                }
+            }
+            const assembled = Object.values(pieces).join('\n') + '\n' +
+                              rotations.map(r => r + ';').join('\n') + '\n' +
+                              'return (' + expr + ');';
+            let secret;
+            try { secret = (new Function(assembled))(); }
+            catch (err) { console.error('[RJ EncAuto] resolve error for ' + varName, err); return null; }
+            if (typeof secret !== 'string' || !secret) return null;
+            return { secret, startAt: parseInt(sa[1]), length: parseInt(ln[1]), version: parseInt(ver[1]) };
         };
 
-        let signin  = signinVar  ? extractByRegex(signinVar)  : null;
-        let reserve = reserveVar ? extractByRegex(reserveVar) : null;
-
-        // NOTE: the old iframe fallback (which injected the entire IVAC bundle
-        // into a blank iframe) was removed — it crashed with a SyntaxError
-        // because the app bundle cannot run standalone. The order-independent
-        // regex above extracts string-literal secrets directly. If a secret is
-        // a computed expression we simply skip rather than crash.
-
-        if (!signin && !reserve) {
-            logStatus('⚠ Auto-config: could not extract config values from bundle', 'y');
-            return;
-        }
+        let signin  = signinVar  ? resolveConfig(signinVar)  : null;
+        let reserve = reserveVar ? resolveConfig(reserveVar) : null;
 
         if (signin)  { encConfig.signin  = { active: true, key: signin.secret,  skip: signin.startAt,  length: signin.length,  version: signin.version  }; encConfigSave('signin');  }
+        else { encConfigApplyDefaults('signin'); }   // fallback to ENC_DEFAULTS
         if (reserve) { encConfig.reserve = { active: true, key: reserve.secret, skip: reserve.startAt, length: reserve.length, version: reserve.version }; encConfigSave('reserve'); }
+        else { encConfigApplyDefaults('reserve'); }  // fallback to ENC_DEFAULTS
 
         localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
-        logStatus('✅ Encryption config auto-loaded from IVAC bundle!', 'g');
+        if (signin && reserve)      logStatus('✅ Encryption secret auto-resolved live from IVAC bundle!', 'g');
+        else if (signin || reserve) logStatus('⚠ Resolved one config live; other fell back to defaults', 'y');
+        else                        logStatus('⚠ Live resolve failed — using ENC_DEFAULTS fallback', 'y');
 
     } catch (e) {
         console.error('[RJ EncAuto]', e);
@@ -1937,14 +1969,9 @@ document.getElementById('pl-del-appt')?.addEventListener('click', () => {
 
 // SCAN button: force re-scan bundle for encryption config
 document.getElementById('scan-btn')?.addEventListener('click', () => {
-    // Re-apply the hardcoded defaults and activate (bundle secret is
-    // obfuscated, so auto-extraction isn't possible — values come from
-    // the ENC_DEFAULTS block at the top of the script).
-    encConfigApplyDefaults('signin');
-    encConfigApplyDefaults('reserve');
-    encConfigApplyToUI('signin');
-    encConfigApplyToUI('reserve');
-    logStatus('✅ Encryption config re-applied from defaults & activated', 'g');
+    localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
+    logStatus('🔍 Manual scan — resolving encryption secret from live bundle…', 'y');
+    encConfigAutoFetch();
 });
 
 // ==================== COUNTDOWN MANAGER ====================
