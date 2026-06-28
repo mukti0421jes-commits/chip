@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.1.2-enc-tab
+// @version      10.1.3-enc-tab
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -658,13 +658,33 @@ function encryptTokenByPurpose(rawToken, purpose) {
 
 const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
 
+// ===================================================================
+//  ✏️ EDIT HERE — hardcoded encryption config (bundle secret is
+//  obfuscated, so it can't be auto-extracted). These values are
+//  auto-filled into the Encrypt tab (Signin & Reserve) and activated
+//  on page load. Replace KEY/SKIP/LENGTH/VERSION with the live ones.
+// ===================================================================
+const ENC_DEFAULTS = {
+    signin:  { key: "o)1*k1z*t&cj9cya7dewiw-gf!iv8@d))zbduztrk_uq7!=ld0", skip: 3, length: 23, version: 6 },
+    reserve: { key: "7#!2zg*vc*h(m%qve9v3fg2l-x#b+&ri&$)tyw9+x^bndjn5b^", skip: 6, length: 26, version: 6 }
+};
+
+function encConfigApplyDefaults(purpose) {
+    const d = ENC_DEFAULTS[purpose]; if (!d) return;
+    encConfig[purpose] = { active: true, key: d.key, skip: d.skip, length: d.length, version: d.version };
+    encConfigSave(purpose);
+}
+
 function encConfigInit() {
     encConfigLoad('signin');
     encConfigLoad('reserve');
+    // If nothing usable was saved, seed from the hardcoded defaults and activate.
+    if (!encConfig.signin.key)  encConfigApplyDefaults('signin');  else encConfig.signin.active  = true;
+    if (!encConfig.reserve.key) encConfigApplyDefaults('reserve'); else encConfig.reserve.active = true;
+    encConfigSave('signin'); encConfigSave('reserve');
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
-        encConfigAutoFetch(); // always check — detects bundle updates via URL hash
     }, 500);
 }
 
@@ -1917,9 +1937,14 @@ document.getElementById('pl-del-appt')?.addEventListener('click', () => {
 
 // SCAN button: force re-scan bundle for encryption config
 document.getElementById('scan-btn')?.addEventListener('click', () => {
-    localStorage.removeItem('rj_enc_bundle_hash');
-    logStatus('🔍 Manual scan started…', 'y');
-    encConfigAutoFetch();
+    // Re-apply the hardcoded defaults and activate (bundle secret is
+    // obfuscated, so auto-extraction isn't possible — values come from
+    // the ENC_DEFAULTS block at the top of the script).
+    encConfigApplyDefaults('signin');
+    encConfigApplyDefaults('reserve');
+    encConfigApplyToUI('signin');
+    encConfigApplyToUI('reserve');
+    logStatus('✅ Encryption config re-applied from defaults & activated', 'g');
 });
 
 // ==================== COUNTDOWN MANAGER ====================
