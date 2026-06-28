@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.6
+// @version      10.0.7
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -1952,6 +1952,8 @@
         const formData = new FormData();
         if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
         formData.append('isPrimary', String(isPrimary));
+        let uploadCaptcha; try { const t = await getCaptchaTokenSmart(); uploadCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
+        formData.append('c', uploadCaptcha);
         logStatus(`📄 Uploading ${label}…`, 'y');
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
         try {
@@ -2124,9 +2126,10 @@
         const otp = (document.getElementById('ivac-mobile-otp')?.value || '').trim(); const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
         if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
+        let mobileVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); mobileVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE", c: mobileVerifyCaptcha }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
@@ -2156,9 +2159,10 @@
         const otp = (document.getElementById('ivac-email-otp')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
         if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
+        let emailVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); emailVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL", c: emailVerifyCaptcha }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
@@ -2185,10 +2189,11 @@
         if (m) { try { dob = new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString(); } catch(e) {} }
         else if (/^\d{4}-\d{2}-\d{2}/.test(dobRaw)) { try { dob = new Date(dobRaw).toISOString(); } catch(e) {} }
 
-        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password };
         suMsg('ivac-msg-submit', '⏳ Submitting…', 'y');
         logStatus(`📝 Account Registration → ${email || phone}`, 'y');
-        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
+        let signupCaptcha; try { const t = await getCaptchaTokenSmart(); signupCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-submit', `❌ Captcha: ${e.message}`, 'r'); flashButton(btn, '✗', 'r'); return; }
+        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password, c: signupCaptcha };
+        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***', c: '***' });
         const logId = netLogAdd({ method: 'POST', url: API_SIGNUP, tag: 'signup', state: 'pending', note: 'account-registration' });
         try {
             const response = await H2.fetchH2(API_SIGNUP, {
@@ -3049,6 +3054,3 @@
     })();
 
 })();
-
-
- Ami etate add korte chai timeout logic ta.
