@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Appointment Bundle Downloader (Auto)
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1
 // @description  Auto-detect bundle.js and download it automatically (no button). Reloads only until the bundle appears, then downloads once and stops.
 // @author       Your Name
 // @match        https://appointment.ivacbd.com/*
@@ -17,7 +17,9 @@
 (function() {
     'use strict';
 
-    const JS_FILE_PATTERN     = /^[a-zA-Z0-9]{8,}-[a-zA-Z0-9]+\.js$/;
+    // Bundle names look like  mqxnkodk-BS3ZM-Yk.js  (hash prefix + one or more
+    // hyphen-separated chunks). Allow multiple hyphens in the tail.
+    const JS_FILE_PATTERN     = /^[a-zA-Z0-9]{6,}(?:-[a-zA-Z0-9]+)+\.js$/;
     const CHECK_INTERVAL      = 200;     // ms between in-page scans
     const MAX_SCAN_ATTEMPTS   = 40;      // ~8s of scanning before giving up this load
     const RELOAD_DELAY        = 1500;    // ms to wait before reloading when no bundle yet
@@ -75,24 +77,31 @@
     }
 
     // ---------- find the bundle on the current page ----------
-    function matchName(name) {
-        return name && (JS_FILE_PATTERN.test(name) || name.includes('bundle'));
+    // Match by filename pattern, by "bundle" in the name, OR by being a .js
+    // file served from an /assets/ path (covers any future hash format).
+    function isBundle(fullUrl) {
+        if (!fullUrl) return false;
+        const path = fullUrl.split('?')[0];
+        const name = path.split('/').pop();
+        if (!name) return false;
+        if (JS_FILE_PATTERN.test(name)) return true;
+        if (name.includes('bundle')) return true;
+        if (/\/assets\/[^/]+\.js$/i.test(path)) return true;
+        return false;
     }
+    function nameOf(fullUrl) { return fullUrl.split('?')[0].split('/').pop(); }
 
     function findBundle() {
         // 1) <script src> tags
         for (const sc of document.querySelectorAll('script[src]')) {
             const src = sc.getAttribute('src'); if (!src) continue;
-            const name = src.split('/').pop().split('?')[0];
-            if (matchName(name)) {
-                return { url: src.startsWith('http') ? src : new URL(src, location.origin).href, name };
-            }
+            const url = src.startsWith('http') ? src : new URL(src, location.origin).href;
+            if (isBundle(url)) return { url, name: nameOf(url) };
         }
         // 2) performance resource entries
         try {
             for (const r of performance.getEntriesByType('resource')) {
-                const name = r.name.split('/').pop().split('?')[0];
-                if (matchName(name) && r.name.includes(location.origin)) return { url: r.name, name };
+                if (isBundle(r.name) && r.name.includes(location.origin)) return { url: r.name, name: nameOf(r.name) };
             }
         } catch (e) {}
         return null;
@@ -131,10 +140,9 @@
         for (const m of muts) {
             for (const node of m.addedNodes) {
                 if (node.nodeType === 1 && node.tagName === 'SCRIPT' && node.src) {
-                    const name = node.src.split('/').pop().split('?')[0];
-                    if (matchName(name)) {
-                        const url = node.src.startsWith('http') ? node.src : new URL(node.src, location.origin).href;
-                        doDownload(url, name);
+                    const url = node.src.startsWith('http') ? node.src : new URL(node.src, location.origin).href;
+                    if (isBundle(url)) {
+                        doDownload(url, nameOf(url));
                         observer.disconnect();
                         return;
                     }
