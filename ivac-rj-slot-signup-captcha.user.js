@@ -2125,10 +2125,10 @@
         const otp = (document.getElementById('ivac-mobile-otp')?.value || '').trim(); const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
         if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
-        let mobileVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); mobileVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        let mobileVerifyToken; try { mobileVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE", c: mobileVerifyCaptcha }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': mobileVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
