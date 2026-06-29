@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.6-final
+// @version      10.0.7-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -2016,10 +2016,12 @@
 
     // ==================== INVOICE DOWNLOAD ====================
     let invoiceRetryActive = false;
-    async function autoDownloadInvoice(url) {
+    async function autoDownloadInvoice(url, trxId) {
         logStatus('📥 Downloading invoice…', 'y');
+        let invToken = ''; try { invToken = await getCaptchaTokenSmart(); } catch(e) {}
+        const invBody = JSON.stringify({ txrId: trxId, token: invToken });
         try {
-            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            const r = await pageFetch(url, { method: 'POST', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, body: invBody, credentials: 'omit' });
             const blob = await r.blob(); const downloadUrl = URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl);
@@ -2027,17 +2029,19 @@
         } catch(e) {
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
             if (gmApi) {
-                gmApi({ method: 'GET', url: url, responseType: 'blob', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() },
+                gmApi({ method: 'POST', url: url, responseType: 'blob', data: invBody, headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() },
                     onload: (resp) => { try { const blob = resp.response; const downloadUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl); logStatus('✅ Invoice downloaded!', 'g'); } catch(e) { logStatus('✅ Invoice ready — check tab', 'g'); } },
                     onerror: () => { logStatus('✅ Invoice ready — check tab', 'g'); } });
             } else { logStatus('✅ Invoice ready — check tab', 'g'); }
         }
         try { beepInitiateAndSpeak(); } catch(e) {}
     }
-    async function checkInvoiceLoaded(url) {
+    async function checkInvoiceLoaded(url, trxId) {
         const result = { loaded: false, status: null, msg: '' };
+        let invToken = ''; try { invToken = await getCaptchaTokenSmart(); } catch(e) {}
+        const invBody = JSON.stringify({ txrId: trxId, token: invToken });
         try {
-            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            const r = await pageFetch(url, { method: 'POST', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, body: invBody, credentials: 'omit' });
             if (!invoiceRetryActive) return result;
             const contentType = r.headers.get('content-type') || ''; result.status = r.status;
             if (r.status === 200 && contentType.includes('pdf')) { result.loaded = true; return result; }
@@ -2050,7 +2054,7 @@
             return new Promise((resolve) => {
                 const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
                 if (!gmApi) { result.status = 'ERR'; result.msg = 'no fetch available'; resolve(result); return; }
-                gmApi({ method: 'GET', url: url, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, timeout: 20000,
+                gmApi({ method: 'POST', url: url, data: invBody, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, timeout: 20000,
                     onload: (response) => {
                         if (!invoiceRetryActive) { resolve(result); return; }
                         const status = response.status; const rawText = response.responseText || ''; const headersStr = (response.responseHeaders || '').toLowerCase();
@@ -2080,9 +2084,9 @@
             while (invoiceRetryActive && attempts < maxAttempts) {
                 attempts++; await new Promise(r => setTimeout(r, 1000));
                 if (!invoiceRetryActive) break;
-                const result = await checkInvoiceLoaded(url);
+                const result = await checkInvoiceLoaded(url, trxId);
                 if (!invoiceRetryActive) break;
-                if (result.loaded) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('✅ Invoice loaded! Auto-downloading…', 'g'); autoDownloadInvoice(url); return; }
+                if (result.loaded) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('✅ Invoice loaded! Auto-downloading…', 'g'); autoDownloadInvoice(url, trxId); return; }
                 try { const tab = window.open('', 'rjInvoiceTab'); if (tab && !tab.closed) tab.location.href = url; else window.open(url, 'rjInvoiceTab'); } catch(e) { try { window.open(url, 'rjInvoiceTab'); } catch(e2) {} }
                 const statusStr = result.status || '?'; const msgStr = result.msg ? `: ${result.msg.slice(0, 35)}` : '';
                 logStatus(`⏳ Invoice not ready (${statusStr}${msgStr}) • attempt ${attempts}/${maxAttempts}`, 'y');
