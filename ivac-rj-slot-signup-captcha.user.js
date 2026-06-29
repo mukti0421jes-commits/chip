@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.5-final
+// @version      10.0.6-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -741,9 +741,10 @@
     // ==================== INITIATE API CALL (H2) ====================
     async function performInitiate(accessToken, appointmentId) {
         const body = JSON.stringify({ appointmentId });
+        const initiateToken = await getCaptchaTokenSmart();
         const response = await H2.fetchH2Critical(API_INITIATE, {
             method: "POST",
-            headers: { "accept": "application/json, text/plain, */*", "authorization": `Bearer ${accessToken}`, "cache-control": "no-cache, no-store, must-revalidate", "content-type": "application/json", "pragma": "no-cache", "x-device-id": getDeviceId() },
+            headers: { "accept": "application/json, text/plain, */*", "authorization": `Bearer ${accessToken}`, "cache-control": "no-cache, no-store, must-revalidate", "content-type": "application/json", "pragma": "no-cache", "x-device-id": getDeviceId(), "x-token": initiateToken },
             referrer: API_REFERRER, body: body
         });
         const contentType = response.headers.get('content-type') || '';
@@ -2713,9 +2714,10 @@
         if (!appointmentId) { logStatus('❌ No appointmentId', 'r'); return { win: false }; }
         if (raceCoord.hasWon('initiate')) { logStatus(`⏭ Initiate race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
         logStatus(`💳 Initiate: ${appointmentId.slice(0,8)}…`, 'y');
+        let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
         const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
         try {
-            const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'content-type':'application/json','x-device-id':getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+            const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'content-type':'application/json','x-device-id':getDeviceId(),'x-token':initiateToken }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
             const ct = r.headers.get('content-type') || '';
             const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
             const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
