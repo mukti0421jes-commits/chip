@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.7-final
+// @version      10.0.8-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -2019,9 +2019,8 @@
     async function autoDownloadInvoice(url, trxId) {
         logStatus('📥 Downloading invoice…', 'y');
         let invToken = ''; try { invToken = await getCaptchaTokenSmart(); } catch(e) {}
-        const invBody = JSON.stringify({ txrId: trxId, token: invToken });
         try {
-            const r = await pageFetch(url, { method: 'POST', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, body: invBody, credentials: 'omit' });
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId(), 'x-token': invToken }, credentials: 'omit' });
             const blob = await r.blob(); const downloadUrl = URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl);
@@ -2029,7 +2028,7 @@
         } catch(e) {
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
             if (gmApi) {
-                gmApi({ method: 'POST', url: url, responseType: 'blob', data: invBody, headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() },
+                gmApi({ method: 'GET', url: url, responseType: 'blob', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId(), 'x-token': invToken },
                     onload: (resp) => { try { const blob = resp.response; const downloadUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl); logStatus('✅ Invoice downloaded!', 'g'); } catch(e) { logStatus('✅ Invoice ready — check tab', 'g'); } },
                     onerror: () => { logStatus('✅ Invoice ready — check tab', 'g'); } });
             } else { logStatus('✅ Invoice ready — check tab', 'g'); }
@@ -2039,9 +2038,8 @@
     async function checkInvoiceLoaded(url, trxId) {
         const result = { loaded: false, status: null, msg: '' };
         let invToken = ''; try { invToken = await getCaptchaTokenSmart(); } catch(e) {}
-        const invBody = JSON.stringify({ txrId: trxId, token: invToken });
         try {
-            const r = await pageFetch(url, { method: 'POST', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, body: invBody, credentials: 'omit' });
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId(), 'x-token': invToken }, credentials: 'omit' });
             if (!invoiceRetryActive) return result;
             const contentType = r.headers.get('content-type') || ''; result.status = r.status;
             if (r.status === 200 && contentType.includes('pdf')) { result.loaded = true; return result; }
@@ -2054,7 +2052,7 @@
             return new Promise((resolve) => {
                 const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
                 if (!gmApi) { result.status = 'ERR'; result.msg = 'no fetch available'; resolve(result); return; }
-                gmApi({ method: 'POST', url: url, data: invBody, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, timeout: 20000,
+                gmApi({ method: 'GET', url: url, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId(), 'x-token': invToken }, timeout: 20000,
                     onload: (response) => {
                         if (!invoiceRetryActive) { resolve(result); return; }
                         const status = response.status; const rawText = response.responseText || ''; const headersStr = (response.responseHeaders || '').toLowerCase();
