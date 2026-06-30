@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.1.2-final
+// @version      10.1.3-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -1230,7 +1230,7 @@
     <div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div>
     <span style="display:flex;align-items:center;gap:5px"><span style="font-size:0.55rem;opacity:.8">⏱12s</span><div class="tg" id="signin-timeout-toggle" title="Signin timeout: ON=abort hung signin after 12s (refills fresh attempt), OFF=wait for server"><div class="tg-dot"></div></div></span>
   </div>
-  <div style="width:100%;text-align:center;padding:3px 0;font-weight:800;letter-spacing:.5px;opacity:.85">RJ SLOT PRO H2</div>
+  <div style="width:100%;text-align:center;padding:3px 0;font-weight:600;letter-spacing:.5px;background:linear-gradient(135deg,#f59e0b,#d97706);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:#f59e0b">RJ SLOT PRO H2</div>
   <div class="cdbar" id="cdbar">
     <div class="cd-cell cd-otp" id="cd-otp" style="display:none"><span class="cd-icon">📱</span><span class="cd-label">OTP</span><span class="cd-time" id="cd-otp-time">--:--</span></div>
     <div class="cd-sep" id="cd-sep" style="display:none"></div>
