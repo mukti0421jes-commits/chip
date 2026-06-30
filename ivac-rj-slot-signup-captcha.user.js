@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.0.9-final
+// @version      10.1.0-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -2083,7 +2083,7 @@
                 const statusStr = result.status || '?'; const msgStr = result.msg ? `: ${String(result.msg).slice(0, 40)}` : '';
                 logStatus(`⏳ Invoice not ready (${statusStr}${msgStr}) • try ${attempts}/${maxAttempts}`, 'y');
                 if (!invoiceRetryActive) break;
-                await new Promise(r => setTimeout(r, 3000)); // tokens are single-use & slow — don't hammer
+                await new Promise(r => setTimeout(r, 5000)); // tokens are single-use & slow — don't hammer
             }
             if (invoiceRetryActive) { stop(); logStatus(`⏹ Invoice stopped (${maxAttempts} attempts)`, 'y'); }
         })();
