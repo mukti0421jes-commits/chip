@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.1.0-final
+// @version      10.1.1-final
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Default ON Single/Auto, auto-start on reload, manual captcha blank
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -1228,7 +1228,7 @@
   </div>
   <div class="ft">
     <div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div>
-    <span>RJ SLOT PRO H2</span>
+    <span style="display:flex;align-items:center;gap:5px">RJ SLOT PRO H2<span style="font-size:0.55rem;opacity:.8">⏱12s</span><div class="tg" id="signin-timeout-toggle" title="Signin timeout: ON=abort hung signin after 12s (refills fresh attempt), OFF=wait for server"><div class="tg-dot"></div></div></span>
   </div>
   <div class="cdbar" id="cdbar">
     <div class="cd-cell cd-otp" id="cd-otp" style="display:none"><span class="cd-icon">📱</span><span class="cd-label">OTP</span><span class="cd-time" id="cd-otp-time">--:--</span></div>
@@ -1431,6 +1431,7 @@
     // Defaults: popup ON, captcha (API) ON
     document.getElementById('popup-toggle')?.classList.add('on');
     document.getElementById('captcha-toggle')?.classList.add('on');
+    document.getElementById('signin-timeout-toggle')?.classList.add('on'); // signin 12s timeout default ON
 
     // ==================== ADVANCE-TOGGLE SPECIAL ====================
     document.getElementById('advance-toggle')?.addEventListener('click', () => {
@@ -2598,6 +2599,13 @@
         let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ captcha: ${e.message}`, 'r'); return { win: false }; }
         if (raceCoord.hasWon('signin')) { logStatus(`⏭ Signin race already won — bailing`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'turnstile'); return { win: false, cancelled: true }; }
         const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+        // Signin-only timeout: when the footer toggle is ON, abort a hung request
+        // after 12s so the parallel pool refills with a fresh attempt instead of
+        // waiting ~60s for the server's 504/520.
+        let signinTimeoutId = null;
+        if (document.getElementById('signin-timeout-toggle')?.classList.contains('on')) {
+            signinTimeoutId = setTimeout(() => { try { localAc.abort(); } catch(e) {} }, 12000);
+        }
         const logId = netLogAdd({ method: 'POST', url: API_SIGNIN_V2, tag: 'signin', state: 'pending' });
         try {
             const encryptedCaptcha = encManager.encryptToken(captchaToken, 'Signin');
@@ -2611,7 +2619,7 @@
                 if (isAutoOn()) startSmsFetcher(phone, async (otp) => { return undefined; }, false);
                 return { win: true, data: body };
             } return { win: false };
-        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { if (signinTimeoutId) { try { clearTimeout(signinTimeoutId); } catch(e) {} } try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
     }
 
     async function stepVerify(signal) {
