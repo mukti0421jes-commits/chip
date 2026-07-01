@@ -18,11 +18,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM --- proxy-relay.js আছে কিনা দেখা ---
-if not exist "%~dp0proxy-relay.js" (
+REM --- relay ফাইল খোঁজা (proxy-relay.js othoba proxyrelay.js) ---
+set "RELAY="
+if exist "%~dp0proxy-relay.js" set "RELAY=%~dp0proxy-relay.js"
+if not defined RELAY if exist "%~dp0proxyrelay.js" set "RELAY=%~dp0proxyrelay.js"
+
+if not defined RELAY (
     echo.
-    echo  [!] proxy-relay.js ei folder e nei.
-    echo      ei bat file ta proxy-relay.js er pashei rakhun.
+    echo  [!] relay file ei folder e paoa jayni.
+    echo      "proxy-relay.js" othoba "proxyrelay.js" ei bat er pashei rakhun.
     echo.
     pause
     exit /b 1
@@ -33,7 +37,7 @@ echo  RJ Proxy Relay chalu hocche...
 echo  (bondho korte: ei window e Ctrl + C, othoba window close korun)
 echo.
 
-node "%~dp0proxy-relay.js"
+node "%RELAY%"
 
 REM relay bondho / crash korle window khola thakbe jate error dekha jay
 echo.
