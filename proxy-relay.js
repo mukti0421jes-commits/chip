@@ -200,7 +200,26 @@ function requestThroughProxy(proxy, targetUrl, method, headers, body) {
         tlsSock.on('error', (e) => done(e));
       };
 
-      const outHeaders = { ...headers };
+      // ব্রাউজারের মতো ডিফল্ট হেডার — নাহলে Cloudflare 403 দেয় (bot মনে করে)।
+      // userscript যা পাঠায় তা অগ্রাধিকার পায়; না থাকলে এইগুলো বসে।
+      const lc = {}; for (const k in headers) lc[k.toLowerCase()] = headers[k];
+      const isApi = /(^|\.)ivacbd\.com$/i.test(u.hostname);
+      const browserDefaults = {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'accept-language': 'en-US,en;q=0.9',
+        'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'origin': 'https://appointment.ivacbd.com',
+        'referer': 'https://appointment.ivacbd.com/'
+      };
+      const outHeaders = {};
+      // প্রথমে ব্রাউজার-ডিফল্ট (শুধু ivacbd লক্ষ্যে), তারপর userscript-এর হেডার উপরে বসে
+      if (isApi) Object.assign(outHeaders, browserDefaults);
+      for (const k in headers) outHeaders[k] = headers[k];
       // node নিজে ঠিক করবে — পুরোনোগুলো সরিয়ে দিই
       delete outHeaders.host; delete outHeaders.Host;
       delete outHeaders['content-length']; delete outHeaders['Content-Length'];
