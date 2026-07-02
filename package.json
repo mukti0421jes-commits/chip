@@ -1,0 +1,9 @@
+{
+  "name": "rj-proxy-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Chrome-TLS proxy relay for RJ SLOT userscript",
+  "dependencies": {
+    "cycletls": "^1.0.26"
+  }
+}
