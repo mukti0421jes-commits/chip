@@ -23,6 +23,8 @@ const HOST = '127.0.0.1';
 // Chrome 131 এর মতো JA3 + User-Agent
 const CHROME_JA3 = '771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0';
 const CHROME_UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+// Chrome-এর HTTP/2 (Akamai) fingerprint — cloudflare h2 স্তরে যাচাই করে
+const CHROME_H2FP = '1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p';
 
 // cycletls লোড
 let initCycleTLS;
@@ -74,6 +76,7 @@ async function doRequest(proxy, url, method, headers, body) {
     ja3: CHROME_JA3,
     userAgent: CHROME_UA,
     headers: outHeaders,
+    http2Fingerprint: CHROME_H2FP,
     disableRedirect: true,
     insecureSkipVerify: true,   // proxy-র মধ্য দিয়ে গেলে cert যাচাই বাদ (495 SSL error ঠেকায়)
     timeout: 60
