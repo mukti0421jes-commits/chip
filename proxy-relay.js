@@ -75,6 +75,7 @@ async function doRequest(proxy, url, method, headers, body) {
     userAgent: CHROME_UA,
     headers: outHeaders,
     disableRedirect: true,
+    insecureSkipVerify: true,   // proxy-র মধ্য দিয়ে গেলে cert যাচাই বাদ (495 SSL error ঠেকায়)
     timeout: 60
   };
   const px = proxyToUrl(proxy);
