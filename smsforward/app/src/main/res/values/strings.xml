@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">OTP Reader</string>
+    <string name="local_only_badge">Local only • no internet</string>
+    <string name="received_messages">Received messages</string>
+    <string name="clear">Clear</string>
+    <string name="waiting_for_sms">Waiting for SMS…</string>
+    <string name="from_label">From: %1$s</string>
+    <string name="copied">Copied %1$s</string>
+    <string name="need_sms_permission">SMS permission is required to read incoming codes.</string>
+</resources>
