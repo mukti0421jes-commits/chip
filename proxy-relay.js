@@ -1,17 +1,20 @@
 // ============================================================================
-//  proxy-relay.js  —  RJ SLOT local proxy relay  (Chrome-TLS via cycletls)
+//  proxy-relay.js  —  RJ SLOT proxy relay  (REAL browser via Playwright)
 // ----------------------------------------------------------------------------
 //  কেন এই ভার্সন:
-//    আগের relay Node-এর ডিফল্ট TLS দিত → Cloudflare "bot" ভেবে 403 দিত।
-//    এই ভার্সন cycletls দিয়ে Chrome-এর হুবহু TLS/JA3 ছাপ নকল করে,
-//    তাই Cloudflare আসল ব্রাউজার ভাবে → request সার্ভারে পৌঁছায় (503/200)।
+//    Cloudflare কোড-নকল TLS (cycletls) ধরে ফেলে → 403/495।
+//    এখানে relay-র ভিতরে আসল Chromium চলে; request ওই আসল ব্রাউজারের
+//    নেটওয়ার্ক স্ট্যাক দিয়ে যায় → TLS/JA3 হুবহু আসল Chrome → Cloudflare পাস (503/200)।
+//    প্রতি proxy-র জন্য আলাদা browser context → rotation বজায় থাকে।
 //
 //  এন্ডপয়েন্ট (userscript যা কল করে — কিছুই বদলায়নি):
-//    POST /relay  { url, method, headers, body, proxy } -> { status, statusText, headers, body }
+//    POST /relay  { url, method, headers, body, proxy } -> { status, statusText, body }
 //    POST /ip     { proxy }                             -> { ip } | { error }
 //
-//  চালানোর আগে একবার:  npm i cycletls     (startrelay.bat নিজেই করে নেবে)
-//  তারপর:               node proxy-relay.js   (বা startrelay.bat ডাবল-ক্লিক)
+//  একবার সেটআপ (startrelay.bat নিজে করে নেবে):
+//    npm i playwright
+//    npx playwright install chromium
+//  তারপর:  node proxy-relay.js
 // ============================================================================
 'use strict';
 
@@ -19,76 +22,85 @@ const http = require('http');
 
 const PORT = 8781;
 const HOST = '127.0.0.1';
+const ORIGIN_URL = 'https://appointment.ivacbd.com/';   // fetch এই origin থেকে হবে (CORS মেলে)
 
-// Chrome 131 এর মতো JA3 + User-Agent
-const CHROME_JA3 = '771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0';
-const CHROME_UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-// Chrome-এর HTTP/2 (Akamai) fingerprint — cloudflare h2 স্তরে যাচাই করে
-const CHROME_H2FP = '1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p';
-
-// cycletls লোড
-let initCycleTLS;
-try {
-  initCycleTLS = require('cycletls');
-} catch (e) {
-  console.error('\n[!] cycletls paoa jayni. ei folder e chalao:  npm i cycletls');
-  console.error('    othoba startrelay.bat double-click korun (o nije install kore nebe).\n');
+let chromium;
+try { ({ chromium } = require('playwright')); }
+catch (e) {
+  console.error('\n[!] playwright paoa jayni. ei folder e chalao:');
+  console.error('      npm i playwright');
+  console.error('      npx playwright install chromium\n');
   process.exit(1);
 }
 
-let cycleTLS = null;
-async function getClient() {
-  if (!cycleTLS) cycleTLS = await initCycleTLS();
-  return cycleTLS;
+let browser = null;
+const pages = new Map();      // proxyKey -> { context, page, ready }
+const busy = new Map();       // proxyKey -> Promise chain (একটা context-এ একসাথে একটা request)
+
+function proxyKey(p) { return p ? `${p.scheme}://${p.host}:${p.port}:${p.user || ''}` : 'direct'; }
+
+async function getBrowser() {
+  if (browser) return browser;
+  browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+  });
+  return browser;
 }
 
-// proxy object -> cycletls proxy URL string
-function proxyToUrl(p) {
-  if (!p || !p.host) return '';
-  const scheme = String(p.scheme || 'http').toLowerCase();
-  const auth = p.user ? `${encodeURIComponent(p.user)}:${encodeURIComponent(p.password || '')}@` : '';
-  return `${scheme}://${auth}${p.host}:${p.port}`;
-}
+// প্রতি proxy-র জন্য একটা context + একটা page (appointment.ivacbd.com-এ বসানো)
+async function getPage(proxy) {
+  const key = proxyKey(proxy);
+  const existing = pages.get(key);
+  if (existing && existing.ready) return existing;
 
-function bodyToString(b) {
-  if (b == null) return '';
-  if (typeof b === 'string') return b;
-  try { return JSON.stringify(b); } catch (_) { return String(b); }
-}
-
-// cycletls দিয়ে আসল request
-async function doRequest(proxy, url, method, headers, body) {
-  const client = await getClient();
-  const m = String(method || 'GET').toLowerCase();
-  const outHeaders = {};
-  const lc = {};
-  for (const k in (headers || {})) { outHeaders[k] = headers[k]; lc[k.toLowerCase()] = true; }
-  // ব্রাউজার-ডিফল্ট (userscript যা দেয়নি সেগুলো)
-  const target = String(url);
-  const isApi = /(^|\.)ivacbd\.com/i.test(target);
-  if (isApi) {
-    if (!lc['origin'])          outHeaders['origin'] = 'https://appointment.ivacbd.com';
-    if (!lc['referer'])         outHeaders['referer'] = 'https://appointment.ivacbd.com/';
-    if (!lc['accept-language']) outHeaders['accept-language'] = 'en-US,en;q=0.9';
-  }
-  const opts = {
-    body: bodyToString(body),
-    ja3: CHROME_JA3,
-    userAgent: CHROME_UA,
-    headers: outHeaders,
-    http2Fingerprint: CHROME_H2FP,
-    disableRedirect: true,
-    insecureSkipVerify: true,   // proxy-র মধ্য দিয়ে গেলে cert যাচাই বাদ (495 SSL error ঠেকায়)
-    timeout: 60
+  const b = await getBrowser();
+  const ctxOpts = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    ignoreHTTPSErrors: true
   };
-  const px = proxyToUrl(proxy);
-  if (px) opts.proxy = px;
-  const resp = await client(target, opts, m);
-  let outBody = resp.body;
-  if (outBody != null && typeof outBody !== 'string') {
-    try { outBody = JSON.stringify(outBody); } catch (_) { outBody = String(outBody); }
+  if (proxy && proxy.host) {
+    ctxOpts.proxy = {
+      server: `${(proxy.scheme || 'http')}://${proxy.host}:${proxy.port}`,
+      username: proxy.user || undefined,
+      password: proxy.password || undefined
+    };
   }
-  return { status: resp.status, statusText: '', headers: resp.headers || {}, body: outBody != null ? outBody : '' };
+  const context = await b.newContext(ctxOpts);
+  const page = await context.newPage();
+  // origin-এ বসাই যাতে fetch একই সাইট থেকে যায় (userscript যেভাবে করে)
+  try { await page.goto(ORIGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }); }
+  catch (e) { /* origin না লোড হলেও fetch চেষ্টা করব */ }
+  const entry = { context, page, ready: true };
+  pages.set(key, entry);
+  return entry;
+}
+
+// একই context-এ request-গুলো সিরিয়াল করি (page.evaluate একসাথে একটা)
+function serialize(key, fn) {
+  const prev = busy.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  busy.set(key, next.catch(() => {}));
+  return next;
+}
+
+async function doRequest(proxy, url, method, headers, body) {
+  const key = proxyKey(proxy);
+  return serialize(key, async () => {
+    const { page } = await getPage(proxy);
+    const result = await page.evaluate(async (args) => {
+      try {
+        const init = { method: args.method, headers: args.headers || {}, credentials: 'omit' };
+        if (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') init.body = args.body;
+        const r = await fetch(args.url, init);
+        const text = await r.text();
+        return { status: r.status, statusText: r.statusText, body: text };
+      } catch (e) {
+        return { status: 0, statusText: 'fetch-error', body: String(e && e.message || e) };
+      }
+    }, { url, method: String(method || 'GET').toUpperCase(), headers: headers || {}, body: (body != null ? String(body) : null) });
+    return result;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +139,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, out);
     } catch (e) {
       console.log(`[relay] FAIL ${url} via ${proxy.host}:${proxy.port} -> ${e.message}`);
+      // context ভেঙে গেলে পরের বার নতুন করে বানাই
+      try { const k = proxyKey(proxy); const p = pages.get(k); if (p) { await p.context.close().catch(() => {}); pages.delete(k); } } catch (_) {}
       return sendJson(res, 200, { error: e.message });
     }
   }
@@ -155,12 +169,12 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, async () => {
   console.log('====================================================');
-  console.log(`  RJ relay (Chrome-TLS / cycletls) on http://${HOST}:${PORT}`);
-  console.log('  prothom bar cycletls ektu somoy nite pare (Go binary namay)।');
-  console.log('  ei window khola rakhun। bondho korte: Ctrl + C');
+  console.log(`  RJ relay (REAL browser / Playwright) on http://${HOST}:${PORT}`);
+  console.log('  Chromium chalu hocche...');
+  console.log('  ei window khola rakhun. bondho korte: Ctrl + C');
   console.log('====================================================');
-  try { await getClient(); console.log('  ✓ cycletls ready'); }
-  catch (e) { console.error('  [!] cycletls init failed:', e.message); }
+  try { await getBrowser(); console.log('  ✓ Chromium ready'); }
+  catch (e) { console.error('  [!] Chromium launch failed:', e.message); console.error('      chalao: npx playwright install chromium'); }
 });
 
-process.on('SIGINT', async () => { try { if (cycleTLS) await cycleTLS.exit(); } catch (_) {} process.exit(0); });
+process.on('SIGINT', async () => { try { if (browser) await browser.close(); } catch (_) {} process.exit(0); });
