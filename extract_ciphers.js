@@ -130,7 +130,12 @@ const baseDefs={},wrapDefs={};
 {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
 function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
 
-// ---- FIX: resolveExpr now supports 1 OR 2 string-arrays (rotation brute-forced per array) ----
+// ---- resolveExpr: supports keys assembled from ANY number of string-arrays ----
+// Each array's correct rotation is found INDEPENDENTLY (per-array printability of the
+// terms that use it), so cost is O(sum of array lengths), not the product. Falls back
+// to full brute-force for 1-2 arrays if the independent pass is inconclusive.
+function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
+function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
 function resolveExpr(expr,pos){
   const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
   const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
@@ -139,23 +144,49 @@ function resolveExpr(expr,pos){
     if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner))stack.push(x);stack.push(w.base);}
     else if(b){need.base[n]=b;if(b.arrfn)arrset.add(b.arrfn);}}
   const arr=[...arrset];
-  if(arr.length===0||arr.length>2)return null;   // 1 or 2 arrays supported
-  const bases=arr.map(getArr);
-  if(bases.some(b=>!b))return null;
-  // compile the decoder+expr ONCE; arrays are supplied per-rotation via __arrs
-  let code="";
-  for(const[n,d]of Object.entries(need.base))code+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
-  for(const[n,w]of Object.entries(need.wrap))code+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
-  let fn;try{fn=new Function("__arrs","__rc4","__b64",code+"return ("+expr+")");}catch(e){return null;}
+  if(arr.length===0)return null;
+  const baseArr={};for(const a of arr){const g=getArr(a);if(!g)return null;baseArr[a]=g;}
   const rot=(a,r)=>a.slice(r).concat(a.slice(0,r));
   const ok=v=>typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3;
-  if(arr.length===1){
-    for(let r=0;r<bases[0].length;r++){try{const v=fn({[arr[0]]:rot(bases[0],r)},rc4,b64);if(ok(v))return v;}catch(e){}}
-    return null;
-  }
-  // two arrays: brute force both rotations (compiled fn keeps it fast)
-  for(let r0=0;r0<bases[0].length;r0++){const A0=rot(bases[0],r0);
-    for(let r1=0;r1<bases[1].length;r1++){try{const v=fn({[arr[0]]:A0,[arr[1]]:rot(bases[1],r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}
+  // decoder defs (shared by both methods)
+  let decl="";
+  for(const[n,d]of Object.entries(need.base))decl+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
+  for(const[n,w]of Object.entries(need.wrap))decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
+  let fnFull;try{fnFull=new Function("__arrs","__rc4","__b64",decl+"return ("+expr+")");}catch(e){return null;}
+
+  // ---------- METHOD A: independent per-array rotation (scales to any N) ----------
+  try{
+    const terms=splitTopPlus(expr);
+    // per term: which array (if it's a decoder call)
+    const termArr=terms.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
+    const fnTerms=new Function("__arrs","__rc4","__b64",decl+"return ["+terms.join(",")+"]");
+    // group term indices by array
+    const groups={};arr.forEach(a=>groups[a]=[]);termArr.forEach((a,i)=>{if(a&&groups[a])groups[a].push(i);});
+    // for each array, find rotations where all its terms decode printable
+    const passRot={};let feasible=true;
+    for(const a of arr){
+      const idxs=groups[a];if(!idxs.length){feasible=false;break;}
+      const good=[];
+      for(let r=0;r<baseArr[a].length;r++){
+        const arrs={};arr.forEach(x=>arrs[x]=x===a?rot(baseArr[a],r):baseArr[x]);
+        let allok=true;try{const vals=fnTerms(arrs,rc4,b64);for(const i of idxs){const v=vals[i];if(typeof v!=="string"||!/^[\x20-\x7e]*$/.test(v)){allok=false;break;}}}catch(e){allok=false;}
+        if(allok)good.push(r);
+        if(good.length>8)break; // too ambiguous → let full brute-force handle
+      }
+      if(!good.length||good.length>8){feasible=false;break;}
+      passRot[a]=good;
+    }
+    if(feasible){
+      // cartesian product of the (small) candidate rotations, validate full expr
+      const keys=arr, lists=keys.map(a=>passRot[a]);
+      const combos=(function prod(i){if(i===lists.length)return [[]];const rest=prod(i+1);const out=[];for(const r of lists[i])for(const t of rest)out.push([r,...t]);return out;})(0);
+      for(const combo of combos){const arrs={};keys.forEach((a,i)=>arrs[a]=rot(baseArr[a],combo[i]));try{const v=fnFull(arrs,rc4,b64);if(ok(v))return v;}catch(e){}}
+    }
+  }catch(e){}
+
+  // ---------- METHOD B: full brute-force fallback (1-2 arrays) ----------
+  if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
+  if(arr.length===2){const A=baseArr[arr[0]],B=baseArr[arr[1]];for(let r0=0;r0<A.length;r0++){const A0=rot(A,r0);for(let r1=0;r1<B.length;r1++){try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;}
   return null;
 }
 
