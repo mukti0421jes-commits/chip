@@ -5,19 +5,19 @@ const Charset = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-
 
 function charsetIndex(ch) { return Charset.indexOf(ch); }
 
-// Signin cipher (version 10, LOGISTIC)
-const SigninKey = "%4m_yl@y(1or0!0xtpp6m1ihs6dg@h(+(f*mu9!%c0+2o%-g*o";
-const SigninSkip = 3;
-const SigninEncryptLen = 17;
-function ProcessTokenSignin(token) { return cryptLogistic(token, SigninKey, SigninSkip, SigninEncryptLen, true); }
-function ReverseTokenSignin(token) { return cryptLogistic(token, SigninKey, SigninSkip, SigninEncryptLen, false); }
+// Signin cipher (version 6, POLYNOMIAL)
+const SigninKey = "jwmm)y9btdj4m3yh2c^o(mxekdmgl4x+tq2cyb&e$=rt&ajd&-";
+const SigninSkip = 4;
+const SigninEncryptLen = 23;
+function ProcessTokenSignin(token) { return cryptPolynomial(token, SigninKey, SigninSkip, SigninEncryptLen, true); }
+function ReverseTokenSignin(token) { return cryptPolynomial(token, SigninKey, SigninSkip, SigninEncryptLen, false); }
 
-// Reserve cipher (version 9, MODSQ)
-const ReserveKey = "vsk9$0g85ncn1b842gefi$vfu(kjc4kbdf+(o6q54o)v4(0-^s";
-const ReserveSkip = 9;
-const ReserveEncryptLen = 19;
-function ProcessTokenReserve(token) { return cryptModSquare(token, ReserveKey, ReserveSkip, ReserveEncryptLen, true); }
-function ReverseTokenReserve(token) { return cryptModSquare(token, ReserveKey, ReserveSkip, ReserveEncryptLen, false); }
+// Reserve cipher (version 2, SUBST — key-derived 64-element permutation)
+const ReserveKey = "e+=te%hn)s5d-266u6u^hys1s(d8a)&adf$ia3$pz6st)7%$g#";
+const ReserveSkip = 7;
+const ReserveEncryptLen = 28;
+function ProcessTokenReserve(token) { return cryptSubst(token, ReserveKey, ReserveSkip, ReserveEncryptLen, true); }
+function ReverseTokenReserve(token) { return cryptSubst(token, ReserveKey, ReserveSkip, ReserveEncryptLen, false); }
 
 
 // ---- Router: encryptToken(rawToken, purpose) / decryptToken(rawToken, purpose) ----
@@ -50,34 +50,38 @@ function additiveShift(token, key, skip, encryptLen, encrypt, genShifts) {
   return token.slice(0, p) + mid.join("") + token.slice(p + a);
 }
 
-// ---- Modular-squaring shift cipher (BBS-style, A = 0xe8d6ca6163, seed 314159265) ----
-function generateShiftsModSquare(key, length) {
-  const A = BigInt("0xe8d6ca6163");
-  let s = 314159265n;
-  for (let i = 0; i < key.length; i++) s = (s + BigInt(key.charCodeAt(i)) * BigInt(i + 1)) % A;
-  if (s % 2n === 0n) s += 1n;
-  const shifts = new Array(length);
-  for (let i = 0; i < length; i++) { s = (s * s) % A; shifts[i] = Number(s % BigInt(Charset.length)); }
-  return shifts;
-}
-function cryptModSquare(token, key, skip, encryptLen, encrypt) {
-  return additiveShift(token, key, skip, encryptLen, encrypt, generateShiftsModSquare);
-}
-
-// ---- Logistic-map chaotic shift cipher (r = 3.99, 100-step warmup) ----
-function generateShiftsLogistic(key, length) {
-  let u = 0.5;
-  for (let i = 0; i < key.length; i++) u = (u + key.charCodeAt(i) / 256) % 1;
-  if (u === 0) u = 0.5;
+// ---- Polynomial (GF(67)) additive-shift cipher (Signin) ----
+function generateShiftsPolynomial(key, length) {
+  const coeff = [];
+  for (let n = 0; n < key.length; n++) coeff.push(((key.charCodeAt(n % key.length) + n) % 67 + 67) % 67);
   const shifts = [];
-  for (let f = 0; f < length + 100; f++) {
-    u = (3.99 * u) * (1 - u);
-    if (f >= 100) shifts.push(Math.floor(1e7 * u) % Charset.length);
+  for (let d = 1; d <= length; d++) {
+    let e = 0, t = 1;
+    for (const a of coeff) { e = (e + a * t) % 67; t = (t * d) % 67; }
+    shifts.push(e % Charset.length);
   }
   return shifts;
 }
-function cryptLogistic(token, key, skip, encryptLen, encrypt) {
-  return additiveShift(token, key, skip, encryptLen, encrypt, generateShiftsLogistic);
+function cryptPolynomial(token, key, skip, encryptLen, encrypt) {
+  return additiveShift(token, key, skip, encryptLen, encrypt, generateShiftsPolynomial);
+}
+
+// ---- Substitution cipher (key-derived 64-element permutation) (Reserve) ----
+// PERM was recovered from the live bundle for the Reserve key; it IS the cipher's net mapping.
+const PERM = [24,47,58,41,28,43,62,45,23,4,53,2,19,0,49,6,42,29,8,27,46,25,12,31,33,50,3,52,37,54,7,48,60,11,30,13,56,15,26,9,51,32,17,38,55,36,21,34,14,57,44,63,10,61,40,59,5,22,39,16,1,18,35,20];
+const PERM_INV = (() => { const v = new Array(64); for (let i = 0; i < 64; i++) v[PERM[i]] = i; return v; })();
+function cryptSubst(token, key, skip, encryptLen, encrypt) {
+  if (!token) return token;
+  const p = Math.max(0, Math.min(skip, token.length));
+  const a = Math.max(0, Math.min(encryptLen, token.length - p));
+  if (a === 0) return token;
+  const mid = token.slice(p, p + a).split("");
+  if (encrypt) {
+    for (let i = 0; i < mid.length; i++) { const x = charsetIndex(mid[i]); if (x !== -1) mid[i] = Charset[PERM[x]]; }
+  } else {
+    for (let i = 0; i < mid.length; i++) { const x = charsetIndex(mid[i]); if (x !== -1) mid[i] = Charset[PERM_INV[x]]; }
+  }
+  return token.slice(0, p) + mid.join("") + token.slice(p + a);
 }
 
 if (typeof module !== "undefined") {
