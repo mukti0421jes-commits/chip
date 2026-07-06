@@ -620,10 +620,11 @@ function encConfigInit() {
             encConfigSave(p);
         }
     }
+    // NOTE: no auto bundle-fetch here — it hangs the browser. Config is resolved
+    // ONLY when the user clicks the SCAN (⟳) button. See scan-btn handler below.
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
-        encConfigAutoFetch();
     }, 500);
 }
 
@@ -643,6 +644,112 @@ async function findBundleUrl() {
         if (m) return new URL(m[0], location.origin).href;
     } catch(e) {}
     return null;
+}
+
+// ── ROBUST N-ARRAY SECRET RESOLVER (ported from extract_ciphers.js) ──────────
+// The old resolveConfig re-ran the obfuscated decoders + rotation IIFEs via a single
+// text-assembled new Function(). That FAILED today whenever a secret was assembled from
+// 2+ string-arrays (the assembly missed a rotation / mixed scopes). This version instead
+// RECONSTRUCTS each string-array + its base64/RC4 decoder from scratch, then finds each
+// array's correct rotation INDEPENDENTLY by requiring its decoded terms to be printable —
+// so it scales to ANY number of arrays (cost = sum of array lengths, not the product).
+function buildBundleResolver(src) {
+    function mB(s,i,o,c){let d=0;for(;i<s.length;i++){if(s[i]===o)d++;else if(s[i]===c){d--;if(d===0)return i;}}return -1;}
+    function mP(s,i){let d=0,q=null;for(;i<s.length;i++){const c=s[i];if(q){if(c==="\\"){i++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="(")d++;else if(c===")"){d--;if(d===0)return i;}}return -1;}
+    function b64(e){let t="",n="";for(let r,o,i=0,a=0;o=e.charAt(a++);~o&&(r=i%4?64*r+o:o,i++%4)?t+=String.fromCharCode(255&r>>(-2*i&6)):0)o="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=".indexOf(o);for(let r=0,o=t.length;r<o;r++)n+="%"+("00"+t.charCodeAt(r).toString(16)).slice(-2);try{return decodeURIComponent(n)}catch(_){return null}}
+    function rc4(e,key){let n,r,o=[],i=0,a="";e=b64(e);if(e===null)return null;for(r=0;r<256;r++)o[r]=r;for(r=0;r<256;r++){i=(i+o[r]+key.charCodeAt(r%key.length))%256;n=o[r];o[r]=o[i];o[i]=n;}r=0;i=0;for(let c=0;c<e.length;c++){r=(r+1)%256;i=(i+o[r])%256;n=o[r];o[r]=o[i];o[i]=n;a+=String.fromCharCode(e.charCodeAt(c)^o[(o[r]+o[i])%256]);}return a;}
+    const arrCache={};function getArr(fn){if(fn in arrCache)return arrCache[fn];let st=src.indexOf("function "+fn+"(){const e=[");if(st<0)st=src.indexOf("function "+fn+"(){var e=[");if(st<0)return arrCache[fn]=null;const lb=src.indexOf("[",st);try{return arrCache[fn]=eval(src.slice(lb,mB(src,lb,"[","]")+1));}catch(_){return arrCache[fn]=null;}}
+    const baseDefs={},wrapDefs={};
+    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{e-=(\d+)/g;while(m=re.exec(src)){const bs=src.indexOf("{",m.index);const body=src.slice(bs,mB(src,bs,"{","}")+1);const am=/=\s*([\w$]+)\(\)/.exec(body);(baseDefs[m[1]]=baseDefs[m[1]]||[]).push({idx:m.index,offset:+m[2],arrfn:am?am[1]:null,rc4:/o\[r\]\+t\.charCodeAt/.test(body)||/charCodeAt\(\w%\w\.length\)/.test(body)});}}
+    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
+    function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
+    function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
+    function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
+    function resolveExpr(expr,pos){
+        const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
+        const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
+        while(stack.length){const n=stack.pop();if(need.base[n]||need.wrap[n])continue;
+            const w=nearest(wrapDefs,n,pos),b=nearest(baseDefs,n,pos);
+            if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner))stack.push(x);stack.push(w.base);}
+            else if(b){need.base[n]=b;if(b.arrfn)arrset.add(b.arrfn);}}
+        const arr=[...arrset];
+        if(arr.length===0)return null;
+        const baseArr={};for(const a of arr){const g=getArr(a);if(!g)return null;baseArr[a]=g;}
+        const rot=(a,r)=>a.slice(r).concat(a.slice(0,r));
+        const ok=v=>typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3;
+        let decl="";
+        for(const[n,d]of Object.entries(need.base))decl+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
+        for(const[n,w]of Object.entries(need.wrap))decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
+        let fnFull;try{fnFull=new Function("__arrs","__rc4","__b64",decl+"return ("+expr+")");}catch(e){return null;}
+        // METHOD A: independent per-array rotation (scales to any N)
+        try{
+            const terms=splitTopPlus(expr);
+            const termArr=terms.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
+            const fnTerms=new Function("__arrs","__rc4","__b64",decl+"return ["+terms.join(",")+"]");
+            const groups={};arr.forEach(a=>groups[a]=[]);termArr.forEach((a,i)=>{if(a&&groups[a])groups[a].push(i);});
+            const passRot={};let feasible=true;
+            for(const a of arr){
+                const idxs=groups[a];if(!idxs.length){feasible=false;break;}
+                const good=[];
+                for(let r=0;r<baseArr[a].length;r++){
+                    const arrs={};arr.forEach(x=>arrs[x]=x===a?rot(baseArr[a],r):baseArr[x]);
+                    let allok=true;try{const vals=fnTerms(arrs,rc4,b64);for(const i of idxs){const v=vals[i];if(typeof v!=="string"||!/^[\x20-\x7e]*$/.test(v)){allok=false;break;}}}catch(e){allok=false;}
+                    if(allok)good.push(r);
+                    if(good.length>8)break;
+                }
+                if(!good.length||good.length>8){feasible=false;break;}
+                passRot[a]=good;
+            }
+            if(feasible){
+                const keys=arr, lists=keys.map(a=>passRot[a]);
+                const combos=(function prod(i){if(i===lists.length)return [[]];const rest=prod(i+1);const out=[];for(const r of lists[i])for(const t of rest)out.push([r,...t]);return out;})(0);
+                for(const combo of combos){const arrs={};keys.forEach((a,i)=>arrs[a]=rot(baseArr[a],combo[i]));try{const v=fnFull(arrs,rc4,b64);if(ok(v))return v;}catch(e){}}
+            }
+        }catch(e){}
+        // METHOD B: full brute-force fallback (1-2 arrays)
+        if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
+        if(arr.length===2){const A=baseArr[arr[0]],B=baseArr[arr[1]];for(let r0=0;r0<A.length;r0++){const A0=rot(A,r0);for(let r1=0;r1<B.length;r1++){try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;}
+        return null;
+    }
+    return { resolveExpr };
+}
+
+// role scoring (signin vs reserve) by keyword proximity — mirrors extract_ciphers.js
+function encRoleScores(src, pos) {
+    const w = src.slice(Math.max(0, pos - 1400), pos + 1400);
+    const rM = w.match(/reserve|slot|booking|appointment|schedul/gi) || [];
+    const sM = w.match(/sign-?in|signin|log-?in|login|\botp\b|verify|password|phone|forgot|forget|resend|signup/gi) || [];
+    return { sig: sM.length, res: rM.length };
+}
+
+// Resolve BOTH configs directly from the bundle object literals (no fragile var-name step).
+// Returns { signin, reserve } where each is { key, skip, length, version } or null.
+function resolveBundleConfigs(text) {
+    const R = buildBundleResolver(text);
+    const cfgRe = /\{secret:([^{}]*?),startAt:(-?\d+),length:(-?\d+),version:(\d+)\}/g;
+    const found = []; let cm;
+    while ((cm = cfgRe.exec(text))) {
+        const secret = R.resolveExpr(cm[1], cm.index);
+        if (!secret) { console.warn('[RJ EncAuto] config v' + cm[4] + ' secret decode FAILED @', cm.index); continue; }
+        const sc = encRoleScores(text, cm.index);
+        found.push({ key: secret, skip: +cm[2], length: +cm[3], version: +cm[4], sig: sc.sig, res: sc.res });
+    }
+    // dedup by version|secret, summing role evidence
+    const uniq = []; const seen = new Map();
+    for (const c of found) {
+        const k = c.version + '|' + c.key;
+        if (seen.has(k)) { const e = seen.get(k); e.sig += c.sig; e.res += c.res; continue; }
+        const e = { ...c }; seen.set(k, e); uniq.push(e);
+    }
+    for (const c of uniq) { if (c.sig > c.res) c.role = 'signin'; else if (c.res > c.sig) c.role = 'reserve'; else c.role = null; }
+    // infer the missing label when exactly two configs and one is known
+    if (uniq.length === 2) {
+        const known = uniq.filter(c => c.role), unknown = uniq.filter(c => !c.role);
+        if (known.length === 1 && unknown.length === 1) unknown[0].role = known[0].role === 'signin' ? 'reserve' : 'signin';
+    }
+    const out = { signin: null, reserve: null };
+    for (const c of uniq) { if (c.role && !out[c.role]) out[c.role] = { key: c.key, skip: c.skip, length: c.length, version: c.version }; }
+    return out;
 }
 
 async function encConfigAutoFetch(forceReload) {
@@ -665,7 +772,7 @@ async function encConfigAutoFetch(forceReload) {
         localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     }
 
-    logStatus('\ud83d\udd0d Loading encryption config from IVAC bundle\u2026', 'y');
+    logStatus('🔍 Loading encryption config from IVAC bundle…', 'y');
     try {
         const text = await pageFetch(bundleSrc).then(r => {
             if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching bundle');
@@ -673,192 +780,50 @@ async function encConfigAutoFetch(forceReload) {
         });
         console.log('[RJ EncAuto] Bundle fetched:', text.length, 'chars from', bundleSrc);
 
-        // Find config objects with startAt, length, version fields.
-        // Supports multiple field orderings and whitespace variations.
-        const CFG_PATTERNS = [
-            /const\s+(\w+)\s*=\s*\{[^}]*?secret\s*:[^,}]+[^}]*?startAt\s*:\s*\d+[^}]*?length\s*:\s*\d+[^}]*?version\s*:\s*\d+[^}]*?\}/g,
-            /const\s+(\w+)\s*=\s*\{[^}]*?startAt\s*:\s*\d+[^}]*?length\s*:\s*\d+[^}]*?version\s*:\s*\d+[^}]*?secret\s*:[^,}]+[^}]*?\}/g,
-            /const\s+(\w+)\s*=\s*\{[^}]+,startAt:\d+[^}]*?,length:\d+[^}]*?,version:\d+[^}]*?\}/g
-        ];
+        // Robust N-array resolve: find every {secret,startAt,length,version} literal,
+        // decode each secret (handles ANY number of string-arrays), assign signin/reserve by keyword.
+        const resolved = resolveBundleConfigs(text);
+        const signin  = resolved.signin;
+        const reserve = resolved.reserve;
 
-        const SIGNIN_KW   = ['signin', 'sign-in', 'login', 'sign_in'];
-        const RESERVE_KW  = ['reserv', 'slot'];
-        const CTX         = 3000;
-
-        let signinVar = null, reserveVar = null;
-        let cfgMatchesFound = 0;
-
-        for (const CFG_RE of CFG_PATTERNS) {
-            CFG_RE.lastIndex = 0;
-            for (const m of text.matchAll(CFG_RE)) {
-                cfgMatchesFound++;
-                const varName = m[1];
-                const ctx = text.slice(Math.max(0, m.index - CTX), m.index + m[0].length + CTX).toLowerCase();
-                const sc  = SIGNIN_KW.reduce( (n, w) => n + ctx.split(w).length - 1, 0);
-                const rc  = RESERVE_KW.reduce((n, w) => n + ctx.split(w).length - 1, 0);
-                if (sc > rc && !signinVar)  signinVar  = varName;
-                if (rc > sc && !reserveVar) reserveVar = varName;
-            }
+        if (!signin && !reserve) {
+            logStatus('⚠ Live resolve failed — keeping current verified config', 'y');
+            console.warn('[RJ EncAuto] No config decoded from bundle. Keeping existing config.');
+            return { signin: false, reserve: false };
         }
-
-        if (cfgMatchesFound === 0) {
-            logStatus('\u26a0 Auto-config: no config pattern matched \u2014 keeping current config', 'y');
-            console.warn('[RJ EncAuto] No config object found in bundle. Keeping existing (verified) config.');
-            return; // do NOT disable \u2014 keep the working config
-        }
-        if (!signinVar) logStatus('\u26a0 Signin variable not identified (' + cfgMatchesFound + ' config(s) found)', 'y');
-        if (!reserveVar) logStatus('\u26a0 Reserve variable not identified (' + cfgMatchesFound + ' config(s) found)', 'y');
-
-        // ── DYNAMIC SECRET RESOLVER ────────────────────────────────────────
-        const _braceFn = (name) => {
-            let s = text.indexOf('function ' + name + '(');
-            if (s < 0) s = text.indexOf(name + '=function(');
-            if (s < 0) s = text.indexOf(name + ' = function(');
-            if (s < 0) return null;
-            let i = text.indexOf('{', s);
-            if (i < 0) return null;
-            let depth = 0, inStr = false, strCh = '';
-            for (; i < text.length; i++) {
-                const c = text[i];
-                if (!inStr && (c === '"' || c === "'" || c === '`')) { inStr = true; strCh = c; continue; }
-                if (inStr) {
-                    if (c === '\\' && i + 1 < text.length) { i++; continue; }
-                    if (c === strCh) inStr = false;
-                    continue;
-                }
-                if (c === '{') depth++;
-                else if (c === '}') { if (--depth === 0) return text.slice(s, i + 1); }
-            }
-            return null;
-        };
-        const _idents = (str) => {
-            const set = new Set(); let m;
-            const re = /([A-Za-z_$][\w$]*)\(/g;
-            while ((m = re.exec(str))) set.add(m[1]);
-            return [...set];
-        };
-        const resolveConfig = (varName) => {
-            console.log('[RJ EncAuto] Resolving config for variable:', varName);
-            const keyVariants = [
-                'const ' + varName + '={secret:',
-                'const ' + varName + ' = {secret:',
-                'const ' + varName + '={secret :',
-                'const ' + varName + ' = {secret :'
-            ];
-            let s = -1, usedKey = '';
-            for (const kv of keyVariants) {
-                const idx = text.indexOf(kv);
-                if (idx >= 0) { s = idx; usedKey = kv; break; }
-            }
-            if (s < 0) {
-                console.warn('[RJ EncAuto] secret declaration not found for', varName);
-                return null;
-            }
-            const exprStart = s + usedKey.length;
-            let exprEnd = -1;
-            for (const sp of [',startAt:', ', startAt:', ',\nstartAt:', ',\n startAt:']) {
-                const idx = text.indexOf(sp, exprStart);
-                if (idx >= 0 && (exprEnd === -1 || idx < exprEnd)) exprEnd = idx;
-            }
-            if (exprEnd < 0) {
-                console.warn('[RJ EncAuto] startAt not found after secret for', varName);
-                return null;
-            }
-            const expr = text.slice(exprStart, exprEnd);
-            console.log('[RJ EncAuto] Secret expr (' + expr.length + ' chars):', expr.slice(0, 80) + (expr.length > 80 ? '...' : ''));
-
-            const objSeg = text.slice(s, s + 500);
-            const sa = objSeg.match(/startAt\s*:\s*(\d+)/);
-            const ln = objSeg.match(/length\s*:\s*(\d+)/);
-            const ver = objSeg.match(/version\s*:\s*(\d+)/);
-            if (!sa || !ln || !ver) {
-                console.error('[RJ EncAuto] Missing fields for', varName, '| objSeg:', objSeg.slice(0, 200));
-                return null;
-            }
-
-            const pieces = {};
-            for (const w of _idents(expr)) { const c = _braceFn(w); if (c) pieces[w] = c; }
-            const bases = new Set();
-            for (const code of Object.values(pieces)) {
-                let m; const re = /return\s+([A-Za-z_$][\w$]*)\(/g;
-                while ((m = re.exec(code))) bases.add(m[1]);
-            }
-            for (const b of bases) { if (!pieces[b]) { const c = _braceFn(b); if (c) pieces[b] = c; } }
-            const arrays = new Set();
-            for (const code of Object.values(pieces)) {
-                let m;
-                const r1 = /(?:var|const|let)\s+\w+=([A-Za-z_$][\w$]*)\(\)/g;
-                while ((m = r1.exec(code))) arrays.add(m[1]);
-                const r2 = /=([A-Za-z_$][\w$]*)\(\),/g;
-                while ((m = r2.exec(code))) arrays.add(m[1]);
-            }
-            const rotations = [];
-            for (const a of arrays) {
-                if (!pieces[a]) { const c = _braceFn(a); if (c) pieces[a] = c; }
-                const end = text.indexOf('}(' + a + ')');
-                if (end !== -1) {
-                    let rs = -1;
-                    for (const rp of ['!function(e){', '!function(e) {', '!function (e){', '!function (e) {']) {
-                        const idx = text.lastIndexOf(rp, end);
-                        if (idx !== -1 && (rs === -1 || idx > rs)) rs = idx;
-                    }
-                    if (rs !== -1 && rs > end - 8000) rotations.push(text.slice(rs, end + ('}(' + a + ')').length));
-                }
-            }
-            const assembled = Object.values(pieces).join('\n') + '\n' +
-                              rotations.map(r => r + ';').join('\n') + '\n' +
-                              'return (' + expr + ');';
-            let secret;
-            try {
-                secret = (new Function(assembled))();
-            } catch (err) {
-                console.error('[RJ EncAuto] new Function() failed for', varName + ':', err.message);
-                console.error('[RJ EncAuto] Possible CSP block or obfuscation change. Assembled:', assembled.length, 'chars');
-                return null;
-            }
-            if (typeof secret !== 'string' || !secret) {
-                console.error('[RJ EncAuto] Invalid secret for', varName + ':', typeof secret, String(secret).slice(0, 50));
-                return null;
-            }
-            console.log('[RJ EncAuto] Resolved ' + varName + ': v' + ver[1] + ' skip=' + sa[1] + ' len=' + ln[1] + ' key[' + secret.length + ']');
-            return { secret, startAt: parseInt(sa[1]), length: parseInt(ln[1]), version: parseInt(ver[1]) };
-        };
-
-        let signin  = signinVar  ? resolveConfig(signinVar)  : null;
-        let reserve = reserveVar ? resolveConfig(reserveVar) : null;
 
         if (signin) {
-            encConfig.signin = { active: true, key: signin.secret, skip: signin.startAt, length: signin.length, version: signin.version };
+            encConfig.signin = { active: true, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
             encConfigSave('signin');
-            logStatus('\u2705 Signin: v' + signin.version + ' skip=' + signin.startAt + ' len=' + signin.length + ' key[' + signin.secret.length + ']', 'g');
+            logStatus('✅ Signin: v' + signin.version + ' skip=' + signin.skip + ' len=' + signin.length + ' key[' + signin.key.length + ']', 'g');
         } else {
-            // resolve failed \u2014 KEEP existing (verified) config, do not disable
-            if (signinVar) logStatus('\u26a0 Signin: var ' + signinVar + ' found but resolve failed \u2014 keeping current config', 'y');
+            logStatus('⚠ Signin not resolved — keeping current config', 'y');
         }
         if (reserve) {
-            encConfig.reserve = { active: true, key: reserve.secret, skip: reserve.startAt, length: reserve.length, version: reserve.version };
+            encConfig.reserve = { active: true, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
             encConfigSave('reserve');
-            logStatus('\u2705 Reserve: v' + reserve.version + ' skip=' + reserve.startAt + ' len=' + reserve.length + ' key[' + reserve.secret.length + ']', 'g');
+            logStatus('✅ Reserve: v' + reserve.version + ' skip=' + reserve.skip + ' len=' + reserve.length + ' key[' + reserve.key.length + ']', 'g');
         } else {
-            if (reserveVar) logStatus('\u26a0 Reserve: var ' + reserveVar + ' found but resolve failed \u2014 keeping current config', 'y');
+            logStatus('⚠ Reserve not resolved — keeping current config', 'y');
         }
 
-        if (signin || reserve) localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
+        localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
 
         if (signin && reserve) {
-            logStatus('\u2705 Encryption config fully resolved from live bundle!', 'g');
-        } else if (signin || reserve) {
-            logStatus('\u26a0 Partial resolve \u2014 other purpose kept on current config', 'y');
+            logStatus('✅ Encryption config fully resolved from live bundle!', 'g');
         } else {
-            logStatus('\u26a0 Live resolve failed \u2014 using current verified config', 'y');
+            logStatus('⚠ Partial resolve — other purpose kept on current config', 'y');
         }
+
+        return { signin: !!signin, reserve: !!reserve };
 
     } catch (e) {
         console.error('[RJ EncAuto] Top-level error:', e);
-        // KEEP existing config on crash \u2014 never send raw
-        logStatus('\u26a0 Auto-config error: ' + e.message + ' \u2014 keeping current config', 'y');
+        // KEEP existing config on crash — never send raw
+        logStatus('⚠ Auto-config error: ' + e.message + ' — keeping current config', 'y');
+        return { signin: false, reserve: false };
     }
 }
 
@@ -1404,7 +1369,7 @@ const h2html = `
 <div id="p-fab" class="hidden">RJ</div>
 <div id="p">
 <div class="dh" id="dh"> <span class="dt">RJ SLOT v7.5 H2</span>
-<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <button class="db" id="mb">&minus;</button>
+<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="enc-clear-btn" title="Clear all encryption config (stops dangerous signin auto-retry from stale config)" style="font-size:10px;font-weight:700;letter-spacing:.2px">E_encrpt</button> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <button class="db" id="mb">&minus;</button>
 </div>
 </div>
 
@@ -2023,11 +1988,58 @@ document.getElementById('pl-del-appt')?.addEventListener('click', () => {
     } catch(e) {}
 });
 
-// SCAN button: force re-scan bundle for encryption config
-document.getElementById('scan-btn')?.addEventListener('click', () => {
+// E_encrpt button: fully clear encryption config.
+// A half-cleared previous config keeps signin auto-retrying (dangerous) — this wipes
+// the live config, localStorage, and the Encrypt-tab input fields so nothing lingers.
+document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
+    try { stopFlag.value = true; } catch (e) {}          // halt any running/retrying pipeline
+    encConfig.signin  = {};
+    encConfig.reserve = {};
+    try {
+        localStorage.removeItem(ENC_SIGNIN_KEY);
+        localStorage.removeItem(ENC_RESERVE_KEY);
+        localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
+    } catch (e) {}
+    // clear the Encrypt-tab input fields for both purposes
+    for (const p of ['signin', 'reserve']) {
+        const keyInp = document.getElementById(`enc-${p}-key`);
+        const skipInp = document.getElementById(`enc-${p}-skip`);
+        const lenInp = document.getElementById(`enc-${p}-length`);
+        const verSel = document.getElementById(`enc-${p}-version`);
+        const statusEl = document.getElementById(`enc-${p}-status`);
+        if (keyInp) keyInp.value = '';
+        if (skipInp) skipInp.value = '';
+        if (lenInp) lenInp.value = '';
+        if (verSel) verSel.value = '';
+        if (statusEl) { statusEl.textContent = 'Inactive'; statusEl.style.color = '#8888aa'; }
+    }
+    logStatus('🧹 Encryption config cleared — signin auto-retry stopped', 'g');
+});
+
+// SCAN button: manually resolve encryption config from the live bundle.
+// On a successful fresh resolve that activates signin, auto-fire the signin pipeline
+// (Task 3 — auto-signin ONLY after a manual scan, never from background polling).
+document.getElementById('scan-btn')?.addEventListener('click', async () => {
     localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     logStatus('🔍 Manual scan — resolving encryption secret from live bundle…', 'y');
-    encConfigAutoFetch();
+    const res = await encConfigAutoFetch(true);
+    const signinReady = !!(res && res.signin && encConfig.signin && encConfig.signin.active && encConfig.signin.key);
+    if (!signinReady) {
+        logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
+        return;
+    }
+    // don't auto-signin if already logged in or a pipeline is already running
+    if (typeof isSessionValid === 'function' && isSessionValid()) {
+        logStatus('🔓 Already logged in — auto-signin skipped', 'y');
+        return;
+    }
+    if (typeof pipelineRunning !== 'undefined' && pipelineRunning) {
+        logStatus('⚠ Pipeline already running — auto-signin skipped', 'y');
+        return;
+    }
+    try { stopFlag.value = false; } catch (e) {}
+    logStatus('✅ Config active → Auto-start Signin…', 'g');
+    startPipelineFrom('signin');
 });
 
 // ==================== COUNTDOWN MANAGER ====================
@@ -3460,43 +3472,14 @@ setTimeout(() => { try { const restored = restoreSession(); if (restored) { cons
 // 503 window এ থেকেও (reload ছাড়াই) background poll করে — server up হলেই bundle live-scan
 // করে encryption config resolve করে; config ready (Encrypt tab এ Active) হলে তবেই Signin
 // auto শুরু করে। logged-in/valid session থাকলে কিছুই auto-click হয় না।
+// ── AUTO-START WATCHER DISABLED ──────────────────────────────────────────────
+// The old watcher polled every 1s and called encConfigAutoFetch(false) in a loop,
+// which fetched/parsed the huge bundle repeatedly and hung the browser — and could
+// fire signin off a stale/half-resolved config. Per request, encryption config is now
+// resolved ONLY on a manual SCAN (⟳) click, and auto-signin fires from that same
+// handler once the config is freshly resolved and activated (see scan-btn handler).
 (function serverUpWatcherAutoStart() {
-    let fired = false;
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const configReady = () => !!(encConfig.signin && encConfig.signin.active && encConfig.signin.key);
-
-    (async () => {
-        await sleep(1500); // panel + session restore settle
-        let announced503 = false, announcedWait = false;
-        for (let attempt = 0; ; attempt++) {
-            try {
-                if (fired || pipelineRunning) return;
-
-                // already logged in → never auto-click on reload
-                if (typeof isSessionValid === 'function' && isSessionValid()) {
-                    logStatus('🔓 Already logged in — Signin auto-start skipped', 'y');
-                    return;
-                }
-
-                // make sure the encryption config is resolved from the live bundle
-                if (!configReady()) {
-                    await encConfigAutoFetch(false);
-                }
-
-                if (configReady()) {
-                    fired = true;
-                    stopFlag.value = false;
-                    logStatus('✅ Encryption config ready → Auto-start Signin…', 'g');
-                    startPipelineFrom('signin');
-                    return;
-                }
-
-                // config not ready yet — either server is 503 or bundle not served yet
-                if (!announcedWait) { logStatus('⏳ Waiting for server + encryption config (polling)…', 'y'); announcedWait = true; }
-            } catch(e) {}
-            await sleep(1000); // poll interval during 503 / not-ready window (1s)
-        }
-    })();
+    /* intentionally disabled — see scan-btn handler for manual scan + auto-signin */
 })();
 
 // ==================================================================
