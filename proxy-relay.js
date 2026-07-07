@@ -116,21 +116,37 @@ async function doRequest(proxy, url, method, headers, body) {
   }, args);
   return serialize(key, async () => {
     let entry = await getPage(proxy);
+    let out;
     try {
-      return await evalFetch(entry.page);
+      out = await evalFetch(entry.page);
     } catch (e) {
       // Cloudflare/proxy often navigates the page → "Execution context was destroyed".
-      // Rebuild a fresh page for this proxy and retry ONCE; if it still fails, return a
-      // clean status 0 (the userscript maps that to 502 and rotates) instead of throwing.
+      // Rebuild a fresh page for this proxy and retry ONCE.
       const msg = String(e && e.message || e);
       try { const p = pages.get(key); if (p) { await p.context.close().catch(() => {}); pages.delete(key); } } catch (_) {}
+      try { entry = await getPage(proxy); out = await evalFetch(entry.page); }
+      catch (e2) { out = { status: 0, statusText: 'relay-error', body: 'relay: ' + msg }; }
+    }
+    // status 0 = the in-page fetch threw (CORS-masked Cloudflare block OR connection fail),
+    // and browser fetch hides the real reason. Ask Playwright's own HTTP client (through the
+    // SAME proxy context) for the REAL status so we can tell 403 (Cloudflare) from a proxy error.
+    if (out && out.status === 0) {
       try {
-        entry = await getPage(proxy);
-        return await evalFetch(entry.page);
-      } catch (e2) {
-        return { status: 0, statusText: 'relay-error', body: 'relay: ' + msg };
+        const rr = await entry.context.request.fetch(url, {
+          method: args.method, headers: args.headers,
+          data: (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') ? args.body : undefined,
+          timeout: 45000, ignoreHTTPSErrors: true, failOnStatusCode: false
+        });
+        const realStatus = rr.status();
+        const realBody = await rr.text().catch(() => '');
+        console.log(`[diag] ${proxy.host}:${proxy.port} browser-fetch=0 → context.request REAL status = ${realStatus}`);
+        out = { status: realStatus, statusText: rr.statusText ? rr.statusText() : '', body: realBody, _via: 'context.request' };
+      } catch (e3) {
+        console.log(`[diag] ${proxy.host}:${proxy.port} browser-fetch=0, context.request FAILED: ${String(e3 && e3.message || e3)}`);
+        out = { status: 0, statusText: 'proxy-connect-error', body: String(e3 && e3.message || e3) };
       }
     }
+    return out;
   });
 }
 
