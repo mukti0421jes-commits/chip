@@ -3434,7 +3434,7 @@ async function startPipelineFrom(startStep) {
     }
 })();
 
-(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
+(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
 
 (() => { ['btn-single', 'btn-auto'].forEach(id => { const old = document.getElementById(id); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', function() { if (this.classList.contains('b8')) { this.classList.remove('b8'); this.classList.add('b5'); } else { this.classList.remove('b5'); this.classList.add('b8'); } }); }); })();
 
