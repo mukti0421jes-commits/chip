@@ -39,11 +39,19 @@ const busy = new Map();       // proxyKey -> Promise chain (একটা context
 
 function proxyKey(p) { return p ? `${p.scheme}://${p.host}:${p.port}:${p.user || ''}` : 'direct'; }
 
+// Headful (visible) Chromium — Cloudflare detects/blocks HEADLESS automation regardless of
+// proxy IP, so a real visible window passes far more often. Set RELAY_HEADLESS=1 to force headless.
+const HEADLESS = process.env.RELAY_HEADLESS === '1';
 async function getBrowser() {
   if (browser) return browser;
   browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+    headless: HEADLESS,
+    args: [
+      '--no-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--start-minimized'
+    ]
   });
   return browser;
 }
@@ -67,10 +75,18 @@ async function getPage(proxy) {
     };
   }
   const context = await b.newContext(ctxOpts);
+  // light stealth — hide the most common headless/automation tells Cloudflare checks
+  await context.addInitScript(() => {
+    try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
+    try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (e) {}
+    try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (e) {}
+    try { window.chrome = window.chrome || { runtime: {} }; } catch (e) {}
+  });
   const page = await context.newPage();
-  // origin-এ বসাই যাতে fetch একই সাইট থেকে যায় (userscript যেভাবে করে)
-  try { await page.goto(ORIGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }); }
-  catch (e) { /* origin না লোড হলেও fetch চেষ্টা করব */ }
+  // origin-এ বসাই যাতে fetch একই সাইট থেকে যায় (userscript যেভাবে করে)।
+  // networkidle → Cloudflare challenge (jodi thake) settle howar somoy dei.
+  try { await page.goto(ORIGIN_URL, { waitUntil: 'networkidle', timeout: 60000 }); }
+  catch (e) { try { await page.goto(ORIGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e2) { /* fetch cheshta korbo */ } }
   const entry = { context, page, ready: true };
   pages.set(key, entry);
   return entry;
