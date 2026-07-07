@@ -157,6 +157,34 @@ const H2 = {
         return obj;
     },
 
+    // POST the request to the local relay (proxy-relay.js on :8781); the relay performs it
+    // through the chosen proxy (real Chromium → passes Cloudflare) and returns { status, body }.
+    _relayFetch(url, init, proxy, logId) {
+        return new Promise((resolve, reject) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'no GM for relay' }); return reject(new Error('No GM for proxy relay')); }
+            const relays = ['http://127.0.0.1:8781/relay', 'http://localhost:8781/relay'];
+            let i = 0;
+            const tryRelay = () => {
+                if (i >= relays.length) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'relay unreachable' }); return reject(new Error('Proxy relay not reachable — run proxy-relay.js on :8781')); }
+                const relayUrl = relays[i++];
+                const payload = JSON.stringify({ url, method: init.method || 'GET', headers: init.headers || {}, body: (init.body != null && typeof init.body !== 'string') ? String(init.body) : (init.body || null), proxy });
+                gmApi({ method: 'POST', url: relayUrl, headers: { 'content-type': 'application/json' }, data: payload, timeout: 60000,
+                    onload: (resp) => {
+                        let j; try { j = JSON.parse(resp.responseText); } catch(e) { return tryRelay(); }
+                        if (resp.status >= 200 && resp.status < 300 && j && typeof j.status === 'number') {
+                            const isOk = j.status >= 200 && j.status < 400;
+                            if (logId) netLogUpdate(logId, { status: j.status, state: isOk ? 'ok' : 'fail', note: `HTTP ${j.status} (proxy ${proxy.host}:${proxy.port})` });
+                            resolve(new Response(j.body, { status: j.status, statusText: j.statusText || '' }));
+                        } else if (j && j.error) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'proxy: ' + j.error }); reject(new Error('proxy relay: ' + j.error)); }
+                        else { tryRelay(); }
+                    },
+                    onerror: tryRelay, ontimeout: tryRelay });
+            };
+            tryRelay();
+        });
+    },
+
     async gmFetch(url, init = {}) {
         const method  = init.method || 'GET';
         const headers = this.headersToObject(init.headers || {});
@@ -172,6 +200,23 @@ const H2 = {
         }
 
         const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
+
+        // ── PER-CALL PROXY ROTATION ────────────────────────────────────────────
+        // When rotation (or a single connected proxy) is active, route this call through
+        // the local relay so it egresses via a proxy IP. Sticky-on-success / rotate-on-error.
+        const _proxy = (typeof pickProxyForCall === 'function') ? pickProxyForCall() : ((typeof window !== 'undefined') ? window._rjActiveProxy : null);
+        const _bodySimple = (body == null || typeof body === 'string');
+        if (_proxy && _proxy.host && !isConnectionCheck && _bodySimple) {
+            try {
+                const resp = await this._relayFetch(url, { method, headers, body }, _proxy, logId);
+                if (resp.status >= 400 && typeof rotateProxyOnError === 'function') rotateProxyOnError(_proxy);  // rotate for NEXT call
+                return resp;
+            } catch (e) {
+                if (typeof rotateProxyOnError === 'function') rotateProxyOnError(_proxy);   // proxy/relay failed → rotate
+                if (!isConnectionCheck) console.log('%c[RJ Fetch] ⚠ relay failed, trying direct', 'color:#fcd34d', { error: e.message });
+                // fall through to direct fetch below
+            }
+        }
 
         try {
             const fetchInit = { method, headers, credentials: init.credentials || 'omit' };
@@ -2346,6 +2391,47 @@ function refreshProxyStatusLine() {
 }
 
 function getActiveProxy() { const id = getActiveProxyId(); return loadProxies().find(p => p.id === id) || null; }
+
+// ── PER-CALL PROXY ROTATION ─────────────────────────────────────────────────
+// Rotation ON  → every API call egresses via a proxy from the pool. Sticky-on-success
+//               (keeps the same proxy while it works) / rotate-on-error (switches on failure).
+// Rotation OFF → falls back to the single connected proxy (window._rjActiveProxy), or direct.
+// Pool = saved proxies, optionally narrowed to the start–end range (1-indexed) in the Fetch tab.
+window._rjRotState = window._rjRotState || { current: null };
+function rjRotationOn() { return !!document.getElementById('ivac-parallel-proxy-rotation-toggle')?.classList.contains('on'); }
+function rjProxyPool() {
+    const all = loadProxies();
+    if (!all.length) return [];
+    const s = parseInt(document.getElementById('ivac-parallel-proxy-start')?.value, 10);
+    const e = parseInt(document.getElementById('ivac-parallel-proxy-end')?.value, 10);
+    if (!isNaN(s) && !isNaN(e) && s >= 1 && e >= s) return all.slice(s - 1, e);   // 1-indexed inclusive
+    return all;
+}
+function pickProxyForCall() {
+    if (rjRotationOn()) {
+        const pool = rjProxyPool();
+        if (!pool.length) return null;
+        const cur = window._rjRotState.current;
+        if (cur && pool.some(p => p.id === cur.id)) return cur;   // sticky: keep the working proxy
+        const next = pool[Math.floor(Math.random() * pool.length)];
+        window._rjRotState.current = next;
+        try { logStatus(`🌀 Proxy → ${next.label}`, 'y'); } catch(e) {}
+        return next;
+    }
+    // rotation off → single connected proxy (if any)
+    return (typeof window !== 'undefined') ? window._rjActiveProxy : null;
+}
+function rotateProxyOnError(usedProxy) {
+    if (!rjRotationOn()) return;
+    const pool = rjProxyPool();
+    if (pool.length < 1) { window._rjRotState.current = null; return; }
+    // pick a DIFFERENT proxy than the one that just failed
+    const others = pool.filter(p => !usedProxy || p.id !== usedProxy.id);
+    const nextPool = others.length ? others : pool;
+    const next = nextPool[Math.floor(Math.random() * nextPool.length)];
+    window._rjRotState.current = next;
+    try { logStatus(`🔁 Proxy error → rotating to ${next.label}`, 'y'); } catch(e) {}
+}
 
 let _proxyConnected = false;
 function setProxyMsg(msg, err) { const el = document.getElementById('ivac-msg-proxy'); if (!el) return; el.textContent = msg; el.style.color = err ? '#fca5a5' : '#4ade80'; setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000); }
