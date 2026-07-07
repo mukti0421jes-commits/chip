@@ -173,9 +173,15 @@ const H2 = {
                     onload: (resp) => {
                         let j; try { j = JSON.parse(resp.responseText); } catch(e) { return tryRelay(); }
                         if (resp.status >= 200 && resp.status < 300 && j && typeof j.status === 'number') {
-                            const isOk = j.status >= 200 && j.status < 400;
-                            if (logId) netLogUpdate(logId, { status: j.status, state: isOk ? 'ok' : 'fail', note: `HTTP ${j.status} (proxy ${proxy.host}:${proxy.port})` });
-                            resolve(new Response(j.body, { status: j.status, statusText: j.statusText || '' }));
+                            // relay returns status 0 when the in-browser fetch itself failed
+                            // (bad proxy / Cloudflare network block). Response() only accepts
+                            // 200–599, so map any out-of-range/0 status to 502 (→ triggers rotate).
+                            const raw = j.status;
+                            const safeStatus = (raw >= 200 && raw <= 599) ? raw : 502;
+                            const nullBody = [101, 103, 204, 205, 304].includes(safeStatus);
+                            const isOk = safeStatus >= 200 && safeStatus < 400;
+                            if (logId) netLogUpdate(logId, { status: safeStatus, state: isOk ? 'ok' : 'fail', note: `HTTP ${raw === safeStatus ? raw : raw + '→' + safeStatus} (proxy ${proxy.host}:${proxy.port})${raw === 0 ? ' fetch-error' : ''}` });
+                            resolve(new Response(nullBody ? null : (j.body != null ? String(j.body) : ''), { status: safeStatus, statusText: j.statusText || '' }));
                         } else if (j && j.error) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'proxy: ' + j.error }); reject(new Error('proxy relay: ' + j.error)); }
                         else { tryRelay(); }
                     },
