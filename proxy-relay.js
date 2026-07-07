@@ -86,20 +86,35 @@ function serialize(key, fn) {
 
 async function doRequest(proxy, url, method, headers, body) {
   const key = proxyKey(proxy);
+  const args = { url, method: String(method || 'GET').toUpperCase(), headers: headers || {}, body: (body != null ? String(body) : null) };
+  const evalFetch = async (page) => page.evaluate(async (a) => {
+    try {
+      const init = { method: a.method, headers: a.headers || {}, credentials: 'omit' };
+      if (a.body != null && a.method !== 'GET' && a.method !== 'HEAD') init.body = a.body;
+      const r = await fetch(a.url, init);
+      const text = await r.text();
+      return { status: r.status, statusText: r.statusText, body: text };
+    } catch (e) {
+      return { status: 0, statusText: 'fetch-error', body: String(e && e.message || e) };
+    }
+  }, args);
   return serialize(key, async () => {
-    const { page } = await getPage(proxy);
-    const result = await page.evaluate(async (args) => {
+    let entry = await getPage(proxy);
+    try {
+      return await evalFetch(entry.page);
+    } catch (e) {
+      // Cloudflare/proxy often navigates the page → "Execution context was destroyed".
+      // Rebuild a fresh page for this proxy and retry ONCE; if it still fails, return a
+      // clean status 0 (the userscript maps that to 502 and rotates) instead of throwing.
+      const msg = String(e && e.message || e);
+      try { const p = pages.get(key); if (p) { await p.context.close().catch(() => {}); pages.delete(key); } } catch (_) {}
       try {
-        const init = { method: args.method, headers: args.headers || {}, credentials: 'omit' };
-        if (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') init.body = args.body;
-        const r = await fetch(args.url, init);
-        const text = await r.text();
-        return { status: r.status, statusText: r.statusText, body: text };
-      } catch (e) {
-        return { status: 0, statusText: 'fetch-error', body: String(e && e.message || e) };
+        entry = await getPage(proxy);
+        return await evalFetch(entry.page);
+      } catch (e2) {
+        return { status: 0, statusText: 'relay-error', body: 'relay: ' + msg };
       }
-    }, { url, method: String(method || 'GET').toUpperCase(), headers: headers || {}, body: (body != null ? String(body) : null) });
-    return result;
+    }
   });
 }
 
