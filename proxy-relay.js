@@ -139,7 +139,9 @@ async function doRequest(proxy, url, method, headers, body) {
         });
         const realStatus = rr.status();
         const realBody = await rr.text().catch(() => '');
-        console.log(`[diag] ${proxy.host}:${proxy.port} browser-fetch=0 → context.request REAL status = ${realStatus}`);
+        const snippet = (realBody || '').replace(/\s+/g, ' ').slice(0, 160);
+        const src = /cloudflare|cf-ray|just a moment|attention required|challenge-platform/i.test(realBody) ? 'CLOUDFLARE' : 'IVAC-app(or other)';
+        console.log(`[diag] ${proxy.host}:${proxy.port} REAL status=${realStatus} [${src}]  body: ${snippet}`);
         out = { status: realStatus, statusText: rr.statusText ? rr.statusText() : '', body: realBody, _via: 'context.request' };
       } catch (e3) {
         console.log(`[diag] ${proxy.host}:${proxy.port} browser-fetch=0, context.request FAILED: ${String(e3 && e3.message || e3)}`);
