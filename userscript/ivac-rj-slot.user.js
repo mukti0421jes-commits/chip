@@ -3095,44 +3095,44 @@ async function runStepOnce(stepName, fnFactory) {
         catch (err) { raceCoord.untrack(stepName, ac); if (err.name === 'AbortError') return { win: false, cancelled: true }; return { win: false }; }
     }
 
-    // DISCRETE BURST: fire exactly N hits in ONE round (spaced by `ms`), wait for all to
-    // settle (or the first win), then RETURN. It does NOT keep refilling forever — the
-    // spacing between rounds is the step's retry delay, applied by runStepSmart. This is
-    // what makes parallel "fire N → wait retry delay → fire N", instead of a nonstop flood.
-    const controllers = new Set(); const promises = []; const spacing = initialConfig.ms || 0;
-    for (let k = 0; k < N; k++) {
-        if (stopFlag.value || raceCoord.hasWon(stepName)) break;
-        const id = k + 1; const ac = new AbortController(); if (!raceCoord.track(stepName, ac)) break;
+    const controllers = new Set(); const inFlight = new Map(); let winResult = null; let cancelled = false; let fireCounter = 0; let initialBurstDone = false; const fireQueue = { burstRemaining: N, refillsNeeded: 0 };
+    function fireOne() {
+        if (stopFlag.value || winResult || cancelled || raceCoord.hasWon(stepName)) return null;
+        const id = ++fireCounter; const ac = new AbortController(); if (!raceCoord.track(stepName, ac)) return null;
         controllers.add(ac);
-        promises.push((async () => {
-            try { const res = await fnFactory(ac.signal, id); if (res?.win) raceCoord.declareWin(stepName, res); return res || { win: false }; }
-            catch (err) { if (err.name === 'AbortError') return { win: false, cancelled: true }; return { win: false }; }
-            finally { controllers.delete(ac); raceCoord.untrack(stepName, ac); }
-        })());
-        if (spacing > 0 && k < N - 1) { await new Promise(r => setTimeout(r, spacing)); }
+        const p = (async () => { try { const res = await fnFactory(ac.signal, id); if (res?.win) raceCoord.declareWin(stepName, res); return { id, ok: !!res?.win, res }; } catch (err) { if (err.name === 'AbortError') return { id, ok: false, cancelled: true }; return { id, ok: false, error: err }; } finally { controllers.delete(ac); raceCoord.untrack(stepName, ac); } })();
+        inFlight.set(id, p); return p;
     }
-    const results = await Promise.all(promises);
-    const winRes = results.find(r => r && r.win);
-    if (winRes) { for (const ac of controllers) { try { ac.abort(); } catch (e) {} } }  // cancel stragglers on win
-    return winRes || { win: false };
+    (async () => {
+        if (fireQueue.burstRemaining > 0) { fireOne(); fireQueue.burstRemaining--; }
+        while (!stopFlag.value && !winResult && !cancelled && !raceCoord.hasWon(stepName)) {
+            const currentMs = getParallelStep(stepName).ms || 0; if (currentMs > 0) await new Promise(r => setTimeout(r, currentMs));
+            if (stopFlag.value || winResult || cancelled || raceCoord.hasWon(stepName)) break;
+            const currentHits = getParallelStep(stepName).hits || 1; const firedSoFar = fireCounter - fireQueue.refillsNeeded;
+            if (currentHits > firedSoFar && fireQueue.burstRemaining < (currentHits - firedSoFar)) fireQueue.burstRemaining = currentHits - firedSoFar;
+            if (fireQueue.burstRemaining > 0) { fireOne(); fireQueue.burstRemaining--; if (fireQueue.burstRemaining === 0) initialBurstDone = true; }
+            else if (fireQueue.refillsNeeded > 0) { fireOne(); fireQueue.refillsNeeded--; }
+        }
+    })();
+    while (!winResult && !stopFlag.value) {
+        if (raceCoord.hasWon(stepName)) { winResult = raceCoord.getWinner(stepName); break; }
+        if (inFlight.size === 0) { if (!initialBurstDone && fireQueue.burstRemaining > 0) { await new Promise(r => setTimeout(r, 50)); continue; } if (fireQueue.refillsNeeded > 0) { await new Promise(r => setTimeout(r, 50)); continue; } break; }
+        const promises = Array.from(inFlight.values()); const settled = await Promise.race(promises); inFlight.delete(settled.id);
+        if (settled.cancelled) continue;
+        if (settled.ok) { winResult = settled.res; cancelled = true; raceCoord.declareWin(stepName, settled.res); break; }
+        fireQueue.refillsNeeded++;
+    }
+    return winResult || { win: false };
 }
-
-let _postVerifyFastChain = false;
-const POST_VERIFY_STEPS = new Set(['reserve', 'book', 'initiate']);
 
 async function runStepSmart(stepName, fnFactory) {
     raceCoord.reset(stepName); setStepStatus(stepName, 'active');
     while (!stopFlag.value) {
         const result = await runStepOnce(stepName, fnFactory);
-        if (result.win) { setStepStatus(stepName, 'success'); if (stepName === 'initiate') _postVerifyFastChain = false; return result; }
-        if (stopFlag.value) { setStepStatus(stepName, ''); _postVerifyFastChain = false; return result; }
-        if (!isSingleOn()) { setStepStatus(stepName, 'fail'); logStatus(`✗ ${stepName} failed — retry OFF`, 'r'); _postVerifyFastChain = false; return result; }
-        // The auto-flow already starts each post-verify step immediately (no pre-delay on the
-        // first attempt) — that's the "0-delay" chain hand-off. But every RETRY must honor the
-        // configured retry delay (rt-reserve etc.), so we no longer force 0 on retries.
-        const delay = getStepDelaySec(stepName);
-        if (delay > 0) { logStatus(`↻ ${stepName} retry in ${delay}s`, 'y'); } else { logStatus(`↻ ${stepName} retry…`, 'y'); }
-        raceCoord.reset(stepName);
+        if (result.win) { setStepStatus(stepName, 'success'); return result; }
+        if (stopFlag.value) { setStepStatus(stepName, ''); return result; }
+        if (!isSingleOn()) { setStepStatus(stepName, 'fail'); logStatus(`✗ ${stepName} failed — retry OFF`, 'r'); return result; }
+        const delay = getStepDelaySec(stepName); logStatus(`↻ ${stepName} retry in ${delay}s`, 'y'); raceCoord.reset(stepName);
         for (let s = 0; s < delay && !stopFlag.value; s++) { await new Promise(r => setTimeout(r, 1000)); }
     }
     return { win: false, cancelled: true };
@@ -3191,7 +3191,6 @@ async function stepVerify(signal) {
             try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
             try { stopSmsFetcher('OTP verified'); } catch(e) {}
             document.getElementById('login-otp').value = '';
-            if (isAutoOn()) { _postVerifyFastChain = true; logStatus('⚡ Auto-chain: reserve→book→initiate (retries honor their retry delay)', 'g'); }
             markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅');
             if (sessionState.loggedInAt) { const sessionExpiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; const remainingMs = sessionExpiresAt - Date.now(); if (remainingMs > 0) { startTokenTimerWithExpiry(sessionExpiresAt); const min = Math.floor(remainingMs / 60000); const sec = Math.floor((remainingMs % 60000) / 1000); logStatus(`✅ Verified • session ${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')} left`, 'g'); } }
         } else { if (!_forceStep && isAutoOn() && sessionState.phone) { document.getElementById('login-otp').value = ''; logStatus('⚠ Verify failed — restarting SMS fetcher', 'y'); startSmsFetcher(sessionState.phone, async () => { return undefined; }, true); } }
@@ -3373,7 +3372,7 @@ let pipelineRunning = false; let pipelineConcurrentCount = 0;
 async function startPipelineFrom(startStep) {
     if (!STEP_FACTORY[startStep]) { logStatus(`❌ Unknown step: ${startStep}`, 'r'); return; }
     pipelineConcurrentCount++; pipelineRunning = true;
-    if (pipelineConcurrentCount === 1) { stopFlag.value = false; raceCoord.resetAll(); resetAllStepStatus(); _postVerifyFastChain = false; }
+    if (pipelineConcurrentCount === 1) { stopFlag.value = false; raceCoord.resetAll(); resetAllStepStatus(); }
     try {
         const startIdx = STEP_ORDER.indexOf(startStep); const auto = isAutoOn(); const endIdx = auto ? STEP_ORDER.length - 1 : startIdx;
         for (let i = startIdx; i <= endIdx && !stopFlag.value; i++) { const step = STEP_ORDER[i]; logStatus(`▶ Step ${i+1}/${endIdx+1}: ${step}`, 'y'); const result = await runStepSmart(step, STEP_FACTORY[step]); if (!result.win) { if (!stopFlag.value) logStatus(`⏹ Stopped at ${step}`, 'r'); break; } }
