@@ -201,41 +201,30 @@ function roleScores(pos){const w=src.slice(Math.max(0,pos-1400),pos+1400);
   return {sig:sM.length, res:rM.length, sigEv:[...new Set(sM.map(x=>x.toLowerCase()))], resEv:[...new Set(rM.map(x=>x.toLowerCase()))]};}
 
 /* ================= find configs, match algorithms, emit ================= */
-// Split a string on top-level commas (respecting quotes and ()[]{} nesting).
+// Newer bundles wrap startAt/length/version in obfuscated calls (Number("1"), c[f(1486)](_,"27"))
+// and reference local string vars in the secret (r(1538,n) with n="Y$pG"). Parse robustly.
 function splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
-// Extract the config integer from a field value. New bundles wrap it in obfuscated calls
-// (Number("1"), _0xabc("1"), c[f(1486)](_0x,"27")) — the real value is the QUOTED number;
-// fall back to a bare integer (old format startAt:4).
 function cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
-// brace-match an object literal starting at `{` (respecting quotes)
 function braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
 const found=[];
 {let idx=0;const NEEDLE="secret:";
  while((idx=src.indexOf(NEEDLE,idx))!==-1){
-   const b=src.lastIndexOf("{",idx);
-   if(b<0){idx+=NEEDLE.length;continue;}
-   const e=braceObj(src,b);
-   if(e<0){idx+=NEEDLE.length;continue;}
-   const objStart=b, objStr=src.slice(b+1,e);
-   idx=e+1;
+   const b=src.lastIndexOf("{",idx); if(b<0){idx+=NEEDLE.length;continue;}
+   const e=braceObj(src,b); if(e<0){idx+=NEEDLE.length;continue;}
+   const objStart=b, objStr=src.slice(b+1,e); idx=e+1;
    const fields=splitTopComma(objStr);const map={};
    for(const f of fields){const ci=f.indexOf(":");if(ci<0)continue;map[f.slice(0,ci).trim()]=f.slice(ci+1).trim();}
    if(!("secret"in map)||!("startAt"in map)||!("length"in map)||!("version"in map))continue;
    const skip=cfgNum(map.startAt),len=cfgNum(map.length),version=cfgNum(map.version);
    if(isNaN(skip)||isNaN(len)||isNaN(version))continue;
-   // Inline local string vars used as BARE args, e.g. r(1538,n) where `const ...,n="Y$pG"`.
-   // resolveExpr only knows decoder-call identifiers; a bare identifier arg (not followed by
-   // "(") is a scope variable it can't see, so substitute its nearest string definition.
    let secretExpr=map.secret;
    {const region=src.slice(Math.max(0,objStart-6000),objStart);
     const ids=[...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g)||[]))];
-    for(const id of ids){
-      if(new RegExp("\\b"+id.replace(/[$]/g,"\\$")+"\\s*\\(").test(secretExpr))continue; // decoder call → skip
-      const defRe=new RegExp("\\b"+id.replace(/[$]/g,"\\$")+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
+    for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
+      if(new RegExp("\\b"+esc+"\\s*\\(").test(secretExpr))continue;
+      const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
       let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
-      if(best!==null)secretExpr=secretExpr.replace(new RegExp("\\b"+id.replace(/[$]/g,"\\$")+"\\b","g"),JSON.stringify(best));
-    }
-   }
+      if(best!==null)secretExpr=secretExpr.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}}
    const secret=resolveExpr(secretExpr,objStart);
    if(!secret){console.log("[warn] config version",version,"secret decode FAILED @",objStart,"| secret:",map.secret.slice(0,60));continue;}
    const sc=roleScores(objStart);
@@ -247,6 +236,8 @@ for(const c of found){const k=c.version+"|"+c.secret;if(seen.has(k)){const e=see
 let roleUncertain=false;
 for(const c of uniq){ if(c.sig>c.res)c.role="Signin"; else if(c.res>c.sig)c.role="Reserve"; else {c.role=null;roleUncertain=true;} }
 if(uniq.length===2){const known=uniq.filter(c=>c.role), unknown=uniq.filter(c=>!c.role);if(known.length===1&&unknown.length===1){unknown[0].role=known[0].role==="Signin"?"Reserve":"Signin";unknown[0]._inferred=true;roleUncertain=false;}}
+// Single cipher key in the bundle → signin AND reserve both use it. Emit under both roles.
+if(uniq.length===1){uniq[0].role="Signin";uniq.push({...uniq[0],role:"Reserve",_inferred:true});roleUncertain=false;}
 
 function rnd(n){let s="";for(let i=0;i<n;i++)s+=CH[Math.floor(Math.random()*64)];return s;}
 for(const c of uniq){

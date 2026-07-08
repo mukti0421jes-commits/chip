@@ -5,21 +5,30 @@ const Charset = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-
 
 function charsetIndex(ch) { return Charset.indexOf(ch); }
 
-// V2 cipher (version 2, BITMIX)
-const V2Key = "Ah502)kNI41_h43jQU7=829,YC1-xSa%Gn724=qTO63[n65pWA9}041?EI3{dYg(";
-const V2Skip = 1;
-const V2EncryptLen = 27;
-function ProcessTokenV2(token) { return cryptBitmix(token, V2Key, V2Skip, V2EncryptLen, true); }
-function ReverseTokenV2(token) { return cryptBitmix(token, V2Key, V2Skip, V2EncryptLen, false); }
+// Signin cipher (version 2, BITMIX)
+const SigninKey = "Ah502)kNI41_h43jQU7=829,YC1-xSa%Gn724=qTO63[n65pWA9}041?EI3{dYg(";
+const SigninSkip = 1;
+const SigninEncryptLen = 27;
+function ProcessTokenSignin(token) { return cryptBitmix(token, SigninKey, SigninSkip, SigninEncryptLen, true); }
+function ReverseTokenSignin(token) { return cryptBitmix(token, SigninKey, SigninSkip, SigninEncryptLen, false); }
+
+// Reserve cipher (version 2, BITMIX)
+const ReserveKey = "Ah502)kNI41_h43jQU7=829,YC1-xSa%Gn724=qTO63[n65pWA9}041?EI3{dYg(";
+const ReserveSkip = 1;
+const ReserveEncryptLen = 27;
+function ProcessTokenReserve(token) { return cryptBitmix(token, ReserveKey, ReserveSkip, ReserveEncryptLen, true); }
+function ReverseTokenReserve(token) { return cryptBitmix(token, ReserveKey, ReserveSkip, ReserveEncryptLen, false); }
 
 
 // ---- Router: encryptToken(rawToken, purpose) / decryptToken(rawToken, purpose) ----
 function encryptToken(rawToken, purpose) {
-  if (purpose === "V2") return ProcessTokenV2(rawToken);
+  if (purpose === "Signin") return ProcessTokenSignin(rawToken);
+  if (purpose === "Reserve") return ProcessTokenReserve(rawToken);
   return rawToken;
 }
 function decryptToken(rawToken, purpose) {
-  if (purpose === "V2") return ReverseTokenV2(rawToken);
+  if (purpose === "Signin") return ReverseTokenSignin(rawToken);
+  if (purpose === "Reserve") return ReverseTokenReserve(rawToken);
   return rawToken;
 }
 function ProcessToken(rawToken, purpose) { return encryptToken(rawToken, purpose); }
@@ -47,5 +56,5 @@ function cryptBitmix(token, key, skip, encryptLen, encrypt) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { Charset, V2Key, V2Skip, V2EncryptLen, ProcessTokenV2, ReverseTokenV2, encryptToken, decryptToken, ProcessToken, ReverseToken };
+  module.exports = { Charset, SigninKey, SigninSkip, SigninEncryptLen, ProcessTokenSignin, ReverseTokenSignin, ReserveKey, ReserveSkip, ReserveEncryptLen, ProcessTokenReserve, ReverseTokenReserve, encryptToken, decryptToken, ProcessToken, ReverseToken };
 }
