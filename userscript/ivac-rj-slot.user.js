@@ -2533,285 +2533,260 @@ document.getElementById('ivac-proxy-file-input')?.addEventListener('change', (e)
 
 refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
 
-// ==================== UPLOAD TAB: FILE UPLOAD CHECKING (H2) ====================
-document.getElementById('ivac-btn-file-upload-checking')?.addEventListener('click', async function() {
-    if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
-    logStatus('📋 Checking file upload status…', 'y');
-    const logId = netLogAdd({ method: 'GET', url: API_SLOT_STATUS, tag: 'slot', state: 'pending', note: 'file-upload-checking' });
-    try {
-        const r = await H2.fetchH2(API_SLOT_STATUS, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `slotOpen=${body.data?.slotOpen} • file: ${body.data?.fileUploadStatus || '?'} • ${body.data?.appointmentDate || ''}` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) { const d = body.data || {}; const slotOpen = d.slotOpen ? '🟢 OPEN' : '🔴 CLOSED'; logStatus(`✅ File Check: ${slotOpen} • file: ${d.fileUploadStatus || 'unknown'} • ${d.appointmentDate || ''}`, 'g'); if (d.slotOpen) { try { beepReserve(); } catch(e) {} } }
-        else { logStatus(`❌ File check failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
-    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File check error: ${err.message}`, 'r'); }
-});
+    // ==================== UPLOAD TAB ====================
+    document.getElementById('ivac-btn-file-upload-checking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
+        logStatus('📋 Checking file upload status…', 'y');
+        const logId = netLogAdd({ method: 'GET', url: API_SLOT_STATUS, tag: 'slot', state: 'pending', note: 'file-upload-checking' });
+        try {
+            const r = await H2.fetchH2(API_SLOT_STATUS, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `slotOpen=${body.data?.slotOpen} • file: ${body.data?.fileUploadStatus || '?'} • ${body.data?.appointmentDate || ''}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {}; const slotOpen = d.slotOpen ? '🟢 OPEN' : '🔴 CLOSED'; logStatus(`✅ File Check: ${slotOpen} • file: ${d.fileUploadStatus || 'unknown'} • ${d.appointmentDate || ''}`, 'g'); if (d.slotOpen) { try { beepReserve(); } catch(e) {} } }
+            else { logStatus(`❌ File check failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File check error: ${err.message}`, 'r'); }
+    });
 
-document.getElementById('ivac-btn-appointment')?.addEventListener('click', async function() {
-    if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
-    logStatus('📋 Creating appointment…', 'y');
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment", tag: 'book', state: 'pending', note: 'appointment' });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `appointmentId=${body.data?.appointmentId?.slice(0,8) || '?'}` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Appointment: ${(d.appointmentId||'?').slice(0,8)}… • ${d.ivacCenter||''} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
-        else { logStatus(`❌ Appointment failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
-    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Appointment error: ${err.message}`, 'r'); }
-});
+    document.getElementById('ivac-btn-appointment')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
+        logStatus('📋 Creating appointment…', 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment", tag: 'book', state: 'pending', note: 'appointment' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `appointmentId=${body.data?.appointmentId?.slice(0,8) || '?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Appointment: ${(d.appointmentId||'?').slice(0,8)}… • ${d.ivacCenter||''} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
+            else { logStatus(`❌ Appointment failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Appointment error: ${err.message}`, 'r'); }
+    });
 
-async function uploadFile(fileInputId, isPrimary, label) {
-    if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
-    const fileInput = document.getElementById(fileInputId);
-    const formData = new FormData();
-    if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
-    formData.append('isPrimary', String(isPrimary));
-    logStatus(`📄 Uploading ${label}…`, 'y');
-    let uploadToken; try { uploadToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
-    try {
-        const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId(), 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
-}
-document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
-document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
-document.getElementById('ivac-btn-file-upload-3')?.addEventListener('click', () => uploadFile('ivac-file-upload-3', false, 'Attendant 2'));
-document.getElementById('ivac-btn-file-upload-4')?.addEventListener('click', () => uploadFile('ivac-file-upload-4', false, 'Attendant 3'));
-
-const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
-
-document.getElementById('ivac-btn-appointment-booking')?.addEventListener('click', async function() {
-    if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
-    const missionSelect = document.getElementById('ivac-appointment-mission'); const selectedValue = missionSelect?.value || 'dhaka'; const missionData = MISSION_MAP[selectedValue]; if (!missionData) { logStatus('❌ Invalid mission', 'r'); return; }
-    logStatus(`🏛 Confirming: ${missionData.mission}`, 'y');
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", tag: 'book', state: 'pending' });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ mission: missionData.mission, ivacCenter: missionData.ivacCenter }) });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `confirmed` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Confirmed: ${missionData.mission} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
-        else { logStatus(`❌ Confirm failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Confirm error: ${err.message}`, 'r'); }
-});
-
-document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
-    if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
-    logStatus('📋 Checking file overview…', 'y');
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/overview", tag: 'upload', state: 'pending' });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/overview", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `fileStatus=${body.data?.fileUploadStatus||'?'}` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) logStatus(`✅ File Check: ${body.data?.fileUploadStatus||'unknown'}`, 'g'); else logStatus(`❌ File Checking failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File Checking error: ${err.message}`, 'r'); }
-});
-
-document.getElementById('ivac-btn-file-delete')?.addEventListener('click', async function() {
-    const fileNumber = (document.getElementById('ivac-file-delete-number')?.value || '').trim();
-    if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
-    if (!fileNumber) { logStatus('❌ Enter file number', 'r'); return; }
-    const url = `https://api.ivacbd.com/iams/api/v1/file/delete?fileNumber=${encodeURIComponent(fileNumber)}`;
-    logStatus(`🗑 Deleting file: ${fileNumber}`, 'y');
-    const logId = netLogAdd({ method: 'DELETE', url, tag: 'upload', state: 'pending' });
-    try {
-        const r = await H2.fetchH2(url, { method: 'DELETE', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
-        let body = null; try { body = await r.json(); } catch(e) { body = null; }
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail' });
-        if (ok) logStatus(`✅ File deleted: ${fileNumber}`, 'g'); else logStatus(`❌ Delete failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Delete error: ${err.message}`, 'r'); }
-});
-
-// ==================== INVOICE DOWNLOAD ====================
-let invoiceRetryActive = false;
-
-async function autoDownloadInvoice(url) {
-    logStatus('📥 Downloading invoice…', 'y');
-    try {
-        const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
-        const blob = await r.blob();
-        const downloadUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl);
-        logStatus('✅ Invoice downloaded!', 'g');
-    } catch(e) {
-        const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
-        if (gmApi) {
-            gmApi({ method: 'GET', url: url, responseType: 'blob', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() },
-                onload: (resp) => { try { const blob = resp.response; const downloadUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl); logStatus('✅ Invoice downloaded!', 'g'); } catch(e) { logStatus('✅ Invoice ready — check tab', 'g'); } },
-                onerror: () => { logStatus('✅ Invoice ready — check tab', 'g'); }
-            });
-        } else { logStatus('✅ Invoice ready — check tab', 'g'); }
+    async function uploadFile(fileInputId, isPrimary, label) {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        const fileInput = document.getElementById(fileInputId);
+        const formData = new FormData();
+        if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
+        formData.append('isPrimary', String(isPrimary));
+        let uploadToken; try { uploadToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
+        logStatus(`📄 Uploading ${label}…`, 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
+        try {
+            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
     }
-    try { beepInitiateAndSpeak(); } catch(e) {}
-}
+    document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
+    document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
+    document.getElementById('ivac-btn-file-upload-3')?.addEventListener('click', () => uploadFile('ivac-file-upload-3', false, 'Attendant 2'));
+    document.getElementById('ivac-btn-file-upload-4')?.addEventListener('click', () => uploadFile('ivac-file-upload-4', false, 'Attendant 3'));
 
-async function checkInvoiceLoaded(url) {
-    const result = { loaded: false, status: null, msg: '' };
-    try {
-        const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
-        if (!invoiceRetryActive) return result;
-        const contentType = r.headers.get('content-type') || ''; result.status = r.status;
-        if (r.status === 200 && contentType.includes('pdf')) { result.loaded = true; return result; }
-        const text = await r.text();
-        if (!invoiceRetryActive) return result;
-        if (text.startsWith('%PDF')) { result.loaded = true; return result; }
-        try { const json = JSON.parse(text); result.msg = json.message || ''; if ((r.status === 200 || r.status === 201) && json.data && (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201)) result.loaded = true; } catch(e) { if (r.status === 200 && text.length > 200) { const lt = text.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) result.loaded = true; } }
-        return result;
-    } catch(e) {
-        return new Promise((resolve) => {
+    const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
+
+    document.getElementById('ivac-btn-appointment-booking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        const missionSelect = document.getElementById('ivac-appointment-mission'); const selectedValue = missionSelect?.value || 'dhaka'; const missionData = MISSION_MAP[selectedValue]; if (!missionData) { logStatus('❌ Invalid mission', 'r'); return; }
+        logStatus(`🏛 Confirming: ${missionData.mission}`, 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", tag: 'book', state: 'pending' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ mission: missionData.mission, ivacCenter: missionData.ivacCenter }) });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `confirmed` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Confirmed: ${missionData.mission} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
+            else { logStatus(`❌ Confirm failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Confirm error: ${err.message}`, 'r'); }
+    });
+
+    document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        logStatus('📋 Checking file overview…', 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/overview", tag: 'upload', state: 'pending' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/overview", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `fileStatus=${body.data?.fileUploadStatus||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) logStatus(`✅ File Check: ${body.data?.fileUploadStatus||'unknown'}`, 'g'); else logStatus(`❌ File Checking failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File Checking error: ${err.message}`, 'r'); }
+    });
+
+    document.getElementById('ivac-btn-file-delete')?.addEventListener('click', async function() {
+        const fileNumber = (document.getElementById('ivac-file-delete-number')?.value || '').trim();
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        if (!fileNumber) { logStatus('❌ Enter file number', 'r'); return; }
+        const url = `https://api.ivacbd.com/iams/api/v1/file/delete?fileNumber=${encodeURIComponent(fileNumber)}`;
+        logStatus(`🗑 Deleting file: ${fileNumber}`, 'y');
+        const logId = netLogAdd({ method: 'DELETE', url, tag: 'upload', state: 'pending' });
+        try {
+            const r = await H2.fetchH2(url, { method: 'DELETE', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail' });
+            if (ok) logStatus(`✅ File deleted: ${fileNumber}`, 'g'); else logStatus(`❌ Delete failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Delete error: ${err.message}`, 'r'); }
+    });
+
+    // ==================== INVOICE DOWNLOAD ====================
+    let invoiceRetryActive = false;
+    async function autoDownloadInvoice(url) {
+        logStatus('📥 Downloading invoice…', 'y');
+        try {
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            const blob = await r.blob(); const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl);
+            logStatus('✅ Invoice downloaded!', 'g');
+        } catch(e) {
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
-            if (!gmApi) { result.status = 'ERR'; result.msg = 'no fetch available'; resolve(result); return; }
-            gmApi({ method: 'GET', url: url, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, timeout: 20000,
-                onload: (response) => {
-                    if (!invoiceRetryActive) { resolve(result); return; }
-                    const status = response.status; const rawText = response.responseText || ''; const headersStr = (response.responseHeaders || '').toLowerCase();
-                    const isPdf = rawText.startsWith('%PDF') || headersStr.includes('application/pdf'); let isSuccessJson = false;
-                    try { const json = JSON.parse(rawText); result.msg = json.message || ''; if (status === 200 || status === 201) { if (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201) { if (json.data && (typeof json.data === 'object' ? Object.keys(json.data).length > 0 : !!json.data)) isSuccessJson = true; if (json.message === 'Success' || json.message === 'OK') isSuccessJson = true; } } } catch(e) { if (status === 200 && rawText.length > 200) { const lt = rawText.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac') || lt.includes('visa application'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) isSuccessJson = true; } }
-                    result.status = status; result.loaded = isPdf || isSuccessJson; resolve(result);
-                },
-                onerror: () => { result.status = 'ERR'; result.msg = 'network error'; resolve(result); },
-                ontimeout: () => { result.status = 'TMO'; result.msg = 'timeout'; resolve(result); }
-            });
-        });
-    }
-}
-
-document.getElementById('ivac-btn-invoice-download')?.addEventListener('click', function() {
-    const btn = this;
-    if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('⏹ Invoice stopped', 'y'); return; }
-    const trxId = (document.getElementById('ivac-invoice-trxid')?.value || '').trim();
-    if (!trxId) { logStatus('❌ Enter trxId first', 'r'); return; }
-    const url = `https://api.ivacbd.com/iams/api/v1/invoice/download?txrId=${encodeURIComponent(trxId)}`;
-    if (!btn.dataset.origStyle) btn.dataset.origStyle = btn.style.cssText;
-    invoiceRetryActive = true;
-    btn.style.cssText = btn.dataset.origStyle + ';background:linear-gradient(135deg,#ef4444,#b91c1c)!important;border:1px solid #f87171!important;color:#fff!important';
-    btn.textContent = '■ STOP';
-    logStatus(`🧾 Invoice loading… will auto-reload until loaded`, 'g');
-    window.open(url, 'rjInvoiceTab');
-    (async () => {
-        let attempts = 0; const maxAttempts = 300;
-        while (invoiceRetryActive && attempts < maxAttempts) {
-            attempts++;
-            await new Promise(r => setTimeout(r, 1000));
-            if (!invoiceRetryActive) break;
-            const result = await checkInvoiceLoaded(url);
-            if (!invoiceRetryActive) break;
-            if (result.loaded) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('✅ Invoice loaded! Auto-downloading…', 'g'); autoDownloadInvoice(url); return; }
-            try { const tab = window.open('', 'rjInvoiceTab'); if (tab && !tab.closed) tab.location.href = url; else window.open(url, 'rjInvoiceTab'); } catch(e) { try { window.open(url, 'rjInvoiceTab'); } catch(e2) {} }
-            const statusStr = result.status || '?'; const msgStr = result.msg ? `: ${result.msg.slice(0, 35)}` : '';
-            logStatus(`⏳ Invoice not ready (${statusStr}${msgStr}) • attempt ${attempts}/${maxAttempts}`, 'y');
+            if (gmApi) {
+                gmApi({ method: 'GET', url: url, responseType: 'blob', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() },
+                    onload: (resp) => { try { const blob = resp.response; const downloadUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl); logStatus('✅ Invoice downloaded!', 'g'); } catch(e) { logStatus('✅ Invoice ready — check tab', 'g'); } },
+                    onerror: () => { logStatus('✅ Invoice ready — check tab', 'g'); } });
+            } else { logStatus('✅ Invoice ready — check tab', 'g'); }
         }
-        if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus(`⏹ Invoice stopped (${maxAttempts} attempts)`, 'y'); }
-    })();
-});
+        try { beepInitiateAndSpeak(); } catch(e) {}
+    }
+    async function checkInvoiceLoaded(url) {
+        const result = { loaded: false, status: null, msg: '' };
+        try {
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            if (!invoiceRetryActive) return result;
+            const contentType = r.headers.get('content-type') || ''; result.status = r.status;
+            if (r.status === 200 && contentType.includes('pdf')) { result.loaded = true; return result; }
+            const text = await r.text();
+            if (!invoiceRetryActive) return result;
+            if (text.startsWith('%PDF')) { result.loaded = true; return result; }
+            try { const json = JSON.parse(text); result.msg = json.message || ''; if ((r.status === 200 || r.status === 201) && json.data && (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201)) result.loaded = true; } catch(e) { if (r.status === 200 && text.length > 200) { const lt = text.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) result.loaded = true; } }
+            return result;
+        } catch(e) {
+            return new Promise((resolve) => {
+                const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+                if (!gmApi) { result.status = 'ERR'; result.msg = 'no fetch available'; resolve(result); return; }
+                gmApi({ method: 'GET', url: url, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, timeout: 20000,
+                    onload: (response) => {
+                        if (!invoiceRetryActive) { resolve(result); return; }
+                        const status = response.status; const rawText = response.responseText || ''; const headersStr = (response.responseHeaders || '').toLowerCase();
+                        const isPdf = rawText.startsWith('%PDF') || headersStr.includes('application/pdf'); let isSuccessJson = false;
+                        try { const json = JSON.parse(rawText); result.msg = json.message || ''; if (status === 200 || status === 201) { if (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201) { if (json.data && (typeof json.data === 'object' ? Object.keys(json.data).length > 0 : !!json.data)) isSuccessJson = true; if (json.message === 'Success' || json.message === 'OK') isSuccessJson = true; } } } catch(e) { if (status === 200 && rawText.length > 200) { const lt = rawText.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac') || lt.includes('visa application'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) isSuccessJson = true; } }
+                        result.status = status; result.loaded = isPdf || isSuccessJson; resolve(result);
+                    },
+                    onerror: () => { result.status = 'ERR'; result.msg = 'network error'; resolve(result); },
+                    ontimeout: () => { result.status = 'TMO'; result.msg = 'timeout'; resolve(result); } });
+            });
+        }
+    }
+    document.getElementById('ivac-btn-invoice-download')?.addEventListener('click', function() {
+        const btn = this;
+        if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('⏹ Invoice stopped', 'y'); return; }
+        const trxId = (document.getElementById('ivac-invoice-trxid')?.value || '').trim();
+        if (!trxId) { logStatus('❌ Enter trxId first', 'r'); return; }
+        const url = `https://api.ivacbd.com/iams/api/v1/invoice/download?txrId=${encodeURIComponent(trxId)}`;
+        if (!btn.dataset.origStyle) btn.dataset.origStyle = btn.style.cssText;
+        invoiceRetryActive = true;
+        btn.style.cssText = btn.dataset.origStyle + ';background:linear-gradient(135deg,#ef4444,#b91c1c)!important;border:1px solid #f87171!important;color:#fff!important';
+        btn.textContent = '■ STOP';
+        logStatus(`🧾 Invoice loading… will auto-reload until loaded`, 'g');
+        window.open(url, 'rjInvoiceTab');
+        (async () => {
+            let attempts = 0; const maxAttempts = 300;
+            while (invoiceRetryActive && attempts < maxAttempts) {
+                attempts++; await new Promise(r => setTimeout(r, 1000));
+                if (!invoiceRetryActive) break;
+                const result = await checkInvoiceLoaded(url);
+                if (!invoiceRetryActive) break;
+                if (result.loaded) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('✅ Invoice loaded! Auto-downloading…', 'g'); autoDownloadInvoice(url); return; }
+                try { const tab = window.open('', 'rjInvoiceTab'); if (tab && !tab.closed) tab.location.href = url; else window.open(url, 'rjInvoiceTab'); } catch(e) { try { window.open(url, 'rjInvoiceTab'); } catch(e2) {} }
+                const statusStr = result.status || '?'; const msgStr = result.msg ? `: ${result.msg.slice(0, 35)}` : '';
+                logStatus(`⏳ Invoice not ready (${statusStr}${msgStr}) • attempt ${attempts}/${maxAttempts}`, 'y');
+            }
+            if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus(`⏹ Invoice stopped (${maxAttempts} attempts)`, 'y'); }
+        })();
+    });
 
-// ==================== PROXY CROSS-LINK ====================
-document.getElementById('login-proxy-picker')?.addEventListener('change', (e) => {
-    const id = e.target.value; if (!id) { setActiveProxyId(''); _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyPicker(); refreshProxyStatusLine(); setProxyMsg('✓ Direct connection'); return; }
-    setActiveProxyId(id); const p = loadProxies().find(x => x.id === id);
-    if (p) { const schemeEl = document.getElementById('ivac-proxy-scheme'); const hostEl = document.getElementById('ivac-proxy-host'); const portEl = document.getElementById('ivac-proxy-port'); const userEl = document.getElementById('ivac-proxy-user'); const passEl = document.getElementById('ivac-proxy-password'); if (schemeEl) schemeEl.value = p.scheme; if (hostEl) hostEl.value = p.host; if (portEl) portEl.value = p.port; if (userEl) userEl.value = p.user || ''; if (passEl) passEl.value = p.password || ''; }
-    _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyPicker(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected to ${p?.label || ''}`); logStatus(`🔌 Proxy connected: ${p?.label || ''}`, 'g');
-});
+    // ==================== SIGNUP: UI HANDLERS ====================
+    function suMsg(elId, msg, type) { const el = document.getElementById(elId); if (!el) return; el.textContent = msg || ''; el.className = 'su-msg ' + (type === 'g' ? 'g' : type === 'r' ? 'r' : type === 'y' ? 'y' : ''); }
+    function updateMobileBadge() { const b = document.getElementById('su-mobile-badge'); if (!b) return; if (signupState.mobileVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
+    function updateEmailBadge() { const b = document.getElementById('su-email-badge'); if (!b) return; if (signupState.emailVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
 
-document.getElementById('login-proxy-toggle')?.addEventListener('click', () => {
-    const active = getActiveProxy(); if (!active) { setProxyMsg('❌ Select a proxy first', true); return; }
-    if (_proxyConnected) { _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); refreshProxyPicker(); setProxyMsg(`✓ Disconnected`); logStatus(`🔌 Disconnected`, 'y'); }
-    else { _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); refreshProxyPicker(); setProxyMsg(`✓ Connected`); logStatus(`🔌 Proxy connected: ${active.label}`, 'g'); }
-});
+    document.getElementById('ivac-password-toggle')?.addEventListener('click', function(e) { e.stopPropagation(); const inp = document.getElementById('ivac-password'); if (inp) { inp.type = inp.type === 'password' ? 'text' : 'password'; this.innerHTML = inp.type === 'password' ? '👁' : '😎'; } });
+    document.getElementById('ivac-btn-signup-stop')?.addEventListener('click', function() { signupState.stopRequested = true; try { stopSmsFetcher('signup stop'); } catch(e) {} suMsg('ivac-msg-submit', '⏹ Stopped', 'y'); logStatus('🛑 Signup halted', 'r'); });
 
-// ==================== SIGNUP: UI HANDLERS ====================
-function suMsg(elId, msg, type) { const el = document.getElementById(elId); if (!el) return; el.textContent = msg || ''; el.className = 'su-msg ' + (type === 'g' ? 'g' : type === 'r' ? 'r' : type === 'y' ? 'y' : ''); }
-function updateMobileBadge() { const b = document.getElementById('su-mobile-badge'); if (!b) return; if (signupState.mobileVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
-function updateEmailBadge() { const b = document.getElementById('su-email-badge'); if (!b) return; if (signupState.emailVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
+    document.getElementById('ivac-btn-mobile')?.addEventListener('click', async function() {
+        const phone = (document.getElementById('ivac-mobile')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number', 'r'); return; } if (!/^01[3-9]\d{8}$/.test(phone)) { suMsg('ivac-msg-mobile', '❌ Invalid BD mobile', 'r'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Sending OTP to mobile…', 'y'); logStatus('📱 Sending mobile OTP…', 'y');
+        let mobileOtpToken; try { mobileOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'mobile-otp' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, email, otpChannel: "PHONE" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { signupState.mobileRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-mobile', '✅ OTP sent to mobile!', 'g'); logStatus('✅ Mobile OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput && !otpInput.value) { otpInput.value = otp; suMsg('ivac-msg-mobile', `📩 Auto OTP: ${otp}`, 'g'); logStatus(`📩 Signup Mobile OTP: ${otp}`, 'g'); } return undefined; }, false, false); }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
 
-document.getElementById('ivac-password-toggle')?.addEventListener('click', function(e) { e.stopPropagation(); const inp = document.getElementById('ivac-password'); if (inp) { inp.type = inp.type === 'password' ? 'text' : 'password'; this.innerHTML = inp.type === 'password' ? '👁' : '😎'; } });
+    document.getElementById('ivac-btn-get-mobile-otp')?.addEventListener('click', async function() {
+        const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
+        if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number first', 'r'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Fetching OTP from SMS server…', 'y'); logStatus('📱 Manual OTP fetch for signup…', 'y'); flashButton(this, '⟳', 'y');
+        startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); } suMsg('ivac-msg-mobile', `📩 OTP: ${otp}`, 'g'); logStatus(`📩 Signup OTP fetched: ${otp}`, 'g'); return undefined; }, true, true);
+    });
 
-document.getElementById('ivac-btn-signup-stop')?.addEventListener('click', function() { signupState.stopRequested = true; try { stopSmsFetcher('signup stop'); } catch(e) {} suMsg('ivac-msg-submit', '⏹ Stopped', 'y'); logStatus('🛑 Signup halted', 'r'); });
+    document.getElementById('ivac-btn-mobile-verify')?.addEventListener('click', async function() {
+        const otp = (document.getElementById('ivac-mobile-otp')?.value || '').trim(); const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
+        if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
+        let mobileVerifyToken; try { mobileVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': mobileVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
+            if (verified) { signupState.mobileVerified = true; updateMobileBadge(); suMsg('ivac-msg-mobile', '✅ Mobile verified!', 'g'); logStatus('✅ Mobile verified!', 'g'); flashButton(this, '✓', 'g'); try { stopSmsFetcher('mobile verified'); beepOtpOrVerify(); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
 
-document.getElementById('ivac-btn-mobile')?.addEventListener('click', async function() {
-    const phone = (document.getElementById('ivac-mobile')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
-    if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number', 'r'); return; } if (!/^01[3-9]\d{8}$/.test(phone)) { suMsg('ivac-msg-mobile', '❌ Invalid BD mobile', 'r'); return; }
-    suMsg('ivac-msg-mobile', '⏳ Sending OTP to mobile…', 'y'); logStatus('📱 Sending mobile OTP…', 'y');
-    let mobileOtpToken; try { mobileOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'mobile-otp' });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, email, otpChannel: "PHONE" }) });
-        let body = null; try { body = await r.json(); } catch(e) {}
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) {
-            signupState.mobileRequestId = body?.data?.requestId || body?.requestId || null;
-            suMsg('ivac-msg-mobile', '✅ OTP sent to mobile!', 'g'); logStatus('✅ Mobile OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {}
-            startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput && !otpInput.value) { otpInput.value = otp; suMsg('ivac-msg-mobile', `📩 Auto OTP: ${otp}`, 'g'); logStatus(`📩 Signup Mobile OTP: ${otp}`, 'g'); } return undefined; }, false, false);
-        } else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
-});
+    document.getElementById('ivac-btn-email')?.addEventListener('click', async function() {
+        const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!email) { suMsg('ivac-msg-email', '❌ Enter email', 'r'); return; } if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { suMsg('ivac-msg-email', '❌ Invalid email', 'r'); return; }
+        suMsg('ivac-msg-email', '⏳ Sending OTP to email…', 'y'); logStatus('📧 Sending email OTP…', 'y');
+        let emailOtpToken; try { emailOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'email-otp' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': emailOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ email, otpChannel: "EMAIL" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { signupState.emailRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-email', '✅ OTP sent to email!', 'g'); logStatus('✅ Email OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
 
-document.getElementById('ivac-btn-get-mobile-otp')?.addEventListener('click', async function() {
-    const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
-    if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number first', 'r'); return; }
-    suMsg('ivac-msg-mobile', '⏳ Fetching OTP from SMS server…', 'y'); logStatus('📱 Manual OTP fetch for signup…', 'y'); flashButton(this, '⟳', 'y');
-    startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); } suMsg('ivac-msg-mobile', `📩 OTP: ${otp}`, 'g'); logStatus(`📩 Signup OTP fetched: ${otp}`, 'g'); return undefined; }, true, true);
-});
+    document.getElementById('ivac-btn-get-email-otp')?.addEventListener('click', function() { suMsg('ivac-msg-email', '⚠ Email OTP auto-fetch not implemented yet', 'y'); logStatus('⚠ Email OTP fetch — coming soon', 'y'); flashButton(this, '?', 'y'); });
 
-document.getElementById('ivac-btn-mobile-verify')?.addEventListener('click', async function() {
-    const otp = (document.getElementById('ivac-mobile-otp')?.value || '').trim(); const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
-    if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
-    suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
-    let mobileVerifyToken; try { mobileVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId(), 'x-token': mobileVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
-        let body = null; try { body = await r.json(); } catch(e) {}
-        const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
-        if (verified) { signupState.mobileVerified = true; updateMobileBadge(); suMsg('ivac-msg-mobile', '✅ Mobile verified!', 'g'); logStatus('✅ Mobile verified!', 'g'); flashButton(this, '✓', 'g'); try { stopSmsFetcher('mobile verified'); beepOtpOrVerify(); } catch(e) {} }
-        else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
-});
-
-document.getElementById('ivac-btn-email')?.addEventListener('click', async function() {
-    const email = (document.getElementById('ivac-email')?.value || '').trim();
-    if (!email) { suMsg('ivac-msg-email', '❌ Enter email', 'r'); return; } if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { suMsg('ivac-msg-email', '❌ Invalid email', 'r'); return; }
-    suMsg('ivac-msg-email', '⏳ Sending OTP to email…', 'y'); logStatus('📧 Sending email OTP…', 'y');
-    let emailOtpToken; try { emailOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'email-otp' });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-device-id': getDeviceId(), 'x-token': emailOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ email, otpChannel: "EMAIL" }) });
-        let body = null; try { body = await r.json(); } catch(e) {}
-        const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
-        if (ok) { signupState.emailRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-email', '✅ OTP sent to email!', 'g'); logStatus('✅ Email OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
-        else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
-});
-
-document.getElementById('ivac-btn-get-email-otp')?.addEventListener('click', function() { suMsg('ivac-msg-email', '⚠ Email OTP auto-fetch not implemented yet', 'y'); logStatus('⚠ Email OTP fetch — coming soon', 'y'); flashButton(this, '?', 'y'); });
-
-document.getElementById('ivac-btn-email-verify')?.addEventListener('click', async function() {
-    const otp = (document.getElementById('ivac-email-otp')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
-    if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
-    suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
-    let emailVerifyToken; try { emailVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-    const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
-    try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId(), 'x-token': emailVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
-        let body = null; try { body = await r.json(); } catch(e) {}
-        const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
-        netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
-        if (verified) { signupState.emailVerified = true; updateEmailBadge(); suMsg('ivac-msg-email', '✅ Email verified!', 'g'); logStatus('✅ Email verified!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
-        else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
-    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
-});
+    document.getElementById('ivac-btn-email-verify')?.addEventListener('click', async function() {
+        const otp = (document.getElementById('ivac-email-otp')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
+        suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
+        let emailVerifyToken; try { emailVerifyToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': emailVerifyToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
+            netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
+            if (verified) { signupState.emailVerified = true; updateEmailBadge(); suMsg('ivac-msg-email', '✅ Email verified!', 'g'); logStatus('✅ Email verified!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
 
     // ==================== SIGNUP: ACCOUNT REGISTRATION (direct, no conditions) ====================
     document.getElementById('ivac-btn-submit-info')?.addEventListener('click', async function() {
@@ -2831,16 +2806,16 @@ document.getElementById('ivac-btn-email-verify')?.addEventListener('click', asyn
         if (m) { try { dob = new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString(); } catch(e) {} }
         else if (/^\d{4}-\d{2}-\d{2}/.test(dobRaw)) { try { dob = new Date(dobRaw).toISOString(); } catch(e) {} }
 
-        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password };
         suMsg('ivac-msg-submit', '⏳ Submitting…', 'y');
         logStatus(`📝 Account Registration → ${email || phone}`, 'y');
-        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
         let signupToken; try { signupToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-submit', `❌ Captcha: ${e.message}`, 'r'); flashButton(btn, '✗', 'r'); return; }
+        const signupBody = { phone, email, nid, passport, givenName, surName, dob, password };
+        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
         const logId = netLogAdd({ method: 'POST', url: API_SIGNUP, tag: 'signup', state: 'pending', note: 'account-registration' });
         try {
             const response = await H2.fetchH2(API_SIGNUP, {
                 method: 'POST',
-                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId(), 'x-token': signupToken },
+                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': signupToken },
                 referrer: API_REFERRER,
                 body: JSON.stringify(signupBody)
             });
@@ -2862,9 +2837,9 @@ document.getElementById('ivac-btn-email-verify')?.addEventListener('click', asyn
         }
     });
 
-document.querySelectorAll('#p .t[data-t="s"]').forEach(t => { t.addEventListener('click', () => { setTimeout(() => { const prof = profiles[activeProfileName] || {}; const fields = { 'ivac-mobile': prof.phone1 || '', 'ivac-email': prof.email || '', 'ivac-surname': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(-1)[0] : prof.name || ''; })(), 'ivac-given-name': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(0,-1).join(' ') : ''; })(), 'ivac-password': prof.mobilePass || '' }; Object.entries(fields).forEach(([id, val]) => { const el = document.getElementById(id); if (el && !el.value && val) el.value = val; }); }, 50); }); });
+    document.querySelectorAll('#p .t[data-t="s"]').forEach(t => { t.addEventListener('click', () => { setTimeout(() => { const prof = profiles[activeProfileName] || {}; const fields = { 'ivac-mobile': prof.phone1 || '', 'ivac-email': prof.email || '', 'ivac-surname': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(-1)[0] : prof.name || ''; })(), 'ivac-given-name': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(0,-1).join(' ') : ''; })(), 'ivac-password': prof.mobilePass || '' }; Object.entries(fields).forEach(([id, val]) => { const el = document.getElementById(id); if (el && !el.value && val) el.value = val; }); }, 50); }); });
 
-document.getElementById('pl-button')?.addEventListener('click', () => { window.open('https://appointment.ivacbd.com/appointment/time-slot', '_blank'); });
+    document.getElementById('pl-button')?.addEventListener('click', () => { window.open('https://appointment.ivacbd.com/appointment/time-slot', '_blank'); });
 
 // ==================== ADVANCE (FORGOT) LOGIN PIPELINE (H2) ====================
 const advanceState = { requestId: null, forgotPhone: null, signinPhone: null, otp: null, bearerToken: null, running: false };
