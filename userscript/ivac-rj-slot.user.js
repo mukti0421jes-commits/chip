@@ -773,17 +773,50 @@ function encRoleScores(src, pos) {
     return { sig: sM.length, res: rM.length };
 }
 
-// Resolve BOTH configs directly from the bundle object literals (no fragile var-name step).
+// --- config-object parsing helpers (handle new bundle format) ---
+// split on top-level commas (respect quotes and ()[]{} nesting)
+function _splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
+// config integer: prefer a QUOTED number (Number("1"), c[f(1486)](_,"27")), else a bare int (old startAt:4)
+function _cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
+// brace-match an object literal starting at `{` (respect quotes)
+function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
+
+// Resolve config(s) directly from the bundle object literals (handles both old {secret:...,startAt:4,...}
+// and new {secret:...,startAt:Number("1"),length:c[f()](_,"27"),version:...} formats).
 // Returns { signin, reserve } where each is { key, skip, length, version } or null.
 function resolveBundleConfigs(text) {
     const R = buildBundleResolver(text);
-    const cfgRe = /\{secret:([^{}]*?),startAt:(-?\d+),length:(-?\d+),version:(\d+)\}/g;
-    const found = []; let cm;
-    while ((cm = cfgRe.exec(text))) {
-        const secret = R.resolveExpr(cm[1], cm.index);
-        if (!secret) { console.warn('[RJ EncAuto] config v' + cm[4] + ' secret decode FAILED @', cm.index); continue; }
-        const sc = encRoleScores(text, cm.index);
-        found.push({ key: secret, skip: +cm[2], length: +cm[3], version: +cm[4], sig: sc.sig, res: sc.res });
+    const found = [];
+    let idx = 0; const NEEDLE = 'secret:';
+    while ((idx = text.indexOf(NEEDLE, idx)) !== -1) {
+        const b = text.lastIndexOf('{', idx);
+        if (b < 0) { idx += NEEDLE.length; continue; }
+        const e = _braceObj(text, b);
+        if (e < 0) { idx += NEEDLE.length; continue; }
+        const objStart = b, objStr = text.slice(b + 1, e);
+        idx = e + 1;
+        const fields = _splitTopComma(objStr); const map = {};
+        for (const f of fields) { const ci = f.indexOf(':'); if (ci < 0) continue; map[f.slice(0, ci).trim()] = f.slice(ci + 1).trim(); }
+        if (!('secret' in map) || !('startAt' in map) || !('length' in map) || !('version' in map)) continue;
+        const skip = _cfgNum(map.startAt), length = _cfgNum(map.length), version = _cfgNum(map.version);
+        if (isNaN(skip) || isNaN(length) || isNaN(version)) continue;
+        // inline local string vars used as bare args, e.g. r(1538,n) where const ...,n="Y$pG"
+        let secretExpr = map.secret;
+        try {
+            const region = text.slice(Math.max(0, objStart - 6000), objStart);
+            const ids = [...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g) || []))];
+            for (const id of ids) {
+                const esc = id.replace(/[$]/g, '\\$');
+                if (new RegExp('\\b' + esc + '\\s*\\(').test(secretExpr)) continue; // decoder call → skip
+                const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
+                let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
+                if (best !== null) secretExpr = secretExpr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+            }
+        } catch (e2) {}
+        const secret = R.resolveExpr(secretExpr, objStart);
+        if (!secret) { console.warn('[RJ EncAuto] config v' + version + ' secret decode FAILED @', objStart); continue; }
+        const sc = encRoleScores(text, objStart);
+        found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res });
     }
     // dedup by version|secret, summing role evidence
     const uniq = []; const seen = new Map();
@@ -793,13 +826,14 @@ function resolveBundleConfigs(text) {
         const e = { ...c }; seen.set(k, e); uniq.push(e);
     }
     for (const c of uniq) { if (c.sig > c.res) c.role = 'signin'; else if (c.res > c.sig) c.role = 'reserve'; else c.role = null; }
-    // infer the missing label when exactly two configs and one is known
     if (uniq.length === 2) {
         const known = uniq.filter(c => c.role), unknown = uniq.filter(c => !c.role);
         if (known.length === 1 && unknown.length === 1) unknown[0].role = known[0].role === 'signin' ? 'reserve' : 'signin';
     }
     const out = { signin: null, reserve: null };
     for (const c of uniq) { if (c.role && !out[c.role]) out[c.role] = { key: c.key, skip: c.skip, length: c.length, version: c.version }; }
+    // Single key in the bundle → it serves BOTH signin and reserve (newer bundles do this).
+    if (uniq.length === 1) { const c = uniq[0]; const cfg = { key: c.key, skip: c.skip, length: c.length, version: c.version }; out.signin = out.signin || cfg; out.reserve = out.reserve || cfg; }
     return out;
 }
 
