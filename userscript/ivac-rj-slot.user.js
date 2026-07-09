@@ -1513,6 +1513,7 @@ const h2html = `
 <div class="fr-otp"><input type="text" id="login-otp" placeholder="Login OTP"><button class="b4 bh" id="botp">OTP</button><button class="b5 bh" id="bve">Verify</button></div>
 <div class="fr"> <button class="b1 bh" style="flex:1" id="brs">Reserve</button> <button class="b14 bh" style="flex:1" id="bbk">Book</button> <button class="b6 bh" style="flex:1" id="bin">Initiate</button>
 </div>
+<div class="fr" style="gap:4px"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button></div>
 
 <div class="fr" style="justify-content:center;gap:6px"><label style="font-size:.62rem;color:#7777aa;font-weight:700">🔔 Popup</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
 <div class="fr"><button class="b8" style="width:100%" id="bst">Stop All</button></div>
@@ -1588,7 +1589,6 @@ const h2html = `
 <div class="fr" style="margin-bottom:1px"><button class="bh" style="width:100%;padding:4px 6px!important;background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:1px solid #a78bfa;color:#fff" id="ivac-btn-number-password" title="Fill phone+password from selected profile">Number Password</button></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#f97316,#ea580c);border:1px solid #fb923c;color:#fff" id="ivac-dom-signin-btn">Signin</button><input type="number" id="ivac-dom-signin-sec" min="0.1" max="60" step="0.1" value="20" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Signin retry interval (sec)"></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#ec4899,#be185d);border:1px solid #f472b6;color:#fff" id="ivac-dom-get-signin-otp-btn">Get Signin OTP</button><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#14b8a6,#0d9488);border:1px solid #2dd4bf;color:#fff" id="ivac-dom-verify-otp-btn">Verify</button></div>
-<div class="fr" style="margin-bottom:1px;gap:3px"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve (auto-selects first)"><option value="">Reserve date…</option></select><button class="bh" style="flex:none;padding:4px 8px!important;background:linear-gradient(135deg,#0ea5e9,#0369a1);border:1px solid #38bdf8;color:#fff" id="ivac-btn-load-dates" title="Load available dates from booking config">↻ Dates</button></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#3b82f6,#1d4ed8);border:1px solid #60a5fa;color:#fff" id="ivac-dom-reserve-btn">Reserveslot</button><input type="number" id="ivac-dom-retry-sec" min="0.1" max="60" step="0.1" value="22" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Reserve retry interval (sec)"></div>
 </div>
 </div>
@@ -3371,21 +3371,48 @@ function getReserveAppointmentId() {
 
 // dd-mm-yyyy display, YYYY-MM-DD value (API format)
 function _fmtDateDisplay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : iso; }
+// normalize any date-ish value to a single YYYY-MM-DD string (never an array)
+function _normDate(v) {
+    if (Array.isArray(v)) return _normDate(v[0]);
+    let s = String(v == null ? '' : v).trim();
+    let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s); if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s); if (m) return `${m[3]}-${m[2]}-${m[1]}`;   // DD-MM-YYYY (page format)
+    m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s); if (m) return `${m[3]}-${m[2]}-${m[1]}`;   // DD/MM/YYYY
+    return '';
+}
+
+// Scrape the appointment dates the site itself is showing on the /appointment/time-slot page.
+// The date dropdown renders each date as a leaf element like "12-07-2026" (DD-MM-YYYY).
+function scrapePageDates() {
+    const set = new Set();
+    try {
+        document.querySelectorAll('button, span, li, div, option').forEach(el => {
+            if (el.children && el.children.length) return;               // leaf nodes only
+            const iso = _normDate((el.textContent || '').trim());
+            if (iso) set.add(iso);
+        });
+    } catch (e) {}
+    return [...set].sort();   // YYYY-MM-DD sorts chronologically
+}
 
 function populateReserveDates(dates) {
     const sel = document.getElementById('ivac-reserve-date');
-    if (!sel || !Array.isArray(dates) || !dates.length) return null;
+    const arr = (Array.isArray(dates) ? dates : []).map(_normDate).filter(Boolean);
+    const uniq = [...new Set(arr)].sort();
+    if (!sel || !uniq.length) return null;
     const prev = sel.value;
-    sel.innerHTML = '<option value="">Reserve date…</option>' + dates.map(d => `<option value="${d}">${_fmtDateDisplay(d)}</option>`).join('');
-    // keep previous choice if still present, else auto-select the first date
-    if (prev && dates.includes(prev)) sel.value = prev; else sel.value = dates[0];
-    sessionState.abcDate = sel.value || dates[0];
+    sel.innerHTML = '<option value="">📅 Reserve date…</option>' + uniq.map(d => `<option value="${d}">${_fmtDateDisplay(d)}</option>`).join('');
+    // keep previous choice if still present, else auto-select the first (earliest) date
+    if (prev && uniq.includes(prev)) sel.value = prev; else sel.value = uniq[0];
+    sessionState.abcDate = sel.value || uniq[0];
     return sel.value;
 }
 
-// GET get-booking-config → returns the appointmentDate[] array (also fills the dropdown)
+// Sync dropdown: prefer the dates the page is already showing; fall back to get-booking-config API.
 async function loadReserveDates() {
-    if (!sessionState.accessToken) { logStatus('❌ No session — signin first', 'r'); return null; }
+    const pageDates = scrapePageDates();
+    if (pageDates.length) { const first = populateReserveDates(pageDates); logStatus(`📅 ${pageDates.length} date(s) synced from page • first: ${_fmtDateDisplay(first)}`, 'g'); return pageDates; }
+    if (!sessionState.accessToken) { logStatus('❌ No dates on page & no session — signin first', 'r'); return null; }
     const logId = netLogAdd({ method: 'GET', url: API_BOOK, tag: 'book', state: 'pending', note: 'load dates' });
     try {
         const r = await H2.fetchH2(API_BOOK, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: null });
@@ -3393,11 +3420,26 @@ async function loadReserveDates() {
         const dates = body?.data?.appointmentDate;
         const arr = Array.isArray(dates) ? dates : (dates ? [dates] : []);
         netLogUpdate(logId, { status: r.status, state: arr.length ? 'ok' : 'fail', note: arr.length ? `${arr.length} dates` : (body?.message || `HTTP ${r.status}`) });
-        if (arr.length) { const first = populateReserveDates(arr); logStatus(`📅 ${arr.length} date(s) loaded • first: ${_fmtDateDisplay(first)}`, 'g'); }
-        else logStatus('⚠ No dates in booking config', 'y');
+        if (arr.length) { const first = populateReserveDates(arr); logStatus(`📅 ${arr.length} date(s) from booking config • first: ${_fmtDateDisplay(first)}`, 'g'); }
+        else logStatus('⚠ No dates found (page or booking config)', 'y');
         return arr;
     } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`✗ Load dates: ${err.message}`, 'r'); return null; }
 }
+
+// Auto-sync: whenever the time-slot page shows/updates its date list, mirror it into the dropdown.
+(function initReserveDateAutoSync() {
+    let last = '';
+    const tick = () => {
+        try {
+            const sel = document.getElementById('ivac-reserve-date'); if (!sel) return;
+            const dates = scrapePageDates(); if (!dates.length) return;
+            const sig = dates.join(',');
+            if (sig === last) return;                       // nothing changed
+            last = sig; populateReserveDates(dates);
+        } catch (e) {}
+    };
+    try { const start = () => { setInterval(tick, 1500); tick(); }; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start(); } catch (e) {}
+})();
 
 async function stepReserve(signal) {
     if (!_forceStep && isStepAlreadyDone('reserve')) { logStatus(`⏭ Reserve already done`, 'g'); return { win: true, skipped: true }; }
@@ -3408,9 +3450,9 @@ async function stepReserve(signal) {
     // slot id = saved appointmentId (profile/session); date = picker → session → first booking-config date
     const slotId = getReserveAppointmentId();
     if (!slotId) { logStatus('❌ No appointmentId — upload file & save profile first', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
-    let appointmentDate = (document.getElementById('ivac-reserve-date')?.value || '').trim() || sessionState.abcDate || '';
-    if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = (arr && arr[0]) || ''; } catch(e) {} }
-    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻ Dates', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
+    if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
+    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
     const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
