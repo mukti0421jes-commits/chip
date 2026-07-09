@@ -218,6 +218,33 @@ const found=[];
    const skip=cfgNum(map.startAt),len=cfgNum(map.length),version=cfgNum(map.version);
    if(isNaN(skip)||isNaN(len)||isNaN(version))continue;
    let secretExpr=map.secret;
+   // Member-access secret (secret: n[o(191)] or n.prop): the key lives in a property of object n.
+   // Decode each concatenation-valued property; the captcha KEY is the spaceless one (messages have spaces).
+   {const t0=secretExpr.trim();
+    const mm=/^([A-Za-z_$][\w$]*)\s*[\.\[]/.exec(t0);
+    if(mm){
+      const objName=mm[1];
+      const before=src.slice(0,objStart);
+      const re=new RegExp("[^\\w$]"+objName.replace(/[$]/g,"\\$")+"\\s*=\\s*\\{","g");
+      let om=null,mmm; while((mmm=re.exec(before)))om=mmm;
+      if(om){
+        const ob=before.indexOf("{",om.index), oe=braceObj(src,ob);
+        if(oe>ob){
+          const ofields=splitTopComma(src.slice(ob+1,oe));
+          let best=null,bestLen=-1;
+          for(const of of ofields){
+            const ci=of.indexOf(":"); if(ci<0)continue;
+            const val=of.slice(ci+1).trim();
+            if(/^function\b/.test(val)) continue;
+            if(!/[A-Za-z_$][\w$]*\(/.test(val)) continue;    // must use a decoder call
+            let dec=null; try{ dec=resolveExpr(val,objStart); }catch(e){}
+            if(dec && !/\s/.test(dec) && dec.length>=10 && dec.length>bestLen){ best=val; bestLen=dec.length; }
+          }
+          if(best) secretExpr=best;
+        }
+      }
+    }
+   }
    {const region=src.slice(Math.max(0,objStart-6000),objStart);
     const ids=[...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g)||[]))];
     for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
