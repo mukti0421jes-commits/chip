@@ -344,7 +344,7 @@ function getTagFromUrl(url) {
 H2.preWarm();
 
 // ==================== API CONFIG ====================
-const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/sign-in-v2";
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/sign-in-v4";
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
@@ -1373,12 +1373,9 @@ async function performSignin(phone, password, captchaToken) {
         method: "POST",
         headers: {
             "accept": "application/json, text/plain, */*",
-            "accept-language": "en-US,en;q=0.9",
-            "cache-control": "no-cache",
+            "cache-control": "no-cache, no-store, must-revalidate",
             "content-type": "application/json",
-            "pragma": "no-cache",
-            "priority": "u=1, i",
-            "x-device-id": getDeviceId()
+            "pragma": "no-cache"
         },
         referrer: API_REFERRER,
         body: body
@@ -3287,7 +3284,7 @@ async function stepSignin(signal) {
     const logId = netLogAdd({ method: 'POST', url: API_SIGNIN_V2, tag: 'signin', state: 'pending' });
     try {
         const encryptedCaptcha = encryptTokenByPurpose(captchaToken, 'signin');
-        const r = await H2.fetchH2(API_SIGNIN_V2, { method: 'POST', signal: localAc.signal, headers: { 'accept':'application/json','content-type':'application/json','x-device-id':getDeviceId(),'cache-control':'no-cache','pragma':'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ phone, password, c: encryptedCaptcha }) });
+        const r = await H2.fetchH2(API_SIGNIN_V2, { method: 'POST', signal: localAc.signal, headers: { 'accept':'application/json, text/plain, */*','cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ phone, password, c: encryptedCaptcha }) });
         if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; }
         const body = await r.json(); netLogUpdate(logId, { status: r.status, state: r.ok && body.successFlag ? 'ok' : 'fail' });
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
