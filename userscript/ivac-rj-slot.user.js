@@ -800,8 +800,37 @@ function resolveBundleConfigs(text) {
         if (!('secret' in map) || !('startAt' in map) || !('length' in map) || !('version' in map)) continue;
         const skip = _cfgNum(map.startAt), length = _cfgNum(map.length), version = _cfgNum(map.version);
         if (isNaN(skip) || isNaN(length) || isNaN(version)) continue;
-        // inline local string vars used as bare args, e.g. r(1538,n) where const ...,n="Y$pG"
         let secretExpr = map.secret;
+        // Member-access secret (secret: n[o(191)] or n.prop): the key lives inside an object
+        // property. Decode each concatenation-valued property; the captcha KEY is the spaceless
+        // one (sibling message strings contain spaces). Handles bundles with no direct expression.
+        try {
+            const t0 = secretExpr.trim();
+            const mm = /^([A-Za-z_$][\w$]*)\s*[\.\[]/.exec(t0);
+            if (mm) {
+                const objName = mm[1];
+                const before = text.slice(0, objStart);
+                const re = new RegExp('[^\\w$]' + objName.replace(/[$]/g, '\\$') + '\\s*=\\s*\\{', 'g');
+                let om = null, mmm; while ((mmm = re.exec(before))) om = mmm;
+                if (om) {
+                    const ob = before.indexOf('{', om.index), oe = _braceObj(text, ob);
+                    if (oe > ob) {
+                        const ofields = _splitTopComma(text.slice(ob + 1, oe));
+                        let best = null, bestLen = -1;
+                        for (const of2 of ofields) {
+                            const ci = of2.indexOf(':'); if (ci < 0) continue;
+                            const val = of2.slice(ci + 1).trim();
+                            if (/^function\b/.test(val)) continue;
+                            if (!/[A-Za-z_$][\w$]*\(/.test(val)) continue;   // must use a decoder call
+                            let dec = null; try { dec = R.resolveExpr(val, objStart); } catch (e3) {}
+                            if (dec && !/\s/.test(dec) && dec.length >= 10 && dec.length > bestLen) { best = val; bestLen = dec.length; }
+                        }
+                        if (best) secretExpr = best;
+                    }
+                }
+            }
+        } catch (e2) {}
+        // inline local string vars used as bare args, e.g. r(1538,n) where const ...,n="Y$pG"
         try {
             const region = text.slice(Math.max(0, objStart - 6000), objStart);
             const ids = [...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g) || []))];
