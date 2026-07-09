@@ -1513,6 +1513,7 @@ const h2html = `
 <div class="fr-otp"><input type="text" id="login-otp" placeholder="Login OTP"><button class="b4 bh" id="botp">OTP</button><button class="b5 bh" id="bve">Verify</button></div>
 <div class="fr"> <button class="b1 bh" style="flex:1" id="brs">Reserve</button> <button class="b14 bh" style="flex:1" id="bbk">Book</button> <button class="b6 bh" style="flex:1" id="bin">Initiate</button>
 </div>
+<div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
 <div class="fr" style="gap:4px"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button></div>
 
 <div class="fr" style="justify-content:center;gap:6px"><label style="font-size:.62rem;color:#7777aa;font-weight:700">🔔 Popup</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
@@ -3369,6 +3370,24 @@ function getReserveAppointmentId() {
     return id || '';
 }
 
+// The reserve-slot URL uses a CENTER-FIXED slot UUID (e.g. ccd3dd63-…), NOT the per-user
+// appointmentId. It stays the same across accounts for a given center, so the user pastes it
+// once into the Slot ID box (persisted). Falls back to appointmentId only if the box is empty.
+const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
+function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
+function getReserveSlotId() {
+    const inp = document.getElementById('ivac-reserve-slot-id');
+    let v = _cleanUuid(inp?.value);
+    if (!v) { try { v = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || ''); } catch(e) {} }
+    if (!v) v = getReserveAppointmentId();   // last-resort fallback
+    return v || '';
+}
+function saveReserveSlotId(v) {
+    v = _cleanUuid(v); if (!v) return;
+    try { localStorage.setItem(RESERVE_SLOT_ID_KEY, v); } catch(e) {}
+    try { if (profiles[activeProfileName]) { profiles[activeProfileName].reserveSlotId = v; persistProfiles(); } } catch(e) {}
+}
+
 // dd-mm-yyyy display, YYYY-MM-DD value (API format)
 function _fmtDateDisplay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : iso; }
 // normalize any date-ish value to a single YYYY-MM-DD string (never an array)
@@ -3456,9 +3475,9 @@ async function stepReserve(signal) {
     let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
     if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
     const encryptedCaptchaToken = encryptTokenByPurpose(captchaToken, 'reserve');
-    // slot id = saved appointmentId (profile/session); date = picker → session → first booking-config date
-    const slotId = getReserveAppointmentId();
-    if (!slotId) { logStatus('❌ No appointmentId — upload file & save profile first', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
+    const slotId = getReserveSlotId();
+    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (ccd3dd63-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
     let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
     if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
     if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
@@ -3621,6 +3640,11 @@ document.getElementById('brs')?.addEventListener('click', () => manualStepClick(
 document.getElementById('bbk')?.addEventListener('click', () => manualStepClick('book'));
 document.getElementById('bin')?.addEventListener('click', () => manualStepClick('initiate'));
 document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => loadReserveDates());
+(function initReserveSlotIdBox() {
+    const inp = document.getElementById('ivac-reserve-slot-id'); if (!inp) return;
+    try { inp.value = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || ''); } catch(e) {}
+    inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { saveReserveSlotId(v); logStatus(`🆔 Reserve Slot ID saved: ${v.slice(0,8)}…`, 'g'); } });
+})();
 document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
 
 // ==================== PIPELINE STARTER + SCHEDULER ====================
