@@ -2598,17 +2598,26 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         formData.append('isPrimary', String(isPrimary));
         let uploadToken; try { uploadToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
         logStatus(`📄 Uploading ${label}…`, 'y');
+        // Same token-lifecycle as the step APIs: many parallel calls share one queued token; when the
+        // server accepts (success) OR declares it invalid, the token is burned (removed from queue) and
+        // every other in-flight call using it is instantly cancelled — so the next file grabs a fresh token.
+        const localAc = new AbortController();
+        registerTokenInFlight(uploadToken, localAc);
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
         try {
-            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+            // burn on success (used) or on server-declared-invalid; keep on transient 503/429 to retry
+            const burn = ok || shouldBurnToken(r.status, body);
+            if (burn) tokenQueueInvalidate(uploadToken); else unregisterTokenInFlight(uploadToken, localAc);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
             if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
-        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
-        // Turnstile/x-token is single-use — burn it so the NEXT file upload solves a fresh one
-        // (otherwise the queued token is reused and the server rejects it with 503).
-        finally { try { tokenQueueInvalidate(uploadToken); } catch(e) {} }
+        } catch (err) {
+            unregisterTokenInFlight(uploadToken, localAc);   // token still valid on transient/abort — don't burn
+            if (err.name === 'AbortError') { netLogUpdate(logId, { state: 'cancel', status: '⊘', note: 'token used/invalid — cancelled' }); logStatus(`⊘ ${label} cancelled (token used elsewhere)`, 'y'); }
+            else { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
+        }
     }
     document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
     document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
