@@ -1588,6 +1588,7 @@ const h2html = `
 <div class="fr" style="margin-bottom:1px"><button class="bh" style="width:100%;padding:4px 6px!important;background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:1px solid #a78bfa;color:#fff" id="ivac-btn-number-password" title="Fill phone+password from selected profile">Number Password</button></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#f97316,#ea580c);border:1px solid #fb923c;color:#fff" id="ivac-dom-signin-btn">Signin</button><input type="number" id="ivac-dom-signin-sec" min="0.1" max="60" step="0.1" value="20" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Signin retry interval (sec)"></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#ec4899,#be185d);border:1px solid #f472b6;color:#fff" id="ivac-dom-get-signin-otp-btn">Get Signin OTP</button><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#14b8a6,#0d9488);border:1px solid #2dd4bf;color:#fff" id="ivac-dom-verify-otp-btn">Verify</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve (auto-selects first)"><option value="">Reserve date…</option></select><button class="bh" style="flex:none;padding:4px 8px!important;background:linear-gradient(135deg,#0ea5e9,#0369a1);border:1px solid #38bdf8;color:#fff" id="ivac-btn-load-dates" title="Load available dates from booking config">↻ Dates</button></div>
 <div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#3b82f6,#1d4ed8);border:1px solid #60a5fa;color:#fff" id="ivac-dom-reserve-btn">Reserveslot</button><input type="number" id="ivac-dom-retry-sec" min="0.1" max="60" step="0.1" value="22" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Reserve retry interval (sec)"></div>
 </div>
 </div>
@@ -3359,16 +3360,62 @@ async function stepVerify(signal) {
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
 }
 
+// ==================== RESERVE: slot-id (= saved appointmentId) + date picker ====================
+// Reserve endpoint is now /slots/{appointmentId}/reserve-slot with body {c, appointmentDate}.
+// The {appointmentId} is the SAME id saved to the profile after file upload (initiate uses it too).
+function getReserveAppointmentId() {
+    let id = sessionState.appointmentId;
+    if (!id) { try { const p = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (p && p.length >= 10) id = p; } catch(e) {} }
+    return id || '';
+}
+
+// dd-mm-yyyy display, YYYY-MM-DD value (API format)
+function _fmtDateDisplay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : iso; }
+
+function populateReserveDates(dates) {
+    const sel = document.getElementById('ivac-reserve-date');
+    if (!sel || !Array.isArray(dates) || !dates.length) return null;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">Reserve date…</option>' + dates.map(d => `<option value="${d}">${_fmtDateDisplay(d)}</option>`).join('');
+    // keep previous choice if still present, else auto-select the first date
+    if (prev && dates.includes(prev)) sel.value = prev; else sel.value = dates[0];
+    sessionState.abcDate = sel.value || dates[0];
+    return sel.value;
+}
+
+// GET get-booking-config → returns the appointmentDate[] array (also fills the dropdown)
+async function loadReserveDates() {
+    if (!sessionState.accessToken) { logStatus('❌ No session — signin first', 'r'); return null; }
+    const logId = netLogAdd({ method: 'GET', url: API_BOOK, tag: 'book', state: 'pending', note: 'load dates' });
+    try {
+        const r = await H2.fetchH2(API_BOOK, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: null });
+        let body = null; try { body = await r.json(); } catch(e) {}
+        const dates = body?.data?.appointmentDate;
+        const arr = Array.isArray(dates) ? dates : (dates ? [dates] : []);
+        netLogUpdate(logId, { status: r.status, state: arr.length ? 'ok' : 'fail', note: arr.length ? `${arr.length} dates` : (body?.message || `HTTP ${r.status}`) });
+        if (arr.length) { const first = populateReserveDates(arr); logStatus(`📅 ${arr.length} date(s) loaded • first: ${_fmtDateDisplay(first)}`, 'g'); }
+        else logStatus('⚠ No dates in booking config', 'y');
+        return arr;
+    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`✗ Load dates: ${err.message}`, 'r'); return null; }
+}
+
 async function stepReserve(signal) {
     if (!_forceStep && isStepAlreadyDone('reserve')) { logStatus(`⏭ Reserve already done`, 'g'); return { win: true, skipped: true }; }
     if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
     let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
     if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
     const encryptedCaptchaToken = encryptTokenByPurpose(captchaToken, 'reserve');
+    // slot id = saved appointmentId (profile/session); date = picker → session → first booking-config date
+    const slotId = getReserveAppointmentId();
+    if (!slotId) { logStatus('❌ No appointmentId — upload file & save profile first', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    let appointmentDate = (document.getElementById('ivac-reserve-date')?.value || '').trim() || sessionState.abcDate || '';
+    if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = (arr && arr[0]) || ''; } catch(e) {} }
+    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻ Dates', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
-    const logId = netLogAdd({ method: 'POST', url: API_RESERVE, tag: 'reserve', state: 'pending', note: 'reserveSlot (H/2)' });
+    const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
-        const r = await H2.fetchH2(API_RESERVE, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'cache-control': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken }) });
+        const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
         let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body);
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
         netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||'?'} • ${body?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
@@ -3422,9 +3469,10 @@ async function stepBook(signal) {
         const r = await H2.fetchH2(API_BOOK, {
             method: 'GET', signal,
             headers: {
-                'accept': 'application/json',
+                'accept': 'application/json, text/plain, */*',
                 'authorization': `Bearer ${sessionState.accessToken}`,
-                'content-type': 'application/json'
+                'cache-control': 'no-cache, no-store, must-revalidate',
+                'pragma': 'no-cache'
             },
             referrer: API_REFERRER,
             body: null
@@ -3445,7 +3493,8 @@ async function stepBook(signal) {
 
             // ✅ Save to Session State
             sessionState.appointmentId = body.data.appointmentId || sessionState.appointmentId;
-            sessionState.abcDate = body.data.appointmentDate || sessionState.abcDate;
+            // appointmentDate is now an array of available dates → fill the reserve date picker (auto-first)
+            { const ad = body.data.appointmentDate; if (Array.isArray(ad) && ad.length) { populateReserveDates(ad); } else if (ad) { sessionState.abcDate = ad; } }
             sessionState.abcSlot = body.data.appointmentSlot || null;
             sessionState.ivacCenter = body.data.ivacCenter || null;
             sessionState.mission = body.data.mission || null;
@@ -3488,7 +3537,7 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'content-type':'application/json','x-device-id':getDeviceId(),'x-token':initiateToken }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':initiateToken }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
@@ -3520,6 +3569,8 @@ document.getElementById('bve')?.addEventListener('click', () => manualStepClick(
 document.getElementById('brs')?.addEventListener('click', () => manualStepClick('reserve'));
 document.getElementById('bbk')?.addEventListener('click', () => manualStepClick('book'));
 document.getElementById('bin')?.addEventListener('click', () => manualStepClick('initiate'));
+document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => loadReserveDates());
+document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
 
 // ==================== PIPELINE STARTER + SCHEDULER ====================
 const schedules = { advance: { timerId: null, targetMs: null, countdownId: null }, signin: { timerId: null, targetMs: null, countdownId: null } };
