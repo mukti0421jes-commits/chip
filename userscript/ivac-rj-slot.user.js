@@ -3374,12 +3374,13 @@ function getReserveAppointmentId() {
 // appointmentId. It stays the same across accounts for a given center, so the user pastes it
 // once into the Slot ID box (persisted). Falls back to appointmentId only if the box is empty.
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
+const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48ba-a48d-c65eaa4fc663';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
     const inp = document.getElementById('ivac-reserve-slot-id');
     let v = _cleanUuid(inp?.value);
     if (!v) { try { v = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || ''); } catch(e) {} }
-    if (!v) v = getReserveAppointmentId();   // last-resort fallback
+    if (!v) v = RESERVE_SLOT_ID_FIXED;   // default to the fixed reserve slot id
     return v || '';
 }
 function saveReserveSlotId(v) {
@@ -3642,7 +3643,7 @@ document.getElementById('bin')?.addEventListener('click', () => manualStepClick(
 document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => loadReserveDates());
 (function initReserveSlotIdBox() {
     const inp = document.getElementById('ivac-reserve-slot-id'); if (!inp) return;
-    try { inp.value = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || ''); } catch(e) {}
+    try { inp.value = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || '') || RESERVE_SLOT_ID_FIXED; } catch(e) { inp.value = RESERVE_SLOT_ID_FIXED; }
     inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { saveReserveSlotId(v); logStatus(`🆔 Reserve Slot ID saved: ${v.slice(0,8)}…`, 'g'); } });
 })();
 document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
