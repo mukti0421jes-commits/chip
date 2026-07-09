@@ -3382,13 +3382,22 @@ function _normDate(v) {
 }
 
 // Scrape the appointment dates the site itself is showing on the /appointment/time-slot page.
-// The date dropdown renders each date as a leaf element like "12-07-2026" (DD-MM-YYYY).
+// The date dropdown renders each date as a leaf element like "12-07-2026" (DD-MM-YYYY, dash only).
+// We deliberately ignore slash-format dates (e.g. our own panel clock "08/05/2026") and skip
+// anything inside our own UI so only the site's real date list is captured.
 function scrapePageDates() {
     const set = new Set();
+    const onlyDash = (t) => {
+        const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(t) || null;
+        if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+        const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t) || null;
+        return m2 ? `${m2[1]}-${m2[2]}-${m2[3]}` : '';
+    };
     try {
-        document.querySelectorAll('button, span, li, div, option').forEach(el => {
+        document.querySelectorAll('button, span, li, div, option, p').forEach(el => {
             if (el.children && el.children.length) return;               // leaf nodes only
-            const iso = _normDate((el.textContent || '').trim());
+            if (el.closest('#p, #rj-netlog, [id^="ivac-"], [id^="rj-"]')) return;   // skip our own UI
+            const iso = onlyDash((el.textContent || '').trim());
             if (iso) set.add(iso);
         });
     } catch (e) {}
