@@ -2606,6 +2606,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
             if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
+        // Turnstile/x-token is single-use — burn it so the NEXT file upload solves a fresh one
+        // (otherwise the queued token is reused and the server rejects it with 503).
+        finally { try { tokenQueueInvalidate(uploadToken); } catch(e) {} }
     }
     document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
     document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
