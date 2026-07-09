@@ -300,7 +300,7 @@ const H2 = {
             this.preWarm().catch(() => {});
         }
 
-        const h2Init = { ...init, credentials: 'omit' };
+        const h2Init = { ...init, credentials: init.credentials || 'omit' };
 
         this._state.activeStreams++;
         this._state.totalRequests++;
@@ -2598,7 +2598,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         logStatus(`📄 Uploading ${label}…`, 'y');
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
         try {
-            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, credentials: 'include', body: formData });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
