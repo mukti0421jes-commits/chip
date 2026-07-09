@@ -2596,27 +2596,25 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const formData = new FormData();
         if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
         formData.append('isPrimary', String(isPrimary));
-        let uploadToken; try { uploadToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
+        // Claim a DISTINCT fresh token for THIS file (removed from queue → next file gets a different one).
+        // No token is ever reused after a successful/invalid response, so the reuse-503 cannot happen.
+        let uploadEntry; try { uploadEntry = await claimFreshUploadToken(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
+        const uploadToken = uploadEntry.token;
         logStatus(`📄 Uploading ${label}…`, 'y');
-        // Same token-lifecycle as the step APIs: many parallel calls share one queued token; when the
-        // server accepts (success) OR declares it invalid, the token is burned (removed from queue) and
-        // every other in-flight call using it is instantly cancelled — so the next file grabs a fresh token.
-        const localAc = new AbortController();
-        registerTokenInFlight(uploadToken, localAc);
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
         try {
-            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-            // burn on success (used) or on server-declared-invalid; keep on transient 503/429 to retry
-            const burn = ok || shouldBurnToken(r.status, body);
-            if (burn) tokenQueueInvalidate(uploadToken); else unregisterTokenInFlight(uploadToken, localAc);
+            // success (used) or server-declared-invalid → token is spent, keep it OUT of the queue.
+            // transient 503/429 → token was never accepted, return it to the queue so a retry reuses it.
+            const consumed = ok || shouldBurnToken(r.status, body);
+            if (!consumed) _requeueTokenEntry(uploadEntry);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
             if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
         } catch (err) {
-            unregisterTokenInFlight(uploadToken, localAc);   // token still valid on transient/abort — don't burn
-            if (err.name === 'AbortError') { netLogUpdate(logId, { state: 'cancel', status: '⊘', note: 'token used/invalid — cancelled' }); logStatus(`⊘ ${label} cancelled (token used elsewhere)`, 'y'); }
-            else { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r'); }
+            _requeueTokenEntry(uploadEntry);                 // network error → token still valid, return it for retry
+            netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r');
         }
     }
     document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
@@ -3229,6 +3227,32 @@ async function getCaptchaTokenSmart() {
 }
 
 async function solveCaptchaByProvider(provider) { return solveCaptchaSilent(provider); }
+
+// ── FILE-UPLOAD TOKEN: claim a DISTINCT pre-solved token per file ───────────────
+// File upload isn't a race, so each file must get its OWN fresh token (never a reused one).
+// We CLAIM (remove) the freshest queued token so the next file grabs a different one — instant,
+// like the queue, and reuse-proof, like 10.0.5. If the queue is empty we solve live (10.0.5 style).
+// Returns the whole queue entry {token, source, createdAt} so a transient failure can re-queue it.
+function _requeueTokenEntry(entry) {
+    if (!entry || !entry.token) return;
+    tokenQueueCleanExpired();
+    if (tokenQueue.some(t => t.token === entry.token)) return;
+    tokenQueue.push(entry);                              // keep original createdAt (true age)
+    if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
+}
+async function claimFreshUploadToken() {
+    tokenQueueCleanExpired();
+    // pick the FRESHEST (newest) queued token = most remaining lifetime, then remove it (claim)
+    let best = -1, bestAge = Infinity;
+    for (let i = 0; i < tokenQueue.length; i++) { const age = Date.now() - tokenQueue[i].createdAt; if (age < bestAge) { bestAge = age; best = i; } }
+    if (best !== -1) { const e = tokenQueue.splice(best, 1)[0]; console.log(`[RJ Upload] Claimed fresh queued token (${e.source}, ${Math.round(bestAge/1000)}s old, ${tokenQueue.length} left)`); return e; }
+    // queue empty → solve live (10.0.5 behaviour); wrap the token in an entry shape
+    const token = await getCaptchaTokenSmart();
+    // getCaptchaTokenSmart may have queued it — claim it out so it isn't reused
+    const idx = tokenQueue.findIndex(t => t.token === token);
+    if (idx !== -1) return tokenQueue.splice(idx, 1)[0];
+    return { token, source: 'turnstile', createdAt: Date.now() };
+}
 
 // ==================== RACE COORDINATOR ====================
 const raceCoord = {
