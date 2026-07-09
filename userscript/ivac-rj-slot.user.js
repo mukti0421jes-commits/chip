@@ -1696,8 +1696,8 @@ const h2html = `
 <div class="nl-step" data-step="advance">Adv</div>
 <div class="nl-step" data-step="signin">Sign</div>
 <div class="nl-step" data-step="verify">Verify</div>
-<div class="nl-step" data-step="reserve">Resrv</div>
 <div class="nl-step" data-step="book">Book</div>
+<div class="nl-step" data-step="reserve">Resrv</div>
 <div class="nl-step" data-step="initiate">Initiate</div>
 </div>
 
@@ -2953,8 +2953,8 @@ if (advBtn) {
             const r2 = await forgotStep2_fetchOtp(); if (!r2.win) return; if (!isAutoOn()) return;
             const r3 = await runStepSmart('signin', forgotStep3_signin); if (!r3.win) return; if (!isAutoOn()) return;
             const r4 = await runStepSmart('verify', forgotStep4_verify); if (!r4.win) return;
-            logStatus('🎉 Forgot login done! Continuing → Reserve → Book → Initiate', 'g');
-            if (!stopFlag.value) { advanceState.running = false; await startPipelineFrom('reserve'); }
+            logStatus('🎉 Forgot login done! Continuing → Book → Reserve → Initiate', 'g');
+            if (!stopFlag.value) { advanceState.running = false; await startPipelineFrom('book'); }
         } catch(e) { logStatus(`❌ Advance error: ${e.message}`, 'r'); } finally { advanceState.running = false; }
     });
 }
@@ -3028,7 +3028,7 @@ async function slotDutyTick() {
     if (!slotDuty.active || slotDuty.chainRunning || pipelineRunning) return;
     const data = await checkSlotStatus(); if (!data || !data.slotOpen) return;
     logStatus(`🎯 SLOT OPENED!`, 'g'); slotDuty.chainRunning = true;
-    try { stopFlag.value = false; resetAllStepStatus(); setStepStatus('reserve', 'active'); const rRes = await runStepSmart('reserve', stepReserve); if (!rRes.win || stopFlag.value) return; setStepStatus('book', 'active'); const bRes = await runStepSmart('book', stepBook); if (!bRes.win || stopFlag.value) return; setStepStatus('initiate', 'active'); const iRes = await runStepSmart('initiate', stepInitiate); if (iRes.win) { logStatus('🎉 Slot duty COMPLETE!', 'g'); stopSlotDuty('complete'); document.getElementById('reserve-toggle')?.classList.remove('on'); } } finally { slotDuty.chainRunning = false; }
+    try { stopFlag.value = false; resetAllStepStatus(); setStepStatus('book', 'active'); const bRes = await runStepSmart('book', stepBook); if (!bRes.win || stopFlag.value) return; setStepStatus('reserve', 'active'); const rRes = await runStepSmart('reserve', stepReserve); if (!rRes.win || stopFlag.value) return; setStepStatus('initiate', 'active'); const iRes = await runStepSmart('initiate', stepInitiate); if (iRes.win) { logStatus('🎉 Slot duty COMPLETE!', 'g'); stopSlotDuty('complete'); document.getElementById('reserve-toggle')?.classList.remove('on'); } } finally { slotDuty.chainRunning = false; }
 }
 
 function startSlotDuty() { if (slotDuty.intervalId) clearInterval(slotDuty.intervalId); slotDuty.active = true; slotDuty.chainRunning = false; logStatus('🛡 Slot duty ON', 'g'); slotDutyTick(); slotDuty.intervalId = setInterval(slotDutyTick, SLOT_CHECK_INTERVAL_MS); }
@@ -3269,7 +3269,7 @@ const raceCoord = {
 // ==================== STOP FLAG + STEP RUNNER ====================
 const stopFlag = { value: false };
 let _forceStep = false;
-const STEP_ORDER = ['signin', 'verify', 'reserve', 'book', 'initiate'];
+const STEP_ORDER = ['signin', 'verify', 'book', 'reserve', 'initiate'];
 function isSingleOn()   { return document.getElementById('btn-single')?.classList.contains('b5'); }
 function isAutoOn()     { return document.getElementById('btn-auto')?.classList.contains('b5'); }
 function isParallelOn() { return document.getElementById('parallel-toggle')?.classList.contains('on'); }
