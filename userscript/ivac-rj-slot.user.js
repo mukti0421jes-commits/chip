@@ -3491,16 +3491,27 @@ async function loadReserveDates() {
     } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`✗ Load dates: ${err.message}`, 'r'); return null; }
 }
 
-// Auto-sync: whenever the time-slot page shows/updates its date list, mirror it into the dropdown.
+// Auto-sync: mirror the time-slot page's date list into the dropdown when on that page; and when
+// NOT on that page (working from a single panel), auto-pull the dates from get-booking-config so
+// the dropdown fills dynamically without visiting /appointment/time-slot. API pull is throttled.
 (function initReserveDateAutoSync() {
     let last = '';
-    const tick = () => {
+    let lastApiTry = 0;
+    const tick = async () => {
         try {
             const sel = document.getElementById('ivac-reserve-date'); if (!sel) return;
-            const dates = scrapePageDates(); if (!dates.length) return;
-            const sig = dates.join(',');
-            if (sig === last) return;                       // nothing changed
-            last = sig; populateReserveDates(dates);
+            const dates = scrapePageDates();
+            if (dates.length) {                              // on the time-slot page → mirror live
+                const sig = dates.join(',');
+                if (sig !== last) { last = sig; populateReserveDates(dates); }
+                return;
+            }
+            // not on the page: if the dropdown is still empty and we have a session, pull via API
+            const hasDates = sel.options.length > 1;         // >1 means more than the placeholder
+            if (!hasDates && sessionState.accessToken && (Date.now() - lastApiTry > 20000)) {
+                lastApiTry = Date.now();
+                try { await loadReserveDates(); } catch (e) {}
+            }
         } catch (e) {}
     };
     try { const start = () => { setInterval(tick, 1500); tick(); }; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start(); } catch (e) {}
