@@ -781,12 +781,13 @@ function buildBundleResolver(src) {
     return { resolveExpr };
 }
 
-// role scoring (signin vs reserve) by keyword proximity — mirrors extract_ciphers.js
+// role scoring (signin vs reserve vs initiate) by keyword proximity — mirrors extract_ciphers.js
 function encRoleScores(src, pos) {
     const w = src.slice(Math.max(0, pos - 1400), pos + 1400);
     const rM = w.match(/reserve|slot|booking|appointment|schedul/gi) || [];
     const sM = w.match(/sign-?in|signin|log-?in|login|\botp\b|verify|password|phone|forgot|forget|resend|signup/gi) || [];
-    return { sig: sM.length, res: rM.length };
+    const iM = w.match(/initiate|payment|dg-?epay|dg_epay|epay|checkout|gateway|invoice/gi) || [];
+    return { sig: sM.length, res: rM.length, ini: iM.length };
 }
 
 // --- config-object parsing helpers (handle new bundle format) ---
@@ -861,24 +862,28 @@ function resolveBundleConfigs(text) {
         const secret = R.resolveExpr(secretExpr, objStart);
         if (!secret) { console.warn('[RJ EncAuto] config v' + version + ' secret decode FAILED @', objStart); continue; }
         const sc = encRoleScores(text, objStart);
-        found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res });
+        found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res, ini: sc.ini });
     }
     // dedup by version|secret, summing role evidence
     const uniq = []; const seen = new Map();
     for (const c of found) {
         const k = c.version + '|' + c.key;
-        if (seen.has(k)) { const e = seen.get(k); e.sig += c.sig; e.res += c.res; continue; }
+        if (seen.has(k)) { const e = seen.get(k); e.sig += c.sig; e.res += c.res; e.ini += c.ini; continue; }
         const e = { ...c }; seen.set(k, e); uniq.push(e);
     }
-    for (const c of uniq) { if (c.sig > c.res) c.role = 'signin'; else if (c.res > c.sig) c.role = 'reserve'; else c.role = null; }
+    // assign each config the role with the STRICTLY highest keyword score (tie/zero → unknown)
+    for (const c of uniq) {
+        const ranked = [['signin', c.sig], ['reserve', c.res], ['initiate', c.ini]].sort((a, b) => b[1] - a[1]);
+        c.role = (ranked[0][1] > 0 && ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+    }
     if (uniq.length === 2) {
         const known = uniq.filter(c => c.role), unknown = uniq.filter(c => !c.role);
         if (known.length === 1 && unknown.length === 1) unknown[0].role = known[0].role === 'signin' ? 'reserve' : 'signin';
     }
-    const out = { signin: null, reserve: null };
+    const out = { signin: null, reserve: null, initiate: null };
     for (const c of uniq) { if (c.role && !out[c.role]) out[c.role] = { key: c.key, skip: c.skip, length: c.length, version: c.version }; }
-    // Single key in the bundle → it serves BOTH signin and reserve (newer bundles do this).
-    if (uniq.length === 1) { const c = uniq[0]; const cfg = { key: c.key, skip: c.skip, length: c.length, version: c.version }; out.signin = out.signin || cfg; out.reserve = out.reserve || cfg; }
+    // Single key in the bundle → it serves ALL purposes (newer bundles do this).
+    if (uniq.length === 1) { const c = uniq[0]; const cfg = { key: c.key, skip: c.skip, length: c.length, version: c.version }; out.signin = out.signin || cfg; out.reserve = out.reserve || cfg; out.initiate = out.initiate || cfg; }
     return out;
 }
 
@@ -937,13 +942,15 @@ async function encConfigAutoFetch(forceReload) {
             logStatus('⚠ Reserve not resolved — keeping current config', 'y');
         }
 
-        // Initiate uses the SAME cipher as signin/reserve — mirror the resolved config so the
-        // Initiate encryption checkbox has a config ready (usage still gated by that checkbox).
-        const initCfg = signin || reserve;
+        // Initiate: use its OWN resolved config if the bundle has a distinct one; otherwise mirror
+        // signin/reserve (bundles that use one cipher for everything). Usage still gated by the checkbox.
+        const initiate = resolved.initiate;
+        const initOwn  = !!initiate;
+        const initCfg  = initiate || signin || reserve;
         if (initCfg) {
             encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
             encConfigSave('initiate');
-            logStatus('✅ Initiate: v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
+            logStatus('✅ Initiate' + (initOwn ? '' : ' (mirrored)') + ': v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
         }
 
         localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
