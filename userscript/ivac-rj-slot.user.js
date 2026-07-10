@@ -1552,7 +1552,7 @@ const h2html = `
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
 </div>
 <div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
-<div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
+<div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700" title="Auto-pick date: ON = Latest (last), OFF = Earliest (first)">📆</label><div class="tg on" id="date-target-toggle" title="Auto-pick date: ON = Latest (last date), OFF = Earliest (first date)"><div class="tg-dot"></div></div><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
 <div class="fr"><button class="b8" style="width:100%" id="bst">Stop All</button></div>
 <div class="tr">
 <div class="tm t1"><input class="ti" id="sched-advance" type="text" value="04:59:10:000 PM" spellcheck="false" title="Schedule time for Advance (Forgot flow)"></div>
@@ -1566,7 +1566,7 @@ const h2html = `
 <div class="cl"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
 <div class="cr2">
 <div class="tg on" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
-<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
+<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;margin-right:6px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
 </div>
 </div>
 
@@ -1914,6 +1914,13 @@ document.querySelectorAll('#p .tg').forEach(el => {
 
 // Default ON: popup-toggle
 document.getElementById('popup-toggle')?.classList.add('on');
+
+// Date-target toggle (ON = Latest / last date, OFF = Earliest / first date) — default Latest, persisted
+(function initDateTargetToggle() {
+    const el = document.getElementById('date-target-toggle'); if (!el) return;
+    try { const saved = localStorage.getItem('rj_date_target'); if (saved === 'earliest') el.classList.remove('on'); else el.classList.add('on'); } catch(e) {}
+    el.addEventListener('click', () => { setTimeout(() => { try { localStorage.setItem('rj_date_target', el.classList.contains('on') ? 'latest' : 'earliest'); } catch(e) {} logStatus(el.classList.contains('on') ? '📆 Date target: Latest (last)' : '📆 Date target: Earliest (first)', 'g'); }, 20); });
+})();
 
 // ==================== ADVANCE-TOGGLE SPECIAL ====================
 document.getElementById('advance-toggle')?.addEventListener('click', () => {
@@ -3535,7 +3542,9 @@ function populateReserveDates(dates) {
     const prev = sel.value;
     sel.innerHTML = '<option value="">📅 Reserve date…</option>' + uniq.map(d => `<option value="${d}">${_fmtDateDisplay(d)}</option>`).join('');
     // keep previous choice if still present, else auto-select the first (earliest) date
-    if (prev && uniq.includes(prev)) sel.value = prev; else sel.value = uniq[0];
+    // keep the user's manual pick if still present; else auto-pick per the Latest/Earliest toggle
+    if (prev && uniq.includes(prev)) sel.value = prev;
+    else { const latest = document.getElementById('date-target-toggle')?.classList.contains('on'); sel.value = latest ? uniq[uniq.length - 1] : uniq[0]; }
     sessionState.abcDate = sel.value || uniq[0];
     return sel.value;
 }
