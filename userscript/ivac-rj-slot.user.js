@@ -3413,16 +3413,15 @@ const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
 const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48ba-a48d-c65eaa4fc663';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
+    // Box value wins if present; otherwise ALWAYS the fixed slot id. Profile is never used here
+    // (profile stores the appointmentId, a different thing).
     const inp = document.getElementById('ivac-reserve-slot-id');
-    let v = _cleanUuid(inp?.value);
-    if (!v) { try { v = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || ''); } catch(e) {} }
-    if (!v) v = RESERVE_SLOT_ID_FIXED;   // default to the fixed reserve slot id
-    return v || '';
+    const v = _cleanUuid(inp?.value);
+    return v || RESERVE_SLOT_ID_FIXED;
 }
 function saveReserveSlotId(v) {
     v = _cleanUuid(v); if (!v) return;
-    try { localStorage.setItem(RESERVE_SLOT_ID_KEY, v); } catch(e) {}
-    try { if (profiles[activeProfileName]) { profiles[activeProfileName].reserveSlotId = v; persistProfiles(); } } catch(e) {}
+    try { localStorage.setItem(RESERVE_SLOT_ID_KEY, v); } catch(e) {}   // persistence only; not tied to profile
 }
 
 // dd-mm-yyyy display, YYYY-MM-DD value (API format)
@@ -3690,7 +3689,7 @@ document.getElementById('bin')?.addEventListener('click', () => manualStepClick(
 document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => loadReserveDates());
 (function initReserveSlotIdBox() {
     const inp = document.getElementById('ivac-reserve-slot-id'); if (!inp) return;
-    try { inp.value = _cleanUuid(profiles[activeProfileName]?.reserveSlotId || localStorage.getItem(RESERVE_SLOT_ID_KEY) || '') || RESERVE_SLOT_ID_FIXED; } catch(e) { inp.value = RESERVE_SLOT_ID_FIXED; }
+    try { inp.value = _cleanUuid(localStorage.getItem(RESERVE_SLOT_ID_KEY) || '') || RESERVE_SLOT_ID_FIXED; } catch(e) { inp.value = RESERVE_SLOT_ID_FIXED; }
     inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { saveReserveSlotId(v); logStatus(`🆔 Reserve Slot ID saved: ${v.slice(0,8)}…`, 'g'); } });
 })();
 document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
