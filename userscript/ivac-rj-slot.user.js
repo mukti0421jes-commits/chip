@@ -1542,13 +1542,13 @@ const h2html = `
 </div> <button class="b2 bh" style="padding:4px 8px!important" id="badv-phone">Advance</button>
 </div>
 
-<div class="fr-pw"><div class="pw"><input type="password" id="login-password" placeholder="Password"><button class="eye">&#128065;</button></div><button class="b7 bh" id="bsi">Signin</button></div>
+<div class="fr-pw"><div class="pw" style="flex:0 0 44%"><input type="password" id="login-password" placeholder="Password"><button class="eye">&#128065;</button></div><label style="flex:none;display:flex;align-items:center;gap:2px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Signin sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-signin-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">raw</label><button class="b7 bh" id="bsi">Signin</button></div>
 <div class="fr-otp"><input type="text" id="login-otp" placeholder="Login OTP"><button class="b4 bh" id="botp">OTP</button><button class="b5 bh" id="bve">Verify</button></div>
 <div class="fr"> <button class="b1 bh" style="flex:1" id="brs">Reserve</button> <button class="b14 bh" style="flex:1" id="bbk">Book</button> <button class="b6 bh" style="flex:1" id="bin">Initiate</button>
 </div>
 <div class="fr" style="gap:3px;padding:1px 2px">
-<label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Signin sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-signin-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Signin raw</label>
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Reserve sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-reserve-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Reserve raw</label>
+<span style="flex:1"></span>
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
 </div>
 <div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
