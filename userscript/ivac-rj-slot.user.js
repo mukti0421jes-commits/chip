@@ -581,25 +581,28 @@ function encryptByVersion(version, token, key, prefixLen, encodeLen, modulus) {
 }
 
 // --- ENCRYPTION CONFIG MANAGER ---
-const ENC_SIGNIN_KEY  = 'rj_enc_signin_cfg_v2';
-const ENC_RESERVE_KEY = 'rj_enc_reserve_cfg_v2';
+const ENC_SIGNIN_KEY   = 'rj_enc_signin_cfg_v2';
+const ENC_RESERVE_KEY  = 'rj_enc_reserve_cfg_v2';
+const ENC_INITIATE_KEY = 'rj_enc_initiate_cfg_v2';
 
 // NO hardcoded key/version — IVAC rotates the bundle ~2x/day, so key+version+skip+length
 // are ALWAYS resolved live from the bundle (encConfigAutoFetch). The algorithm math for
 // each version (below) is fixed and does not rotate, so those stay in code.
 const encConfig = {
-    signin:  {},
-    reserve: {}
+    signin:   {},
+    reserve:  {},
+    initiate: {}
 };
+const ENC_STORE_KEY = { signin: ENC_SIGNIN_KEY, reserve: ENC_RESERVE_KEY, initiate: ENC_INITIATE_KEY };
 
 function encConfigSave(purpose) {
     const cfg = encConfig[purpose];
-    const storeKey = purpose === 'signin' ? ENC_SIGNIN_KEY : ENC_RESERVE_KEY;
+    const storeKey = ENC_STORE_KEY[purpose] || ENC_RESERVE_KEY;
     try { localStorage.setItem(storeKey, JSON.stringify(cfg)); } catch(e) {}
 }
 
 function encConfigLoad(purpose) {
-    const storeKey = purpose === 'signin' ? ENC_SIGNIN_KEY : ENC_RESERVE_KEY;
+    const storeKey = ENC_STORE_KEY[purpose] || ENC_RESERVE_KEY;
     try {
         const raw = localStorage.getItem(storeKey);
         if (raw) { const parsed = JSON.parse(raw); Object.assign(encConfig[purpose], parsed); return true; }
@@ -656,6 +659,17 @@ function encryptTokenByPurpose(rawToken, purpose) {
     }
 }
 
+// Respect the per-endpoint token-mode checkboxes next to the buttons:
+//   signin / reserve → checkbox CHECKED = send RAW token (skip encryption); unchecked = encrypted.
+//   initiate         → checkbox CHECKED = ENCRYPT per Initiate config;      unchecked = raw (default).
+function encTokenForCall(rawToken, purpose) {
+    if (purpose === 'initiate') {
+        return document.getElementById('chk-initiate-enc')?.checked ? encryptTokenByPurpose(rawToken, 'initiate') : rawToken;
+    }
+    const rawChkId = purpose === 'signin' ? 'chk-signin-raw' : 'chk-reserve-raw';
+    return document.getElementById(rawChkId)?.checked ? rawToken : encryptTokenByPurpose(rawToken, purpose);
+}
+
 const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
 
 // NO hardcoded defaults — config is ALWAYS resolved live from the IVAC bundle.
@@ -664,8 +678,9 @@ const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
 function encConfigInit() {
     encConfigLoad('signin');
     encConfigLoad('reserve');
+    encConfigLoad('initiate');
     // Clean stale configs that have no key (broken from previous failed resolves)
-    for (const p of ['signin', 'reserve']) {
+    for (const p of ['signin', 'reserve', 'initiate']) {
         if (encConfig[p].active && !encConfig[p].key) {
             encConfig[p].active = false;
             encConfigSave(p);
@@ -676,6 +691,7 @@ function encConfigInit() {
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
+        encConfigApplyToUI('initiate');
     }, 500);
 }
 
@@ -921,9 +937,19 @@ async function encConfigAutoFetch(forceReload) {
             logStatus('⚠ Reserve not resolved — keeping current config', 'y');
         }
 
+        // Initiate uses the SAME cipher as signin/reserve — mirror the resolved config so the
+        // Initiate encryption checkbox has a config ready (usage still gated by that checkbox).
+        const initCfg = signin || reserve;
+        if (initCfg) {
+            encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
+            encConfigSave('initiate');
+            logStatus('✅ Initiate: v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
+        }
+
         localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
+        encConfigApplyToUI('initiate');
 
         if (signin && reserve) {
             logStatus('✅ Encryption config fully resolved from live bundle!', 'g');
@@ -1396,7 +1422,7 @@ const cfCheck = setInterval(() => {
 
 // ==================== SIGN-IN API CALL (H2) ====================
 async function performSignin(phone, password, captchaToken) {
-    const encryptedCaptcha = encryptTokenByPurpose(captchaToken, 'signin');
+    const encryptedCaptcha = encTokenForCall(captchaToken, 'signin');
     const body = JSON.stringify({ phone, password, c: encryptedCaptcha });
     const response = await H2.fetchH2(API_SIGNIN_V2, {
         method: "POST",
@@ -1512,6 +1538,11 @@ const h2html = `
 <div class="fr-pw"><div class="pw"><input type="password" id="login-password" placeholder="Password"><button class="eye">&#128065;</button></div><button class="b7 bh" id="bsi">Signin</button></div>
 <div class="fr-otp"><input type="text" id="login-otp" placeholder="Login OTP"><button class="b4 bh" id="botp">OTP</button><button class="b5 bh" id="bve">Verify</button></div>
 <div class="fr"> <button class="b1 bh" style="flex:1" id="brs">Reserve</button> <button class="b14 bh" style="flex:1" id="bbk">Book</button> <button class="b6 bh" style="flex:1" id="bin">Initiate</button>
+</div>
+<div class="fr" style="gap:6px;justify-content:space-between;padding:1px 2px">
+<label style="flex:none;display:flex;align-items:center;gap:2px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Signin sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-signin-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Signin raw</label>
+<label style="flex:none;display:flex;align-items:center;gap:2px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Reserve sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-reserve-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Reserve raw</label>
+<label style="flex:none;display:flex;align-items:center;gap:2px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
 </div>
 <div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
 <div class="fr" style="gap:4px"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button></div>
@@ -1650,6 +1681,17 @@ const h2html = `
 </div>
 
 <div class="enc-section" style="margin-top:8px">
+<div class="enc-title">💳 Initiate Encryption Config</div>
+<div class="enc-cfg-row"><label>Key (Secret)</label><input type="text" id="enc-initiate-key" placeholder="Secret key"></div>
+<div class="enc-cfg-row"><label>Skip (startAt)</label><input type="number" id="enc-initiate-skip" min="0"></div>
+<div class="enc-cfg-row"><label>Length</label><input type="number" id="enc-initiate-length" min="1"></div>
+<div class="enc-cfg-row"><label>Version</label> <select id="enc-initiate-version"> <option value="1">v1 — block_mix</option> <option value="2">v2 — bitmix</option> <option value="3">v3 — cellular_shift</option> <option value="4">v4 — rc4_shift</option> <option value="5">v5 — lfsr_shift</option> <option value="6">v6 — polynomial</option> <option value="7">v7 — subst_reverse</option> <option value="8">v8 — prng</option> <option value="9">v9 — mod_square</option> <option value="10">v10 — logistic_shift</option> </select>
+</div>
+
+<div class="enc-cfg-actions"><button class="b5 bh" id="enc-initiate-save">💾 Save</button><button class="b2 bh" id="enc-initiate-activate">⚡ Activate</button><span class="enc-status" id="enc-initiate-status">Inactive</span></div>
+</div>
+
+<div class="enc-section" style="margin-top:8px">
 <div class="enc-cfg-actions" style="margin-top:8px">
 <button class="b5 bh" id="enc-bundle-reload" style="flex:1">🔄 Reload from Bundle</button>
 <button class="b2 bh" id="enc-bundle-force" style="flex:1">💡 Force Re-resolve</button>
@@ -1738,6 +1780,27 @@ document.getElementById('enc-reserve-activate')?.addEventListener('click', () =>
     encConfigApplyToUI('reserve');
     logStatus(cfg.active ? `⚡ Reserve encryption ACTIVATED (v${cfg.version})` : '🔓 Reserve encryption deactivated', cfg.active ? 'g' : 'y');
 });
+document.getElementById('enc-initiate-save')?.addEventListener('click', () => {
+    encConfigReadFromUI('initiate');
+    encConfigSave('initiate');
+    logStatus('💾 Initiate encryption config saved', 'g');
+});
+document.getElementById('enc-initiate-activate')?.addEventListener('click', () => {
+    encConfigReadFromUI('initiate');
+    const cfg = encConfig.initiate;
+    cfg.active = !cfg.active;
+    encConfigSave('initiate');
+    encConfigApplyToUI('initiate');
+    logStatus(cfg.active ? `⚡ Initiate encryption ACTIVATED (v${cfg.version})` : '🔓 Initiate encryption deactivated', cfg.active ? 'g' : 'y');
+});
+// Per-endpoint token-mode checkboxes (signin/reserve = raw when checked; initiate = encrypt when checked)
+(function initTokenModeChecks() {
+    [['chk-signin-raw', 'rj_chk_signin_raw'], ['chk-reserve-raw', 'rj_chk_reserve_raw'], ['chk-initiate-enc', 'rj_chk_initiate_enc']].forEach(([id, key]) => {
+        const el = document.getElementById(id); if (!el) return;
+        try { el.checked = localStorage.getItem(key) === '1'; } catch(e) {}
+        el.addEventListener('change', () => { try { localStorage.setItem(key, el.checked ? '1' : '0'); } catch(e) {} });
+    });
+})();
 // === Bundle Reload Button Listeners ===
 document.getElementById('enc-bundle-reload')?.addEventListener('click', () => {
     logStatus('🔄 Re-loading config from bundle…', 'y');
@@ -2892,7 +2955,7 @@ async function forgotStep1_sendOtp(signal) {
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: API_FORGOT, tag: 'advance', state: 'pending' });
     try {
-        const r = await H2.fetchH2(API_FORGOT, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ email: prof.email, otpChannel: 'PHONE', c: encryptTokenByPurpose(captchaToken, 'signin') }) });
+        const r = await H2.fetchH2(API_FORGOT, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ email: prof.email, otpChannel: 'PHONE', c: encTokenForCall(captchaToken, 'signin') }) });
         const body = await r.json().catch(() => ({}));
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
         const ok = r.ok && (body.successFlag === true || body.statusCode === 200);
@@ -3350,7 +3413,7 @@ async function stepSignin(signal) {
     if (signinTimeoutOn) { signinTimeoutId = setTimeout(() => { logStatus('⏱ Signin timeout (20s) — forcing retry', 'y'); localAc.abort(); }, 20000); }
     const logId = netLogAdd({ method: 'POST', url: API_SIGNIN_V2, tag: 'signin', state: 'pending' });
     try {
-        const encryptedCaptcha = encryptTokenByPurpose(captchaToken, 'signin');
+        const encryptedCaptcha = encTokenForCall(captchaToken, 'signin');
         const r = await H2.fetchH2(API_SIGNIN_V2, { method: 'POST', signal: localAc.signal, headers: { 'accept':'application/json, text/plain, */*','cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ phone, password, c: encryptedCaptcha }) });
         if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; }
         const body = await r.json(); netLogUpdate(logId, { status: r.status, state: r.ok && body.successFlag ? 'ok' : 'fail' });
@@ -3521,7 +3584,7 @@ async function stepReserve(signal) {
     if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
     let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
     if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
-    const encryptedCaptchaToken = encryptTokenByPurpose(captchaToken, 'reserve');
+    const encryptedCaptchaToken = encTokenForCall(captchaToken, 'reserve');
     // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
     const slotId = getReserveSlotId();
     if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (ccd3dd63-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
@@ -3654,7 +3717,7 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':initiateToken }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
