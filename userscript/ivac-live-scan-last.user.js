@@ -1548,7 +1548,7 @@ const h2html = `
 <div class="tq-row" id="tq-row" title="Captcha token queue status"> <span class="tq-label">🎫 Queue</span> <span class="tq-slots" id="tq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="tq-info">0/5 • idle</span>
 </div>
 
-<div class="ck-row"> <span class="ck-time" id="tk">12:13:17 AM</span> <span class="ck-sep"></span> <span class="ck-date" id="dk">08/05/2026</span> <button class="b8" id="blo" style="margin-right:-9px;padding:3px 15px">Logout</button>
+<div class="ck-row"> <span class="ck-time" id="tk">12:13:17 AM</span> <span class="ck-sep"></span> <span class="ck-date" id="dk">08/05/2026</span> <button class="b8" id="blo" style="margin-right:-12px;padding:3px 15px">Logout</button>
 </div>
 </div>
 </div>
