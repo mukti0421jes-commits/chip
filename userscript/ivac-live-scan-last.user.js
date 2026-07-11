@@ -3432,11 +3432,11 @@ const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
 const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48ba-a48d-c65eaa4fc663';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
-    // Box value wins if present; otherwise ALWAYS the fixed slot id. Profile is never used here
-    // (profile stores the appointmentId, a different thing).
+    // Whatever is in the box wins verbatim. If the box is emptied, return '' so the
+    // reserve URL falls back to the PLAIN endpoint (no /slots/{id}/ segment). Profile is
+    // never used here (profile stores the appointmentId, a different thing).
     const inp = document.getElementById('ivac-reserve-slot-id');
-    const v = _cleanUuid(inp?.value);
-    return v || RESERVE_SLOT_ID_FIXED;
+    return _cleanUuid(inp?.value);
 }
 function saveReserveSlotId(v) {
     v = _cleanUuid(v); if (!v) return;
@@ -3542,12 +3542,14 @@ async function stepReserve(signal) {
     if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
     const encryptedCaptchaToken = encTokenForCall(captchaToken, 'reserve');
     // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
-    const slotId = getReserveSlotId();
-    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (ccd3dd63-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    const slotId = getReserveSlotId();   // '' when the box is emptied → plain endpoint below
     let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
     if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
     if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
-    const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
+    // Slot ID present → /slots/{id}/reserve-slot ; box emptied → plain /reserve-slot
+    const RESERVE_URL = slotId
+        ? `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`
+        : `https://api.ivacbd.com/iams/api/v1/reserve-slot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
