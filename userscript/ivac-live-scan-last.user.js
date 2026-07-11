@@ -1513,7 +1513,7 @@ const h2html = `
 <div class="sc">
 <div class="fr"><select id="login-proxy-picker" style="flex:2;min-width:0" title="Active proxy (synced with Proxy tab)"><option value="">-- Direct (no proxy) --</option></select><button class="b2 bh" id="login-proxy-toggle" title="Toggle connect/disconnect">Disconnect</button></div>
 <div class="fr"><select id="main-profile-select" style="width:100%;min-width:0"><option value="">-- Select Profile --</option></select></div>
-<div class="fr sa-row"> <input type="number" id="rt-signin" value="1" min="0" max="999" title="Signin retry delay (seconds)"> <input type="number" id="rt-verify" value="1" min="0" max="999" title="Verify retry delay (seconds)"> <input type="number" id="rt-reserve" value="21" min="0" max="999" title="Reserve retry delay (seconds)"> <input type="number" id="rt-book" value="1" min="0" max="999" title="Book retry delay (seconds)"> <input type="number" id="rt-initiate" value="1" min="0" max="999" title="Initiate retry delay (seconds)"> <button class="b5 toggle-btn sa-btn" id="btn-single" title="Single ON: retry on failure. OFF: no retry, fail = stop">Single</button> <input type="number" id="rt-auto-loops" value="0" min="0" max="999" title="Reserved (currently unused)"> <button class="b5 toggle-btn sa-btn" id="btn-auto" title="Auto ON: after a step wins, automatically continues to next step. Manual button starts the flow.">Auto</button>
+<div class="fr sa-row"> <input type="number" id="rt-signin" value="1" min="0" max="999" title="Signin retry delay (seconds)"> <input type="number" id="rt-verify" value="1" min="0" max="999" title="Verify retry delay (seconds)"> <input type="number" id="rt-reserve" value="21" min="0" max="999" title="Reserve retry delay (seconds)"> <input type="number" id="rt-book" value="1" min="0" max="999" title="Book retry delay (seconds)"> <input type="number" id="rt-initiate" value="1" min="0" max="999" title="Initiate retry delay (seconds)"> <button class="b5 toggle-btn sa-btn" id="btn-single" title="Single ON: retry on failure. OFF: no retry, fail = stop" style="flex:0 0 46px!important">Single</button> <input type="number" id="rt-auto-loops" value="0" min="0" max="999" title="Reserved (currently unused)"> <button class="b5 toggle-btn sa-btn" id="btn-auto" title="Auto ON: after a step wins, automatically continues to next step. Manual button starts the flow.">Auto</button>
 </div>
 
 <div class="fr-phone"> <select id="login-phone-type" class="phone-type-sel"> <option value="phone1">📞 P1</option> <option value="email">✉️ Em</option> <option value="phone2">📞 P2</option> </select> <input type="tel" id="login-phone" placeholder="Phone 1">
@@ -1540,7 +1540,7 @@ const h2html = `
 <div class="cl"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
 <div class="cr2">
 <div class="tg on" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
-<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4);margin-right:1px;padding:4px 11px">A</button>
+<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4);margin-right:1px;padding:4px 14px">A</button>
 </div>
 </div>
 
@@ -1548,7 +1548,7 @@ const h2html = `
 <div class="tq-row" id="tq-row" title="Captcha token queue status"> <span class="tq-label">🎫 Queue</span> <span class="tq-slots" id="tq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="tq-info">0/5 • idle</span>
 </div>
 
-<div class="ck-row"> <span class="ck-time" id="tk">12:13:17 AM</span> <span class="ck-sep"></span> <span class="ck-date" id="dk">08/05/2026</span> <button class="b8" id="blo" style="margin-right:-5px">Logout</button>
+<div class="ck-row"> <span class="ck-time" id="tk">12:13:17 AM</span> <span class="ck-sep"></span> <span class="ck-date" id="dk">08/05/2026</span> <button class="b8" id="blo" style="margin-right:-5px;padding:3px 15px">Logout</button>
 </div>
 </div>
 </div>
