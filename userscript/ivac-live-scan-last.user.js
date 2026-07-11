@@ -3602,10 +3602,9 @@ async function stepBook(signal) {
         const r = await H2.fetchH2(API_BOOK, {
             method: 'GET', signal,
             headers: {
-                'accept': 'application/json, text/plain, */*',
+                'accept': 'application/json',
                 'authorization': `Bearer ${sessionState.accessToken}`,
-                'cache-control': 'no-cache, no-store, must-revalidate',
-                'pragma': 'no-cache'
+                'content-type': 'application/json'
             },
             referrer: API_REFERRER,
             body: null
