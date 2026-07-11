@@ -1537,7 +1537,7 @@ const h2html = `
 <div class="fr"><button class="b5 bh" style="flex:1" id="badv">Advance</button><button class="b1 bh" style="flex:1" id="bsgn">Signin</button></div>
 <div class="cp">
 <div class="cr">
-<div class="cl"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
+<div class="cl" style="margin-left:-6px"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
 <div class="cr2">
 <div class="tg on" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
 <div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 9px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4);margin-right:-6px;padding:4px 14px">A</button>
