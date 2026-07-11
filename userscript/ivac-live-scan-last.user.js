@@ -3549,7 +3549,7 @@ async function stepReserve(signal) {
     // Slot ID present → /slots/{id}/reserve-slot ; box emptied → plain /reserve-slot
     const RESERVE_URL = slotId
         ? `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`
-        : `https://api.ivacbd.com/iams/api/v1/reserve-slot`;
+        : `https://api.ivacbd.com/iams/api/v1/slots/reserveSlot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
