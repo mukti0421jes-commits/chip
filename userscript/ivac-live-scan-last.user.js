@@ -1381,9 +1381,9 @@ function showManualCaptcha() {
     const tryRender = (attempts) => {
         if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;
         if (typeof turnstile !== 'undefined') { renderCaptcha(); }
-        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 500); }
+        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 120); }
     };
-    tryRender(60);
+    tryRender(250);
 }
 function hideManualCaptcha() {
     try {
@@ -1395,11 +1395,17 @@ function hideManualCaptcha() {
     } catch(e) {}
 }
 const cfCheck = setInterval(() => {
-    if (typeof turnstile !== 'undefined') {
-        clearInterval(cfCheck);
-        // NOTE: do NOT auto-render here
-    }
-}, 3000);
+    if (typeof turnstile === 'undefined') return;
+    if (!document.getElementById('cfTurnstile')) return; // wait for the panel/container
+    clearInterval(cfCheck);
+    // Pre-warm ONLY in manual (non-API) mode: render the widget as soon as
+    // Turnstile + container are ready so a solved token is already queued before
+    // Sign In is clicked — no render latency at click time. API mode never pre-warms.
+    try {
+        const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+        if (!useApi && cfWidgetId === null) { _lastRenderAt = 0; renderCaptcha(); }
+    } catch(e) {}
+}, 300);
 
 // ==================== SIGN-IN API CALL (H2) ====================
 async function performSignin(phone, password, captchaToken) {
