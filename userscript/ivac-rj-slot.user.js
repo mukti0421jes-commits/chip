@@ -3648,6 +3648,18 @@ async function loadReserveDates() {
     try {
         const r = await H2.fetchH2(API_BOOK, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: null });
         let body = null; try { body = await r.json(); } catch(e) {}
+        // get-booking-config also returns the appointmentId — capture it the SAME way Book does:
+        // save to session + active profile (Profile Manager field) and show the id popup, but only
+        // when it's newly obtained (this runs on the auto-sync tick, so don't repeat every time).
+        try {
+            const apptId = body?.data?.appointmentId;
+            if (apptId && apptId !== sessionState.appointmentId) {
+                sessionState.appointmentId = apptId; sessionState.bookedAt = Date.now(); persistSession();
+                if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = apptId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = apptId; }
+                logStatus(`📋 Appointment ID saved: ${apptId}`, 'g'); try { beepBook(); } catch(e) {}
+                showMilestonePopup('Booked', 'Appointment ID: ' + apptId, '📋');
+            }
+        } catch(e) {}
         const dates = body?.data?.appointmentDate;
         const arr = Array.isArray(dates) ? dates : (dates ? [dates] : []);
         netLogUpdate(logId, { status: r.status, state: arr.length ? 'ok' : 'fail', note: arr.length ? `${arr.length} dates` : (body?.message || `HTTP ${r.status}`) });
