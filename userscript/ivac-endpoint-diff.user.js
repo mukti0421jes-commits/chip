@@ -174,10 +174,11 @@
         el.textContent = bad ? `⚠ EP diff: ${changed}C/${missing}M` : '✓ EP endpoints OK';
     }
 
+    let _lastSig = '';   // signature of the chunk set last scanned → re-scan only when the build changes
+    // returns: 'done' (scanned), 'nochunks' (server 503/403 / not loaded), 'nomatch' (chunks but no endpoints)
     async function run(force) {
-        console.log('%c[IVAC EP Diff] scanning bundle chunks…', 'color:#a78bfa');
         const urls = await findBundleUrls();
-        if (!urls.length) { console.warn('[IVAC EP Diff] no /assets/*.js chunks found (server 503 / not loaded yet)'); return; }
+        if (!urls.length) return 'nochunks';
         // pick the chunk(s) that actually contain endpoint strings; scan the concatenation of all
         // matching chunks so segments split across chunks are still seen.
         let combined = '', used = [];
@@ -186,13 +187,32 @@
             if (!t) continue;
             if (/sign-in|reserve-slot|get-booking-config|upload-file|verifySigninOtp/.test(t)) { combined += '\n' + t; used.push(u.split('/').pop()); }
         }
-        if (!combined) { console.warn('[IVAC EP Diff] endpoints not found in any chunk (all obfuscated or wrong build?)'); return; }
+        if (!combined) return 'nomatch';
+        const sig = used.slice().sort().join('|');
+        if (!force && sig === _lastSig) return 'done';   // same build already scanned — skip
+        _lastSig = sig;
+        console.log('%c[IVAC EP Diff] bundle loaded — scanning endpoints…', 'color:#a78bfa');
         const results = scan(combined);
         report(results, `chunks scanned: ${used.join(', ')}`);
+        return 'done';
     }
 
-    // auto-run shortly after load; also expose a manual trigger
-    setTimeout(() => run(false), 2500);
+    // ── LIVE WATCHER (mirrors the RJ SLOT encryption live-scan) ──────────────────
+    // While the server is closed (503/403) the bundle isn't loadable, so poll quietly; the moment
+    // index.js/chunks become available (server opens) it scans automatically and reports. After a
+    // successful scan it keeps a slow re-check so a fresh deploy (new chunk hash) is caught too.
+    (function watcher() {
+        let fastEvery = 5000, slowEvery = 60000, delay = fastEvery, scannedOnce = false;
+        const tick = async () => {
+            let res;
+            try { res = await run(false); } catch (e) { res = 'err'; }
+            if (res === 'done') { scannedOnce = true; delay = slowEvery; }     // got it → relax to slow re-check
+            else delay = fastEvery;                                             // still closed → keep trying fast
+            setTimeout(tick, delay);
+        };
+        setTimeout(tick, 1500);   // first attempt shortly after load
+    })();
+
     try { unsafeWindow.__ivacEpDiff = () => run(true); } catch (e) { window.__ivacEpDiff = () => run(true); }
-    console.log('%c[IVAC EP Diff] loaded — auto-scan in ~2.5s. Re-run any time: __ivacEpDiff()  (or click the badge)', 'color:#8888aa');
+    console.log('%c[IVAC EP Diff] loaded — auto-scans the moment the bundle is available (retries while server is 503/403), then re-checks on new deploys. Force re-run: __ivacEpDiff()  (or click the badge)', 'color:#8888aa');
 })();
