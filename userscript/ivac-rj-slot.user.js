@@ -3184,7 +3184,7 @@ document.getElementById('netlog-close')?.addEventListener('click', () => { docum
 (() => { const oldFn = document.getElementById('fn'); if (!oldFn) return; const fresh = oldFn.cloneNode(true); oldFn.parentNode.replaceChild(fresh, oldFn); fresh.addEventListener('click', () => { const p = document.getElementById('rj-netlog'); if (!p) return; p.classList.toggle('open'); renderNetLog(); }); })();
 
 // ==================== TOKEN QUEUE ====================
-const TOKEN_TTL_MS = 2.5 * 60 * 1000; const TOKEN_QUEUE_MAX = 5; const tokenQueue = [];
+const TOKEN_TTL_MS = 2 * 60 * 1000; const TOKEN_QUEUE_MAX = 5; const tokenQueue = [];
 function tokenQueueAddTagged(token, source) { if (!token) return; if (tokenQueue.some(t => t.token === token)) return; tokenQueue.push({ token, source: source || 'unknown', createdAt: Date.now() }); if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift(); }
 function tokenQueueCleanExpired() { const now = Date.now(); for (let i = tokenQueue.length - 1; i >= 0; i--) { if (now - tokenQueue[i].createdAt > TOKEN_TTL_MS) tokenQueue.splice(i, 1); } }
 function tokenQueueGet() { tokenQueueCleanExpired(); return tokenQueue.length ? tokenQueue[0].token : null; }
