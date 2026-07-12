@@ -3672,9 +3672,11 @@ async function loadReserveDates() {
                 if (sig !== last) { last = sig; populateReserveDates(dates); }
                 return;
             }
-            // not on the page: if the dropdown is still empty and we have a session, pull via API
+            // not on the page: pull via API only while we still need it. Once we already have an
+            // appointmentId (get-booking-config / Book succeeded — the popup with the id was shown)
+            // OR the dropdown already holds dates, STOP the auto get-booking-config polling.
             const hasDates = sel.options.length > 1;         // >1 means more than the placeholder
-            if (!hasDates && sessionState.accessToken && (Date.now() - lastApiTry > 20000)) {
+            if (!hasDates && !sessionState.appointmentId && sessionState.accessToken && (Date.now() - lastApiTry > 20000)) {
                 lastApiTry = Date.now();
                 try { await loadReserveDates(); } catch (e) {}
             }
