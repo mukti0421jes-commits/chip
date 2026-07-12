@@ -3687,7 +3687,7 @@ async function stepReserve(signal) {
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
-        const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, credentials: 'include', body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
+        const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
         let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body);
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
         netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||'?'} • ${body?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
