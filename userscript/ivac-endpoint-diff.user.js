@@ -202,13 +202,14 @@
     // index.js/chunks become available (server opens) it scans automatically and reports. After a
     // successful scan it keeps a slow re-check so a fresh deploy (new chunk hash) is caught too.
     (function watcher() {
-        let fastEvery = 5000, slowEvery = 60000, delay = fastEvery, scannedOnce = false;
         const tick = async () => {
             let res;
             try { res = await run(false); } catch (e) { res = 'err'; }
-            if (res === 'done') { scannedOnce = true; delay = slowEvery; }     // got it → relax to slow re-check
-            else delay = fastEvery;                                             // still closed → keep trying fast
-            setTimeout(tick, delay);
+            if (res === 'done') {                 // scanned + reported once → STOP (no further polling)
+                console.log('%c[IVAC EP Diff] scan complete — watcher stopped. Re-run any time: __ivacEpDiff() or click the badge.', 'color:#8888aa');
+                return;
+            }
+            setTimeout(tick, 5000);               // server still 503/403 / bundle not ready → keep trying every 5s
         };
         setTimeout(tick, 1500);   // first attempt shortly after load
     })();
