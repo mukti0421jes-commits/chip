@@ -695,23 +695,30 @@ function encConfigInit() {
     }, 500);
 }
 
-async function findBundleUrl() {
-    const BUNDLE_RE = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js(?:$|\?)/;
-    // 1) from the loaded page DOM
-    const el = [...document.querySelectorAll('script[src]')].find(s => BUNDLE_RE.test(s.src));
-    if (el) return el.src;
-    // 2) fallback: fetch index.html directly. Works without full page render / without reload \u2014
-    //    e.g. right after the server recovers from its pre-open 503 window. During 503 the fetch
-    //    returns !ok, so we return null and the watcher retries.
+// Collect ALL candidate /assets/*.js chunk URLs (Vite code-splits the cipher config into
+// its own chunk, so the FIRST script tag is usually NOT the one holding `secret:`). We gather
+// every chunk from the DOM + index.html, then encConfigAutoFetch fetches them until one yields
+// a resolvable config. Order: DOM scripts first, then any extra chunks from index.html.
+async function findBundleUrls() {
+    const BUNDLE_RE_G = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js/g;
+    const BUNDLE_RE   = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js(?:$|\?)/;
+    const seen = new Set(); const urls = [];
+    const add = (u) => { if (u && !seen.has(u)) { seen.add(u); urls.push(u); } };
+    // 1) from the loaded page DOM (all matching script tags)
+    [...document.querySelectorAll('script[src]')].forEach(s => { if (BUNDLE_RE.test(s.src)) add(s.src); });
+    // 2) also parse index.html for chunks that may be lazy-loaded (not yet in the DOM)
     try {
         const r = await pageFetch(location.origin + '/', { cache: 'no-store' });
-        if (!r.ok) return null;
-        const html = await r.text();
-        const m = html.match(/\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js/);
-        if (m) return new URL(m[0], location.origin).href;
+        if (r.ok) {
+            const html = await r.text();
+            let m; while ((m = BUNDLE_RE_G.exec(html)) !== null) add(new URL(m[0], location.origin).href);
+        }
     } catch(e) {}
-    return null;
+    return urls;
 }
+
+// Back-compat single-URL helper (first candidate).
+async function findBundleUrl() { const u = await findBundleUrls(); return u.length ? u[0] : null; }
 
 // ── ROBUST N-ARRAY SECRET RESOLVER (ported from extract_ciphers.js) ──────────
 // The old resolveConfig re-ran the obfuscated decoders + rotation IIFEs via a single
@@ -888,13 +895,14 @@ function resolveBundleConfigs(text) {
 }
 
 async function encConfigAutoFetch(forceReload) {
-    const bundleSrc = await findBundleUrl();
-    if (!bundleSrc) {
+    const bundleUrls = await findBundleUrls();
+    if (!bundleUrls.length) {
         logStatus('\u23f3 Bundle not available yet (server 503 / not loaded) \u2014 will retry', 'y');
         return;
     }
 
-    const currentHash = bundleSrc;
+    // Cache key = list signature; if unchanged and config already active, skip (unless forced).
+    const currentHash = bundleUrls.join('|');
 
     if (!forceReload) {
         const storedHash  = localStorage.getItem(ENC_BUNDLE_HASH_KEY);
@@ -907,17 +915,33 @@ async function encConfigAutoFetch(forceReload) {
         localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     }
 
-    logStatus('🔍 Loading encryption config from IVAC bundle…', 'y');
+    logStatus(`🔍 Loading encryption config from ${bundleUrls.length} IVAC chunk(s)…`, 'y');
     try {
-        const text = await pageFetch(bundleSrc).then(r => {
-            if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching bundle');
-            return r.text();
-        });
-        console.log('[RJ EncAuto] Bundle fetched:', text.length, 'chars from', bundleSrc);
+        // Try each chunk until one contains a decodable {secret,startAt,length,version} config.
+        // (Vite splits the cipher into its own chunk — the first script tag is usually not it.)
+        let resolved = null, usedSrc = null, fetched = 0;
+        for (const src of bundleUrls) {
+            let text;
+            try {
+                const r = await pageFetch(src);
+                if (!r.ok) { console.warn('[RJ EncAuto] skip', src, 'HTTP', r.status); continue; }
+                text = await r.text();
+            } catch (e) { console.warn('[RJ EncAuto] fetch failed', src, e.message); continue; }
+            fetched++;
+            if (text.indexOf('secret:') === -1 && text.indexOf('secret :') === -1) continue; // no cipher config here
+            console.log('[RJ EncAuto] Bundle fetched:', text.length, 'chars from', src);
+            const r2 = resolveBundleConfigs(text);
+            if (r2.signin || r2.reserve || r2.initiate) { resolved = r2; usedSrc = src; break; }
+            console.warn('[RJ EncAuto] chunk had secret: but decode failed @', src);
+        }
 
-        // Robust N-array resolve: find every {secret,startAt,length,version} literal,
-        // decode each secret (handles ANY number of string-arrays), assign signin/reserve by keyword.
-        const resolved = resolveBundleConfigs(text);
+        if (!resolved) {
+            if (!fetched) throw new Error('no chunk fetched (all failed)');
+            logStatus('⚠ Live resolve failed — keeping current verified config', 'y');
+            console.warn('[RJ EncAuto] No config decoded from any chunk. Keeping existing config.');
+            return { signin: false, reserve: false };
+        }
+        console.log('[RJ EncAuto] Config chunk:', usedSrc);
         const signin  = resolved.signin;
         const reserve = resolved.reserve;
 
