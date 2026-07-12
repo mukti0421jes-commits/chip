@@ -3786,7 +3786,9 @@ async function loadReserveDates() {
             // appointmentId (get-booking-config / Book succeeded — the popup with the id was shown)
             // OR the dropdown already holds dates, STOP the auto get-booking-config polling.
             const hasDates = sel.options.length > 1;         // >1 means more than the placeholder
-            if (!hasDates && !sessionState.appointmentId && sessionState.accessToken && (Date.now() - lastApiTry > 20000)) {
+            // Only after VERIFY (not right after signin) so the auto date-pull never fires
+            // get-booking-config out of pipeline order (signin → verify → book → reserve → initiate).
+            if (!hasDates && !sessionState.appointmentId && sessionState.accessToken && sessionState.isVerified && (Date.now() - lastApiTry > 20000)) {
                 lastApiTry = Date.now();
                 try { await loadReserveDates(); } catch (e) {}
             }
