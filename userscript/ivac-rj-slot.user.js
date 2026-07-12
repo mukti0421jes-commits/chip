@@ -2676,6 +2676,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     // ==================== UPLOAD TAB ====================
     document.getElementById('ivac-btn-file-upload-checking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
+        try { _uploadArmed = true; uploadQueueFill(); } catch(e) {}   // start pre-solving the upload pool now (early lead time)
         logStatus('📋 Checking file upload status…', 'y');
         const logId = netLogAdd({ method: 'GET', url: API_SLOT_STATUS, tag: 'slot', state: 'pending', note: 'file-upload-checking' });
         try {
@@ -3244,7 +3245,7 @@ function renderUploadQueue() {
     const wants = (typeof _uploadWantsTokens === 'function') ? _uploadWantsTokens() : false;
     let info;
     if (solving > 0) { info = `${uploadTokenQueue.length}/${MAX} • solving…`; infoEl.classList.add('solving'); }
-    else { infoEl.classList.remove('solving'); info = `${uploadTokenQueue.length}/${MAX} • ${!useApi ? 'manual' : (wants ? 'ready' : 'select file')}`; }
+    else { const armed = (typeof _uploadArmed !== 'undefined' && _uploadArmed); infoEl.classList.remove('solving'); info = `${uploadTokenQueue.length}/${MAX} • ${!useApi ? 'manual' : ((wants || armed) ? 'ready' : 'idle')}`; }
     infoEl.textContent = info;
 }
 setInterval(renderUploadQueue, 1000); setTimeout(renderUploadQueue, 300);
@@ -3440,6 +3441,7 @@ const _uploadSpent = new Set();
 const UPLOAD_Q_MAX = 4;
 const uploadTokenQueue = [];                 // [{token, source, createdAt}]
 let _uploadFillerBusy = 0;
+let _uploadArmed = false;                     // set true on "File Upload Checking" click → start pre-solving early
 function uploadQueueClean() { const now = Date.now(); for (let i = uploadTokenQueue.length - 1; i >= 0; i--) { if (now - uploadTokenQueue[i].createdAt > TOKEN_TTL_MS) uploadTokenQueue.splice(i, 1); } }
 // Only pre-solve while the user actually intends to upload (a file is selected) so we don't burn
 // captcha credits needlessly. API mode only — manual mode solves on demand in the claim path.
@@ -3447,7 +3449,7 @@ function _uploadWantsTokens() { return ['ivac-file-upload', 'ivac-file-upload-2'
 function uploadQueueFill() {
     try {
         if (!document.getElementById('captcha-toggle')?.classList.contains('on')) return;   // API mode only
-        if (!_uploadWantsTokens()) return;
+        if (!_uploadArmed && !_uploadWantsTokens()) return;   // armed by File-Upload-Checking click OR a selected file
         uploadQueueClean();
         const provider = getSelectedCaptchaProvider();
         if (!getCaptchaApiKey(provider)) return;
