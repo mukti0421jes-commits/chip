@@ -73,6 +73,14 @@
         { name: 'ForgotOTP',     my: '/iams/api/v1/forgot-password/sendOtp',                sig: 'forgot-password',            re: /forgot-password/g }
     ];
 
+    // grab a short readable snippet around the segment so you can see how the bundle builds the path
+    function contextAround(text, sig) {
+        const i = text.indexOf(sig); if (i === -1) return '';
+        let s = text.slice(Math.max(0, i - 40), i + sig.length + 20).replace(/\s+/g, ' ');
+        // keep only the path-ish tail so it's readable
+        const m = s.match(/[\/"'`][\w\/{}.-]*?/g);
+        return s.trim();
+    }
     function scan(bundleText) {
         return ENDPOINTS.map(ep => {
             const present = bundleText.indexOf(ep.sig) !== -1;
@@ -82,7 +90,7 @@
             if (present) status = 'OK';
             else if (variants.length) status = 'CHANGED';
             else status = ep.obf ? 'OBFUSCATED' : 'MISSING';
-            return { ...ep, present, variants, status };
+            return { ...ep, present, variants, status, ctx: present ? contextAround(bundleText, ep.sig) : '' };
         });
     }
 
@@ -93,7 +101,8 @@
         let changed = 0, missing = 0;
         results.forEach(r => {
             if (r.status === 'OK') {
-                console.log('%c✓ ' + r.name + '%c  ' + r.sig + '%c  (unchanged)', C.ok, C.dim, C.dim);
+                // show the FULL endpoint your code uses (reserve keeps its {id}), + how the bundle spells the segment
+                console.log('%c✓ ' + r.name + '%c  ' + r.my + '%c   [bundle: …' + (r.ctx || r.sig) + '…]', C.ok, 'color:#c4b5fd', C.dim);
             } else if (r.status === 'CHANGED') {
                 changed++;
                 console.log('%c⚠ ' + r.name + ' CHANGED%c  expected "' + r.sig + '" — found instead: [ ' + r.variants.join(' , ') + ' ]', C.chg, C.dim);
