@@ -159,19 +159,28 @@
         return { changed, missing };
     }
 
-    function badge(changed, missing, results) {
-        let el = document.getElementById('ivac-epdiff-badge');
-        if (!el) {
-            el = document.createElement('div');
-            el.id = 'ivac-epdiff-badge';
-            el.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:2147483647;font:700 12px Consolas,monospace;padding:7px 11px;border-radius:8px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.5);color:#fff;user-select:none';
-            el.title = 'Click to re-scan endpoints (see console)';
-            el.addEventListener('click', () => run(true));
-            document.body.appendChild(el);
-        }
+    // Small round "S" button (top-left). One click = one endpoint scan (result in console + button colour).
+    function makeButton() {
+        if (document.getElementById('ivac-epdiff-btn')) return;
+        const b = document.createElement('div');
+        b.id = 'ivac-epdiff-btn';
+        b.textContent = 'S';
+        b.title = 'Scan IVAC endpoints vs your RJ SLOT code (see console)';
+        b.style.cssText = 'position:fixed;top:14px;left:14px;z-index:2147483647;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:800 15px Consolas,monospace;color:#fff;cursor:pointer;user-select:none;box-shadow:0 4px 14px rgba(0,0,0,.5);background:linear-gradient(135deg,#6366f1,#4f46e5);border:2px solid rgba(255,255,255,.2)';
+        b.addEventListener('click', async () => {
+            b.textContent = '…'; b.style.background = 'linear-gradient(135deg,#f59e0b,#d97706)';
+            const res = await run(true);
+            if (res !== 'done') { b.textContent = '!'; b.title = 'No bundle (server 503/403 / not loaded) — try again when the site is open'; b.style.background = 'linear-gradient(135deg,#6b7280,#374151)'; }
+            // if 'done', badge() below already set colour + text
+        });
+        (document.body || document.documentElement).appendChild(b);
+    }
+    function badge(changed, missing) {
+        const b = document.getElementById('ivac-epdiff-btn'); if (!b) return;
         const bad = changed || missing;
-        el.style.background = bad ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
-        el.textContent = bad ? `⚠ EP diff: ${changed}C/${missing}M` : '✓ EP endpoints OK';
+        b.style.background = bad ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
+        b.textContent = 'S';
+        b.title = bad ? `⚠ ${changed} changed / ${missing} missing — see console. Click to re-scan.` : '✓ All endpoints match your code. Click to re-scan.';
     }
 
     let _lastSig = '';   // signature of the chunk set last scanned → re-scan only when the build changes
@@ -197,23 +206,9 @@
         return 'done';
     }
 
-    // ── LIVE WATCHER (mirrors the RJ SLOT encryption live-scan) ──────────────────
-    // While the server is closed (503/403) the bundle isn't loadable, so poll quietly; the moment
-    // index.js/chunks become available (server opens) it scans automatically and reports. After a
-    // successful scan it keeps a slow re-check so a fresh deploy (new chunk hash) is caught too.
-    (function watcher() {
-        const tick = async () => {
-            let res;
-            try { res = await run(false); } catch (e) { res = 'err'; }
-            if (res === 'done') {                 // scanned + reported once → STOP (no further polling)
-                console.log('%c[IVAC EP Diff] scan complete — watcher stopped. Re-run any time: __ivacEpDiff() or click the badge.', 'color:#8888aa');
-                return;
-            }
-            setTimeout(tick, 5000);               // server still 503/403 / bundle not ready → keep trying every 5s
-        };
-        setTimeout(tick, 1500);   // first attempt shortly after load
-    })();
-
+    // ── MANUAL: no auto-scan / no loop. Add the "S" button; you click it to run one scan. ──
+    function init() { makeButton(); }
+    if (document.body) init(); else document.addEventListener('DOMContentLoaded', init);
     try { unsafeWindow.__ivacEpDiff = () => run(true); } catch (e) { window.__ivacEpDiff = () => run(true); }
-    console.log('%c[IVAC EP Diff] loaded — auto-scans the moment the bundle is available (retries while server is 503/403), then re-checks on new deploys. Force re-run: __ivacEpDiff()  (or click the badge)', 'color:#8888aa');
+    console.log('%c[IVAC EP Diff] loaded — MANUAL. Click the "S" button (top-left) to scan endpoints once. (or __ivacEpDiff())', 'color:#8888aa');
 })();
