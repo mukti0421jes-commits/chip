@@ -1515,13 +1515,25 @@ function isVerifiedResponse(status, body) {
     return false;
 }
 
-function isReservedResponse(body) {
+function isReservedResponse(body, status) {
     if (!body) return false;
     const msg = (body.message || '').trim();
     const st  = (body.status  || '').trim();
     if (msg === 'Reserved booking') return true;
     if (st  === 'OK_NEW')           return true;
     if (st  === 'OK_EXISTING')      return true;
+    // Broader success detection (the exact 200 body shape can differ): any 2xx that carries a
+    // success flag or a reservation id counts as reserved — so a successful reserve STOPS the
+    // retry loop instead of re-firing and getting 400 (slot already reserved).
+    const okHttp = typeof status === 'number' ? (status >= 200 && status < 300) : true;
+    if (okHttp) {
+        if (body.successFlag === true) return true;
+        if (body.statusCode === 200 || body.statusCode === 201) return true;
+        if (/^(reserv|success|ok)/i.test(msg)) return true;
+        if (body.reservationId || body.data?.reservationId) return true;
+        const d = body.data || {};
+        if (d.status === 'OK_NEW' || d.status === 'OK_EXISTING' || (d.message || '').trim() === 'Reserved booking') return true;
+    }
     return false;
 }
 
@@ -3688,15 +3700,16 @@ async function stepReserve(signal) {
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
         const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
-        let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body);
+        let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body, r.status);
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
-        netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||'?'} • ${body?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
+        netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||body?.data?.status||'?'} • ${body?.appointmentDate||body?.data?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
         if (reserved) {
             raceCoord.declareWin('reserve', { win: true, data: body });
-            sessionState.reservationId = body.reservationId || null; sessionState.reserveTtlSec = body.reserveTtlSeconds || null; sessionState.reserveStatus = body.status || null; sessionState.abcDate = body.appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
+            const rd = (body && body.data && (body.data.reservationId || body.data.status)) ? body.data : body;   // success payload may nest under .data
+            sessionState.reservationId = rd.reservationId || null; sessionState.reserveTtlSec = rd.reserveTtlSeconds || null; sessionState.reserveStatus = rd.status || null; sessionState.abcDate = rd.appointmentDate || appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
                         // Auto-extract: fill reserve ID in Upload tran ID placeholder
-        try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && body.reservationId) { trxInp.value = body.reservationId; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } } catch(e) {}
-            logStatus(`✅ Reserved (${body.status}) • ${body.appointmentDate||''} • TTL ${body.reserveTtlSeconds}s`, 'g'); try { beepReserve(); } catch(e) {}
+        try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && rd.reservationId) { trxInp.value = rd.reservationId; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } } catch(e) {}
+            logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g'); try { beepReserve(); } catch(e) {}
             showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯');
         } return { win: reserved, data: body };
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
