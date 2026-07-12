@@ -128,9 +128,32 @@
                 console.log('%c• ' + pad(r.name) + '%cobfuscated in bundle — cannot verify literally. Your code: ' + r.my, C.obf, C.dim);
             }
         });
+        // ── 🔧 ACTION NEEDED — copy-ready fixes for exactly what to change in your RJ SLOT script ──
+        const BASE = 'https://api.ivacbd.com/iams/api/v1';
+        // where each endpoint lives in your script (constant name, or a note for inline URLs)
+        const WHERE = {
+            Signin: 'API_SIGNIN_V2', Verify: 'API_VERIFY', GetBookingConfig: 'API_BOOK',
+            Initiate: 'API_INITIATE', ForgotOTP: 'API_FORGOT', SlotStatus: 'API_SLOT_STATUS',
+            Reserve: 'RESERVE_SLOT_ID_FIXED', BookingConfirm: 'appointment-booking-config URL (Upload tab handler)',
+            Upload: 'upload-file URL (uploadFile fn)', SignupOTP: 'signupOtp URL (Sign Up handlers)', VerifyOTP: 'verifyOtp URL (Sign Up handlers)'
+        };
+        const actions = results.filter(r => r.status === 'CHANGED' || r.status === 'MISSING').map(r => {
+            if (r.name === 'Reserve') {
+                const m = (r.bundle || '').match(UUID_RE);
+                const id = m ? m[0] : '<new-uuid-from-bundle>';
+                return { name: r.name, line: `const RESERVE_SLOT_ID_FIXED = '${id}';   // ← set this new slot id` };
+            }
+            const full = r.bundle ? (BASE + r.bundle) : '<endpoint changed — check bundle>';
+            const w = WHERE[r.name] || (r.name + ' URL');
+            return { name: r.name, line: (w.startsWith('API_') ? `const ${w} = "${full}";` : `Update ${w}  →  "${full}"`) };
+        });
+        if (actions.length) {
+            console.log('%c🔧 ACTION NEEDED — update these in your RJ SLOT script:', 'color:#f59e0b;font-weight:800;font-size:13px');
+            actions.forEach(a => console.log('%c   ' + a.line, 'color:#fde047;font-weight:700;font-family:Consolas,monospace'));
+        }
         const summary = changed || missing
-            ? `%c⚠ ${changed} changed, ${missing} missing — review the endpoints above.`
-            : '%c✓ All verifiable endpoints match your code.';
+            ? `%c⚠ ${changed} changed, ${missing} missing — see 🔧 ACTION NEEDED above.`
+            : '%c✓ All verifiable endpoints match your code — nothing to update.';
         console.log(summary, changed || missing ? C.chg : C.ok);
         badge(changed, missing, results);
         return { changed, missing };
