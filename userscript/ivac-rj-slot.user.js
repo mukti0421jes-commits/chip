@@ -1650,6 +1650,7 @@ const h2html = `
 
 <div class="tp" id="pu">
 <div class="sc">
+<div class="tq-row" id="upq-row" title="Dedicated upload token pool (pre-solved, single-use)"> <span class="tq-label">📤 Upload</span> <span class="tq-slots" id="upq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="upq-info">0/4 • idle</span></div>
 <div class="fr"><button class="b3 bh" style="flex:1" id="ivac-btn-file-upload-checking">File Upload Checking</button><button class="b1 bh" style="flex:1" id="ivac-btn-appointment">Appointment</button></div>
 <div class="fr"><input type="file" id="ivac-file-upload" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload">Patient File</button></div>
 <div class="fr"><input type="file" id="ivac-file-upload-2" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload-2">Attendant 1</button></div>
@@ -3223,6 +3224,30 @@ function renderTokenQueue() {
     const useApi = document.getElementById('captcha-toggle')?.classList.contains('on'); let info; if (captchaSolvingCount > 0) { info = `${tokenQueue.length}/${TOKEN_QUEUE_MAX} • solving…`; infoEl.classList.add('solving'); } else if (tokenQueue.length === 0) { info = `0/${TOKEN_QUEUE_MAX} • idle (${useApi ? 'API' : 'manual'})`; infoEl.classList.remove('solving'); } else { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; info = `${tokenQueue.length}/${TOKEN_QUEUE_MAX} • ${useApi ? (config?.name || provider) : 'turnstile'}`; infoEl.classList.remove('solving'); } infoEl.textContent = info;
 }
 setInterval(renderTokenQueue, 1000); document.getElementById('captcha-toggle')?.addEventListener('click', () => { setTimeout(renderTokenQueue, 50); }); setTimeout(renderTokenQueue, 200);
+
+// Dedicated UPLOAD token pool indicator (mirrors the main queue widget, in the Upload tab)
+function renderUploadQueue() {
+    const slotsEl = document.getElementById('upq-slots'); const infoEl = document.getElementById('upq-info');
+    if (!slotsEl || !infoEl || typeof uploadTokenQueue === 'undefined') return;
+    try { uploadQueueClean(); } catch(e) {}
+    const MAX = (typeof UPLOAD_Q_MAX === 'number') ? UPLOAD_Q_MAX : 4;
+    const solving = (typeof _uploadFillerBusy === 'number') ? _uploadFillerBusy : 0;
+    let html = '';
+    for (let i = 0; i < MAX; i++) {
+        const tok = uploadTokenQueue[i];
+        if (tok) { const age = Date.now() - tok.createdAt; const isExp = (TOKEN_TTL_MS - age) < 30000; html += `<span class="tq-slot ${tok.source}${isExp ? ' expiring' : ''}" title="${tok.source} • ${Math.floor(age/1000)}s"></span>`; }
+        else if (solving > 0 && i === uploadTokenQueue.length) { html += `<span class="tq-slot solving" title="Solving…"></span>`; }
+        else { html += `<span class="tq-slot empty"></span>`; }
+    }
+    slotsEl.innerHTML = html;
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    const wants = (typeof _uploadWantsTokens === 'function') ? _uploadWantsTokens() : false;
+    let info;
+    if (solving > 0) { info = `${uploadTokenQueue.length}/${MAX} • solving…`; infoEl.classList.add('solving'); }
+    else { infoEl.classList.remove('solving'); info = `${uploadTokenQueue.length}/${MAX} • ${!useApi ? 'manual' : (wants ? 'ready' : 'select file')}`; }
+    infoEl.textContent = info;
+}
+setInterval(renderUploadQueue, 1000); setTimeout(renderUploadQueue, 300);
 
 // ==================== CAPTCHA PROVIDERS (SILENT) ====================
 const CAPTCHA_PROVIDERS = {
