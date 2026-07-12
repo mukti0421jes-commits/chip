@@ -3384,7 +3384,17 @@ let _uploadClaimChain = Promise.resolve();
 function releaseUploadToken(entry, requeue) {
     if (!entry || !entry.token) return;
     _uploadInUse.delete(entry.token);
-    if (requeue) _requeueTokenEntry(entry);
+    // transient failure (bodyless 503/429): the server never accepted this token, so it can be
+    // reused for another upload — un-spend it and return it to the DEDICATED upload pool (never the
+    // shared queue). Spent/success tokens are just dropped.
+    if (requeue) {
+        _uploadSpent.delete(entry.token);
+        uploadQueueClean();
+        if (!uploadTokenQueue.some(t => t.token === entry.token) && (Date.now() - entry.createdAt) < TOKEN_TTL_MS) {
+            uploadTokenQueue.push(entry);
+            if (uploadTokenQueue.length > UPLOAD_Q_MAX) uploadTokenQueue.shift();
+        }
+    }
 }
 
 function claimFreshUploadToken() {
@@ -3393,30 +3403,91 @@ function claimFreshUploadToken() {
     _uploadClaimChain = p.catch(() => {});
     return p;
 }
+// Every token ever handed to an upload — so the same token is NEVER sent twice, even across files
+// or retries. Reusing a token the server has already seen is exactly what returns 503.
+const _uploadSpent = new Set();
+
+// ── DEDICATED UPLOAD TOKEN QUEUE ────────────────────────────────────────────
+// Upload needs tokens the SERVER HAS NEVER SEEN. The shared tokenQueue is unsafe: signin/verify/
+// book/reserve REUSE queued tokens without removing them, so a "queued" token may already be spent
+// → 503. So uploads use their OWN pool, solved in the background and consumed ONCE each. Never
+// shared with other steps ⇒ no reuse ⇒ no 503, and pre-solved ⇒ instant at click time.
+const UPLOAD_Q_MAX = 4;
+const uploadTokenQueue = [];                 // [{token, source, createdAt}]
+let _uploadFillerBusy = 0;
+function uploadQueueClean() { const now = Date.now(); for (let i = uploadTokenQueue.length - 1; i >= 0; i--) { if (now - uploadTokenQueue[i].createdAt > TOKEN_TTL_MS) uploadTokenQueue.splice(i, 1); } }
+// Only pre-solve while the user actually intends to upload (a file is selected) so we don't burn
+// captcha credits needlessly. API mode only — manual mode solves on demand in the claim path.
+function _uploadWantsTokens() { return ['ivac-file-upload', 'ivac-file-upload-2', 'ivac-file-upload-3', 'ivac-file-upload-4'].some(id => (document.getElementById(id)?.files?.length || 0) > 0); }
+function uploadQueueFill() {
+    try {
+        if (!document.getElementById('captcha-toggle')?.classList.contains('on')) return;   // API mode only
+        if (!_uploadWantsTokens()) return;
+        uploadQueueClean();
+        const provider = getSelectedCaptchaProvider();
+        if (!getCaptchaApiKey(provider)) return;
+        const src = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+        const gap = UPLOAD_Q_MAX - uploadTokenQueue.length - _uploadFillerBusy;
+        for (let i = 0; i < gap; i++) {
+            _uploadFillerBusy++;
+            (async () => {
+                try { const t = await solveCaptchaByProvider(provider); if (t && !_uploadSpent.has(t) && !uploadTokenQueue.some(x => x.token === t)) uploadTokenQueue.push({ token: t, source: src, createdAt: Date.now() }); }
+                catch (e) {}
+                finally { _uploadFillerBusy--; }
+            })();
+        }
+    } catch (e) {}
+}
+setInterval(uploadQueueFill, 3000);
+
 async function _doClaimUploadToken() {
-    tokenQueueCleanExpired();
-    // pick the FRESHEST queued token that is NOT already in use, then claim (remove) it
-    let best = -1, bestAge = Infinity;
-    for (let i = 0; i < tokenQueue.length; i++) {
-        if (_uploadInUse.has(tokenQueue[i].token)) continue;
-        const age = Date.now() - tokenQueue[i].createdAt;
-        if (age < bestAge) { bestAge = age; best = i; }
+    uploadQueueClean();
+    // 1) take a pre-solved, never-used token from the dedicated upload pool (instant)
+    for (let i = 0; i < uploadTokenQueue.length; i++) {
+        const e = uploadTokenQueue[i];
+        if (_uploadSpent.has(e.token) || _uploadInUse.has(e.token)) continue;
+        uploadTokenQueue.splice(i, 1);
+        _uploadInUse.add(e.token); _uploadSpent.add(e.token);
+        console.log(`[RJ Upload] Dedicated token from pool (${e.source}, ${uploadTokenQueue.length} left)`);
+        uploadQueueFill();                                   // top the pool back up
+        return e;
     }
-    if (best !== -1) { const e = tokenQueue.splice(best, 1)[0]; _uploadInUse.add(e.token); console.log(`[RJ Upload] Claimed queued token (${e.source}, ${Math.round(bestAge/1000)}s old, ${tokenQueue.length} left)`); return e; }
-    // none free → solve/wait for a live one, and make sure it isn't a token already in use
-    for (let tries = 0; tries < 4; tries++) {
-        const token = await getCaptchaTokenSmart();
-        if (_uploadInUse.has(token)) { await new Promise(r => setTimeout(r, 800)); continue; }   // that token belongs to another upload — wait for a distinct one
-        const idx = tokenQueue.findIndex(t => t.token === token);
-        const entry = idx !== -1 ? tokenQueue.splice(idx, 1)[0] : { token, source: 'turnstile', createdAt: Date.now() };
-        _uploadInUse.add(entry.token);
-        return entry;
+    // 2) pool empty → solve a dedicated fresh one right now
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (useApi) {
+        const provider = getSelectedCaptchaProvider();
+        const src = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+        for (let tries = 0; tries < 3; tries++) {
+            markSolveStart(src);
+            let token;
+            try { token = await solveCaptchaByProvider(provider); }   // fresh solve, NOT the shared queue
+            finally { markSolveEnd(); }
+            if (token && !_uploadSpent.has(token) && !_uploadInUse.has(token)) {
+                _uploadInUse.add(token); _uploadSpent.add(token);
+                console.log(`[RJ Upload] Solved dedicated fresh token (${src})`);
+                return { token, source: src, createdAt: Date.now() };
+            }
+        }
+        throw new Error('could not solve a fresh upload token');
     }
-    // last resort — take whatever we get
-    const token = await getCaptchaTokenSmart();
-    const entry = { token, source: 'turnstile', createdAt: Date.now() };
-    _uploadInUse.add(entry.token);
-    return entry;
+    // Manual (Turnstile) mode: force the widget to mint a NEW token, then take one we've never used.
+    const before = new Set([...tokenQueue.map(t => t.token), ..._uploadSpent]);
+    try { resetCaptcha(); } catch(e) {}
+    if (typeof showManualCaptcha === 'function') showManualCaptcha();
+    for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const candidate = (cfToken && !before.has(cfToken) && !_uploadSpent.has(cfToken) && !_uploadInUse.has(cfToken))
+            ? cfToken
+            : (tokenQueue.find(t => t.source === 'turnstile' && !before.has(t.token) && !_uploadSpent.has(t.token) && !_uploadInUse.has(t.token))?.token || null);
+        if (candidate) {
+            const idx = tokenQueue.findIndex(t => t.token === candidate);
+            if (idx !== -1) tokenQueue.splice(idx, 1);            // claim out so no other call reuses it
+            _uploadInUse.add(candidate); _uploadSpent.add(candidate);
+            console.log('[RJ Upload] Got fresh manual token');
+            return { token: candidate, source: 'turnstile', createdAt: Date.now() };
+        }
+    }
+    throw new Error('no fresh manual captcha within 90s');
 }
 
 // ==================== RACE COORDINATOR ====================
