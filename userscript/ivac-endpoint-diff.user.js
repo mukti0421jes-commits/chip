@@ -59,38 +59,47 @@
     // sig  = the distinctive leaf segment that should appear as a plain string in the bundle.
     // re   = a looser pattern to catch a CHANGED variant (e.g. sign-in-v4 → sign-in-v5).
     // obf  = true when the path is built via obfuscated concatenation (can't verify literally).
+    // my    = full endpoint your RJ SLOT code calls (shown as reference)
+    // leaf  = the path RELATIVE to the axios baseURL — this is the literal that appears in the bundle
+    //         (bundle stores "/auth/sign-in-v4", "/slots/<uuid>/reserve-slot", etc.). We compare THIS.
+    // sig   = distinctive substring used to locate the literal in the bundle
+    // obf   = built by obfuscated concatenation → can't verify literally
     const ENDPOINTS = [
-        { name: 'Signin',        my: '/iams/api/v1/auth/sign-in-v4',                        sig: 'sign-in-v4',                 re: /sign-in-v\d+|auth\/sign-?in[\w-]*/g },
-        { name: 'Verify',        my: '/iams/api/v1/otp/verifySigninOtp',                    sig: 'verifySigninOtp',            re: /verifySigninOtp|verify[A-Za-z]*Otp/g },
-        { name: 'Book',          my: '/iams/api/v1/appointment/get-booking-config',         sig: 'get-booking-config',         re: /get-booking-config|booking-config/g },
-        { name: 'Reserve',       my: '/iams/api/v1/slots/{id}/reserve-slot',                sig: 'reserve-slot',               re: /reserve-slot|reserveSlot/g },
-        { name: 'Initiate',      my: '/iams/api/v1/payment/dg-epay/initiate',               sig: 'dg-epay',                    re: /dg-?epay|payment\/[\w-]+\/initiate/g, obf: true },
-        { name: 'BookingConfirm',my: '/iams/api/v1/appointment/appointment-booking-config', sig: 'appointment-booking-config', re: /appointment-booking-config/g },
-        { name: 'Upload',        my: '/iams/api/v1/file/upload-file',                       sig: 'upload-file',                re: /upload-file|file\/upload[\w-]*/g },
-        { name: 'SlotStatus',    my: '/iams/api/v1/file/file-confirmation-and-slot-status', sig: 'file-confirmation-and-slot-status', re: /file-confirmation-and-slot-status/g },
-        { name: 'SignupOTP',     my: '/iams/api/v1/otp/signupOtp',                          sig: 'signupOtp',                  re: /signupOtp/g },
-        { name: 'VerifyOTP',     my: '/iams/api/v1/otp/verifyOtp',                          sig: 'verifyOtp',                  re: /\bverifyOtp\b/g },
-        { name: 'ForgotOTP',     my: '/iams/api/v1/forgot-password/sendOtp',                sig: 'forgot-password',            re: /forgot-password/g }
+        { name: 'Signin',        my: '/iams/api/v1/auth/sign-in-v4',                        leaf: '/auth/sign-in-v4',                 sig: 'sign-in-v4' },
+        { name: 'Verify',        my: '/iams/api/v1/otp/verifySigninOtp',                    leaf: '/otp/verifySigninOtp',             sig: 'verifySigninOtp' },
+        { name: 'GetBookingConfig', my: '/iams/api/v1/appointment/get-booking-config',      leaf: '/appointment/get-booking-config',  sig: 'get-booking-config' },
+        { name: 'Reserve',       my: '/iams/api/v1/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', leaf: '/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', sig: 'reserve-slot', exact: true },
+        { name: 'Initiate',      my: '/iams/api/v1/payment/dg-epay/initiate',               leaf: '/payment/dg-epay/initiate',        sig: 'dg-epay', obf: true },
+        { name: 'BookingConfirm',my: '/iams/api/v1/appointment/appointment-booking-config', leaf: '/appointment/appointment-booking-config', sig: 'appointment-booking-config' },
+        { name: 'Upload',        my: '/iams/api/v1/file/upload-file',                       leaf: '/file/upload-file',                sig: 'upload-file' },
+        { name: 'SlotStatus',    my: '/iams/api/v1/file/file-confirmation-and-slot-status', leaf: '/file/file-confirmation-and-slot-status', sig: 'file-confirmation-and-slot-status' },
+        { name: 'SignupOTP',     my: '/iams/api/v1/otp/signupOtp',                          leaf: '/otp/signupOtp',                   sig: 'signupOtp' },
+        { name: 'VerifyOTP',     my: '/iams/api/v1/otp/verifyOtp',                          leaf: '/otp/verifyOtp',                   sig: 'verifyOtp' },
+        { name: 'ForgotOTP',     my: '/iams/api/v1/forgot-password/sendOtp',                leaf: '/forgot-password/sendOtp',         sig: 'forgot-password' }
     ];
 
-    // grab a short readable snippet around the segment so you can see how the bundle builds the path
-    function contextAround(text, sig) {
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    const normId = s => (s || '').replace(UUID_RE, '{id}');   // so slots/<uuid>/ == slots/{id}/
+
+    // Pull the WHOLE quoted string literal that contains `sig` (e.g. sign-in-v4 → "/auth/sign-in-v4").
+    function extractLiteral(text, sig) {
         const i = text.indexOf(sig); if (i === -1) return '';
-        let s = text.slice(Math.max(0, i - 40), i + sig.length + 20).replace(/\s+/g, ' ');
-        // keep only the path-ish tail so it's readable
-        const m = s.match(/[\/"'`][\w\/{}.-]*?/g);
-        return s.trim();
+        const quotes = ['"', "'", '`'];
+        let L = i; while (L > 0 && !quotes.includes(text[L - 1])) { if (i - L > 200) break; L--; }
+        let R = i + sig.length; while (R < text.length && !quotes.includes(text[R])) { if (R - i > 200) break; R++; }
+        return text.slice(L, R);
     }
+
     function scan(bundleText) {
         return ENDPOINTS.map(ep => {
             const present = bundleText.indexOf(ep.sig) !== -1;
-            // collect distinct variant matches for context / change detection
-            const variants = [...new Set((bundleText.match(ep.re) || []))];
-            let status;
-            if (present) status = 'OK';
-            else if (variants.length) status = 'CHANGED';
-            else status = ep.obf ? 'OBFUSCATED' : 'MISSING';
-            return { ...ep, present, variants, status, ctx: present ? contextAround(bundleText, ep.sig) : '' };
+            if (ep.obf) return { ...ep, status: present ? 'OBFUSCATED' : 'OBFUSCATED', bundle: '' };
+            if (!present) return { ...ep, status: 'MISSING', bundle: '' };
+            const bundle = extractLiteral(bundleText, ep.sig);      // e.g. /slots/<uuid>/reserve-slot
+            // exact:true (reserve) → compare the real slot id too, so a changed uuid is caught;
+            // otherwise treat any uuid as {id}.
+            const match = ep.exact ? (bundle === ep.leaf) : (normId(bundle) === normId(ep.leaf));
+            return { ...ep, status: match ? 'OK' : 'CHANGED', bundle };
         });
     }
 
@@ -98,21 +107,25 @@
         const C = { ok: 'color:#16a34a;font-weight:700', chg: 'color:#f59e0b;font-weight:800;background:#3a2a00;padding:1px 4px', miss: 'color:#ef4444;font-weight:800;background:#3a0000;padding:1px 4px', obf: 'color:#8888aa', head: 'color:#a78bfa;font-weight:800;font-size:13px', dim: 'color:#8888aa' };
         console.log('%c━━━ IVAC Endpoint Diff ━━━', C.head);
         console.log('%c' + chunkInfo, C.dim);
+        const pad = s => (s + '                ').slice(0, 16);
         let changed = 0, missing = 0;
         results.forEach(r => {
             if (r.status === 'OK') {
-                // show the FULL endpoint your code uses (reserve keeps its {id}), + how the bundle spells the segment
-                console.log('%c✓ ' + r.name + '%c  ' + r.my + '%c   [bundle: …' + (r.ctx || r.sig) + '…]', C.ok, 'color:#c4b5fd', C.dim);
+                // green — matches. Shows your full endpoint + the exact literal the bundle uses (reserve incl. real slot id)
+                console.log('%c✓ ' + pad(r.name) + '%c' + r.my + '%c   ↔ bundle: ' + r.bundle, C.ok, 'color:#c4b5fd', C.dim);
             } else if (r.status === 'CHANGED') {
                 changed++;
-                console.log('%c⚠ ' + r.name + ' CHANGED%c  expected "' + r.sig + '" — found instead: [ ' + r.variants.join(' , ') + ' ]', C.chg, C.dim);
-                console.log('%c     your code uses: ' + r.my, C.dim);
+                // yellow — MISMATCH. Update your code to the bundle value.
+                console.log('%c⚠ ' + pad(r.name) + 'MISMATCH%c', C.chg, '');
+                console.log('%c      your code : ' + r.my + '   (leaf: ' + r.leaf + ')', C.dim);
+                console.log('%c      bundle now: ' + r.bundle + '   ← update to this', 'color:#f59e0b;font-weight:700');
             } else if (r.status === 'MISSING') {
                 missing++;
-                console.log('%c✗ ' + r.name + ' NOT FOUND%c  "' + r.sig + '" not in bundle — endpoint may have been renamed/removed', C.miss, C.dim);
-                console.log('%c     your code uses: ' + r.my, C.dim);
+                // red — the segment is gone from the bundle (renamed/removed)
+                console.log('%c✗ ' + pad(r.name) + 'NOT FOUND in bundle%c', C.miss, '');
+                console.log('%c      your code : ' + r.my + '   — "' + r.sig + '" no longer present; endpoint likely renamed', 'color:#fca5a5');
             } else {
-                console.log('%c• ' + r.name + '%c  obfuscated in bundle (built by concatenation) — cannot verify literally. Your code: ' + r.my, C.obf, C.dim);
+                console.log('%c• ' + pad(r.name) + '%cobfuscated in bundle — cannot verify literally. Your code: ' + r.my, C.obf, C.dim);
             }
         });
         const summary = changed || missing
