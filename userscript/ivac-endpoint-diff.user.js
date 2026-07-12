@@ -41,9 +41,17 @@
         const RE = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js(?:$|\?)/;
         const seen = new Set(); const urls = [];
         const add = u => { if (u && !seen.has(u)) { seen.add(u); urls.push(u); } };
+        // 1) already-loaded scripts in the DOM
         [...document.querySelectorAll('script[src]')].forEach(s => { if (RE.test(s.src)) add(s.src); });
-        const html = await fetchText(location.origin + '/');
-        if (html) { let m; while ((m = RE_G.exec(html)) !== null) add(new URL(m[0], location.origin).href); }
+        // 2) preload/modulepreload <link> tags (Vite emits these for chunks not yet executed)
+        [...document.querySelectorAll('link[href]')].forEach(l => { if (RE.test(l.href)) add(l.href); });
+        // 3) resources the browser has already fetched (works even when index.html fetch is CF-blocked)
+        try { performance.getEntriesByType('resource').forEach(e => { if (RE.test(e.name)) add(e.name.startsWith('http') ? e.name : new URL(e.name, location.origin).href); }); } catch (e) {}
+        // 4) last resort: parse index.html (may 403 during a Cloudflare block window)
+        if (!urls.length) {
+            const html = await fetchText(location.origin + '/');
+            if (html) { let m; while ((m = RE_G.exec(html)) !== null) add(new URL(m[0], location.origin).href); }
+        }
         return urls;
     }
 
