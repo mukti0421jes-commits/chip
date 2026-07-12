@@ -2689,31 +2689,51 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Appointment error: ${err.message}`, 'r'); }
     });
 
+    const UPLOAD_MAX_TRIES = 4;   // transient 503/429 retries with a fresh distinct token each time
     async function uploadFile(fileInputId, isPrimary, label) {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         const fileInput = document.getElementById(fileInputId);
-        const formData = new FormData();
-        if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
-        formData.append('isPrimary', String(isPrimary));
-        // Claim a DISTINCT fresh token for THIS file (removed from queue → next file gets a different one).
-        // No token is ever reused after a successful/invalid response, so the reuse-503 cannot happen.
-        let uploadEntry; try { uploadEntry = await claimFreshUploadToken(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
-        const uploadToken = uploadEntry.token;
-        logStatus(`📄 Uploading ${label}…`, 'y');
+        const file = fileInput?.files?.length > 0 ? fileInput.files[0] : null;
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
-        try {
-            const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
-            let body = null; try { body = await r.json(); } catch(e) { body = null; }
-            const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-            // success (used) or server-declared-invalid → token is spent, keep it OUT of the queue.
-            // transient 503/429 → token was never accepted, return it to the queue so a retry reuses it.
-            const consumed = ok || shouldBurnToken(r.status, body);
-            if (!consumed) _requeueTokenEntry(uploadEntry);
-            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) logStatus(`✅ ${label} uploaded`, 'g'); else logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
-        } catch (err) {
-            _requeueTokenEntry(uploadEntry);                 // network error → token still valid, return it for retry
-            netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r');
+
+        for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
+            // Fresh FormData + a DISTINCT, not-in-use token for EVERY attempt (never reuse a token
+            // across a request — that is what caused the 503). claimFreshUploadToken serialises
+            // claims and guarantees uniqueness even when several files upload at once.
+            const formData = new FormData();
+            if (file) formData.append('file', file);
+            formData.append('isPrimary', String(isPrimary));
+            let uploadEntry;
+            try { uploadEntry = await claimFreshUploadToken(); }
+            catch(e) { netLogUpdate(logId, { state: 'fail', status: 'err', note: `captcha: ${e.message}` }); logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
+            const uploadToken = uploadEntry.token;
+            logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
+            try {
+                const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+                let body = null; try { body = await r.json(); } catch(e) { body = null; }
+                const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
+                // success or server-declared-invalid → token spent, release (stays out of queue).
+                // transient (bodyless 503 / 429) → token never reached the server: DON'T reuse it here
+                // (reusing the same token is exactly what 503s). Release it back to the queue and
+                // claim a brand-new one on the next attempt.
+                const transient = !ok && !shouldBurnToken(r.status, body);
+                releaseUploadToken(uploadEntry, transient);   // transient → back to queue; else discard
+                if (ok) { netLogUpdate(logId, { status: r.status, state: 'ok', note: 'uploaded' }); logStatus(`✅ ${label} uploaded`, 'g'); return; }
+                if (transient && attempt < UPLOAD_MAX_TRIES) {
+                    netLogUpdate(logId, { status: r.status, state: 'pending', note: `503/429 → retry ${attempt+1}` });
+                    logStatus(`⏳ ${label} ${r.status} — retrying with a fresh token…`, 'y');
+                    await new Promise(res => setTimeout(res, 700 * attempt));   // small backoff
+                    continue;
+                }
+                netLogUpdate(logId, { status: r.status, state: 'fail', note: body?.message || `HTTP ${r.status}` });
+                logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+                return;
+            } catch (err) {
+                releaseUploadToken(uploadEntry, true);        // network error → token still valid, requeue
+                if (attempt < UPLOAD_MAX_TRIES) { logStatus(`⏳ ${label} error — retrying…`, 'y'); await new Promise(res => setTimeout(res, 700 * attempt)); continue; }
+                netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r');
+                return;
+            }
         }
     }
     document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
@@ -3339,18 +3359,52 @@ function _requeueTokenEntry(entry) {
     tokenQueue.push(entry);                              // keep original createdAt (true age)
     if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
 }
-async function claimFreshUploadToken() {
+
+// Tokens currently held by an in-flight upload. A token in this set is NEVER handed to a second
+// upload — that concurrent-reuse is the root of the multi-file 503.
+const _uploadInUse = new Set();
+// Serialise claims so two files can't race into solving/claiming the SAME token.
+let _uploadClaimChain = Promise.resolve();
+
+// Release a claimed token after its upload finishes. requeue=true → transient failure, the token
+// was never accepted by the server, so return it to the queue for another attempt; otherwise the
+// token is spent (success or hard reject) and simply dropped.
+function releaseUploadToken(entry, requeue) {
+    if (!entry || !entry.token) return;
+    _uploadInUse.delete(entry.token);
+    if (requeue) _requeueTokenEntry(entry);
+}
+
+function claimFreshUploadToken() {
+    // chain onto the previous claim so claims run one-at-a-time (no shared-token race)
+    const p = _uploadClaimChain.then(() => _doClaimUploadToken());
+    _uploadClaimChain = p.catch(() => {});
+    return p;
+}
+async function _doClaimUploadToken() {
     tokenQueueCleanExpired();
-    // pick the FRESHEST (newest) queued token = most remaining lifetime, then remove it (claim)
+    // pick the FRESHEST queued token that is NOT already in use, then claim (remove) it
     let best = -1, bestAge = Infinity;
-    for (let i = 0; i < tokenQueue.length; i++) { const age = Date.now() - tokenQueue[i].createdAt; if (age < bestAge) { bestAge = age; best = i; } }
-    if (best !== -1) { const e = tokenQueue.splice(best, 1)[0]; console.log(`[RJ Upload] Claimed fresh queued token (${e.source}, ${Math.round(bestAge/1000)}s old, ${tokenQueue.length} left)`); return e; }
-    // queue empty → solve live (10.0.5 behaviour); wrap the token in an entry shape
+    for (let i = 0; i < tokenQueue.length; i++) {
+        if (_uploadInUse.has(tokenQueue[i].token)) continue;
+        const age = Date.now() - tokenQueue[i].createdAt;
+        if (age < bestAge) { bestAge = age; best = i; }
+    }
+    if (best !== -1) { const e = tokenQueue.splice(best, 1)[0]; _uploadInUse.add(e.token); console.log(`[RJ Upload] Claimed queued token (${e.source}, ${Math.round(bestAge/1000)}s old, ${tokenQueue.length} left)`); return e; }
+    // none free → solve/wait for a live one, and make sure it isn't a token already in use
+    for (let tries = 0; tries < 4; tries++) {
+        const token = await getCaptchaTokenSmart();
+        if (_uploadInUse.has(token)) { await new Promise(r => setTimeout(r, 800)); continue; }   // that token belongs to another upload — wait for a distinct one
+        const idx = tokenQueue.findIndex(t => t.token === token);
+        const entry = idx !== -1 ? tokenQueue.splice(idx, 1)[0] : { token, source: 'turnstile', createdAt: Date.now() };
+        _uploadInUse.add(entry.token);
+        return entry;
+    }
+    // last resort — take whatever we get
     const token = await getCaptchaTokenSmart();
-    // getCaptchaTokenSmart may have queued it — claim it out so it isn't reused
-    const idx = tokenQueue.findIndex(t => t.token === token);
-    if (idx !== -1) return tokenQueue.splice(idx, 1)[0];
-    return { token, source: 'turnstile', createdAt: Date.now() };
+    const entry = { token, source: 'turnstile', createdAt: Date.now() };
+    _uploadInUse.add(entry.token);
+    return entry;
 }
 
 // ==================== RACE COORDINATOR ====================
