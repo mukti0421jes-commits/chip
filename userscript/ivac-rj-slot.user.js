@@ -3241,7 +3241,7 @@ setInterval(() => {
     // Manual (Turnstile): top up whenever the queue is BELOW max (not only when empty), so a freed
     // slot gets refilled. One reset per tick with a cooldown → fills the gap within a few seconds
     // WITHOUT resetting mid-solve (cfToken guard) so the widget can actually finish solving.
-    else { if (matchingCount >= TOKEN_QUEUE_MAX) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 10000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken || _renderInFlight) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
+    else { if (matchingCount >= TOKEN_QUEUE_MAX) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 7000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken || _renderInFlight) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
 }, 3000);
 
 function renderTokenQueue() {
