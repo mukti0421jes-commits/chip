@@ -1330,6 +1330,7 @@ function showMilestonePopup(title, message, emoji) {
 const CF_SITEKEY = '0x4AAAAAACghKkJHL1t7UkuZ';
 let cfWidgetId = null;
 let cfToken    = null;
+let cfTokenAt  = 0;     // when the current cfToken was solved (to drop a stale one after TTL)
 let cfMode     = 'signin';
 
 if (!document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')) {
@@ -1374,7 +1375,7 @@ function renderCaptcha() {
             theme: 'dark',
             appearance: 'always',
             callback: (token) => {
-                cfToken = token;
+                cfToken = token; cfTokenAt = Date.now();
                 tokenQueueAddTagged(token, 'turnstile');
                 logStatus(`✓ Captcha solved → queue ${tokenQueue.length}/${TOKEN_QUEUE_MAX}`, 'g');
 
@@ -3216,7 +3217,22 @@ let captchaSolvingCount = 0; let captchaSolvingSource = null;
 function markSolveStart(source) { captchaSolvingCount++; captchaSolvingSource = source; renderTokenQueue(); }
 function markSolveEnd() { captchaSolvingCount = Math.max(0, captchaSolvingCount - 1); if (captchaSolvingCount === 0) captchaSolvingSource = null; renderTokenQueue(); }
 
-setInterval(() => { try { if (cfToken) tokenQueueAddTagged(cfToken, 'turnstile'); } catch(e) {} tokenQueueCleanExpired(); }, 1000);
+setInterval(() => {
+    try {
+        if (cfToken) {
+            if (Date.now() - cfTokenAt > TOKEN_TTL_MS) {
+                // this widget token is too old (the underlying Cloudflare token has expired) — drop it
+                // and mint a fresh one, otherwise cfToken stays non-null and blocks all refills.
+                cfToken = null;
+                const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (!useApi && cfWidgetId !== null && typeof turnstile !== 'undefined') { try { turnstile.reset(cfWidgetId); } catch(e) {} }
+            } else {
+                tokenQueueAddTagged(cfToken, 'turnstile');   // still fresh — keep it queued
+            }
+        }
+    } catch(e) {}
+    tokenQueueCleanExpired();
+}, 1000);
 
 const _scriptLoadedAt = Date.now(); let _lastTurnstileReset = 0;
 setInterval(() => {
