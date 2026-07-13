@@ -1395,7 +1395,7 @@ function renderCaptcha() {
                     } catch(e) {
                         console.log('[RJ Turnstile] reset failed:', e.message);
                     }
-                }, 2000);
+                }, 400);   // start the next solve quickly so the queue refills fast
             },
             'error-callback': () => {
                 logStatus('✗ Captcha error', 'r');
@@ -3209,7 +3209,7 @@ function tokenQueueInvalidate(token) {
     const i = tokenQueue.findIndex(t => t.token === token); if (i === -1) { abortAllUsingToken(token); return; } const removed = tokenQueue.splice(i, 1)[0];
     abortAllUsingToken(token);
     const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
-    if (!isApiMode && removed.source === 'turnstile') { setTimeout(() => { const turnstileCount = tokenQueue.filter(t => t.source === 'turnstile').length; if (turnstileCount >= TOKEN_QUEUE_MAX) return; if (cfWidgetId === null || typeof turnstile === 'undefined' || cfToken) return; try { turnstile.reset(cfWidgetId); cfToken = null; } catch(e) {} }, 500); }
+    if (!isApiMode && removed.source === 'turnstile') { setTimeout(() => { const turnstileCount = tokenQueue.filter(t => t.source === 'turnstile').length; if (turnstileCount >= TOKEN_QUEUE_MAX) return; if (cfWidgetId === null || typeof turnstile === 'undefined' || cfToken) return; try { turnstile.reset(cfWidgetId); cfToken = null; } catch(e) {} }, 150); }   // refill the freed slot right away
 }
 
 let captchaSolvingCount = 0; let captchaSolvingSource = null;
@@ -3224,6 +3224,25 @@ setInterval(() => {
     if (useApi) { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; const providerTag = config ? config.cssClass : 'capmonster'; const matchingProviderCount = tokenQueue.filter(t => t.source === providerTag).length; const gap = TOKEN_QUEUE_MAX - matchingProviderCount - captchaSolvingCount; if (gap > 0) { const hasKey = !!getCaptchaApiKey(provider); if (!hasKey) return; for (let i = 0; i < gap; i++) { (async () => { try { markSolveStart(providerTag); const t = await solveCaptchaByProvider(provider); tokenQueueAddTagged(t, providerTag); } catch (e) { console.log(`[RJ Captcha] ${config?.name || provider} solve error:`, e.message); } finally { markSolveEnd(); } })(); } } }
     else { if (matchingCount > 0) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 45000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
 }, 5000);
+
+// Fast manual (Turnstile) top-up: whenever the queue is below max and the widget is idle,
+// kick the next solve right away so a freed slot refills near-instantly (instead of waiting for
+// the slow 5s/reset timers). Guarded so it never resets mid-solve.
+let _manualTopupBusy = false;
+setInterval(() => {
+    try {
+        const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+        if (useApi) return;                                  // API mode has its own filler above
+        if (typeof turnstile === 'undefined' || cfWidgetId === null) return;
+        if (cfToken || _renderInFlight || _manualTopupBusy) return;   // a solve is already in flight
+        tokenQueueCleanExpired();
+        const count = tokenQueue.filter(t => t.source === 'turnstile').length;
+        if (count >= TOKEN_QUEUE_MAX) return;                // already full
+        _manualTopupBusy = true;
+        try { turnstile.reset(cfWidgetId); } catch(e) {}     // start solving the next token now
+        setTimeout(() => { _manualTopupBusy = false; }, 700);
+    } catch (e) {}
+}, 800);
 
 function renderTokenQueue() {
     const slotsEl = document.getElementById('tq-slots'); const infoEl = document.getElementById('tq-info'); if (!slotsEl || !infoEl) return; tokenQueueCleanExpired();
