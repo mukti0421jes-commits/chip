@@ -3792,9 +3792,16 @@ async function loadReserveDates() {
             // appointmentId (get-booking-config / Book succeeded — the popup with the id was shown)
             // OR the dropdown already holds dates, STOP the auto get-booking-config polling.
             const hasDates = sel.options.length > 1;         // >1 means more than the placeholder
+            // Already have an appointmentId — from this session OR SAVED IN THE PROFILE (persists across
+            // sessions). If the profile has it, adopt it into the session and DON'T call get-booking-config
+            // at all — no API call needed once the id is known.
+            let haveId = !!sessionState.appointmentId;
+            if (!haveId) {
+                try { const pid = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (pid && pid.length >= 10) { sessionState.appointmentId = pid; haveId = true; } } catch (e) {}
+            }
             // Only after VERIFY (not right after signin) so the auto date-pull never fires
             // get-booking-config out of pipeline order (signin → verify → book → reserve → initiate).
-            if (!hasDates && !sessionState.appointmentId && sessionState.accessToken && sessionState.isVerified && (Date.now() - lastApiTry > 20000)) {
+            if (!hasDates && !haveId && sessionState.accessToken && sessionState.isVerified && (Date.now() - lastApiTry > 20000)) {
                 lastApiTry = Date.now();
                 try { await loadReserveDates(); } catch (e) {}
             }
