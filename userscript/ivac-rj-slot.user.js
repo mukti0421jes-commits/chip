@@ -1432,9 +1432,9 @@ function showManualCaptcha() {
     const tryRender = (attempts) => {
         if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;
         if (typeof turnstile !== 'undefined') { renderCaptcha(); }
-        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 120); }
+        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 60); }   // first render: catch turnstile-ready fast
     };
-    tryRender(250);
+    tryRender(500);
 }
 function hideManualCaptcha() {
     try {
