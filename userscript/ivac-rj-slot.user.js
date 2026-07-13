@@ -3222,8 +3222,11 @@ const _scriptLoadedAt = Date.now(); let _lastTurnstileReset = 0;
 setInterval(() => {
     tokenQueueCleanExpired(); const useApi = document.getElementById('captcha-toggle')?.classList.contains('on'); const wantSource = useApi ? (CAPTCHA_PROVIDERS[getSelectedCaptchaProvider()]?.cssClass || 'capmonster') : 'turnstile'; const matchingCount = tokenQueue.filter(t => t.source === wantSource).length;
     if (useApi) { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; const providerTag = config ? config.cssClass : 'capmonster'; const matchingProviderCount = tokenQueue.filter(t => t.source === providerTag).length; const gap = TOKEN_QUEUE_MAX - matchingProviderCount - captchaSolvingCount; if (gap > 0) { const hasKey = !!getCaptchaApiKey(provider); if (!hasKey) return; for (let i = 0; i < gap; i++) { (async () => { try { markSolveStart(providerTag); const t = await solveCaptchaByProvider(provider); tokenQueueAddTagged(t, providerTag); } catch (e) { console.log(`[RJ Captcha] ${config?.name || provider} solve error:`, e.message); } finally { markSolveEnd(); } })(); } } }
-    else { if (matchingCount > 0) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 45000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
-}, 5000);
+    // Manual (Turnstile): top up whenever the queue is BELOW max (not only when empty), so a freed
+    // slot gets refilled. One reset per tick with a cooldown → fills the gap within a few seconds
+    // WITHOUT resetting mid-solve (cfToken guard) so the widget can actually finish solving.
+    else { if (matchingCount >= TOKEN_QUEUE_MAX) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 6000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken || _renderInFlight) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
+}, 3000);
 
 function renderTokenQueue() {
     const slotsEl = document.getElementById('tq-slots'); const infoEl = document.getElementById('tq-info'); if (!slotsEl || !infoEl) return; tokenQueueCleanExpired();
