@@ -2367,9 +2367,14 @@ function playBeepSequence(beeps) {
     beeps.forEach(b => { setTimeout(() => playBeep(b.freq, b.durationMs, b.volume), offset); offset += b.durationMs + 70; });
 }
 
-// Loud VOICE-ONLY announcement for a success milestone (no beep — spoken message is enough).
+// Loud VOICE-ONLY announcement for a success milestone (no beep). Prefixes the ACTIVE PROFILE NAME
+// so you know which account it's for, e.g. "SHIKHA 2. OTP sent successfully".
 function announceSuccess(text) {
-    try { speakBangla(text); } catch(e) {}
+    try {
+        let name = '';
+        try { if (typeof activeProfileName !== 'undefined' && activeProfileName) name = String(activeProfileName).trim(); } catch(e) {}
+        speakBangla((name ? name + '. ' : '') + text);
+    } catch(e) {}
 }
 
 function beepOtpOrVerify() { playBeep(660, 300, 0.16); }
@@ -2701,7 +2706,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `slotOpen=${body.data?.slotOpen} • file: ${body.data?.fileUploadStatus || '?'} • ${body.data?.appointmentDate || ''}` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) { const d = body.data || {}; const slotOpen = d.slotOpen ? '🟢 OPEN' : '🔴 CLOSED'; logStatus(`✅ File Check: ${slotOpen} • file: ${d.fileUploadStatus || 'unknown'} • ${d.appointmentDate || ''}`, 'g'); if (d.slotOpen) { try { beepReserve(); } catch(e) {} } }
+            if (ok) { const d = body.data || {}; const slotOpen = d.slotOpen ? '🟢 OPEN' : '🔴 CLOSED'; logStatus(`✅ File Check: ${slotOpen} • file: ${d.fileUploadStatus || 'unknown'} • ${d.appointmentDate || ''}`, 'g'); if (d.slotOpen) { try { announceSuccess('Slot is open'); } catch(e) {} } }
             else { logStatus(`❌ File check failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
         } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File check error: ${err.message}`, 'r'); }
     });
@@ -2715,7 +2720,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `appointmentId=${body.data?.appointmentId?.slice(0,8) || '?'}` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Appointment: ${(d.appointmentId||'?').slice(0,8)}… • ${d.ivacCenter||''} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
+            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Appointment: ${(d.appointmentId||'?').slice(0,8)}… • ${d.ivacCenter||''} • ${d.appointmentSlot||''}`, 'g'); try { announceSuccess('Appointment created'); } catch(e) {} }
             else { logStatus(`❌ Appointment failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
         } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Appointment error: ${err.message}`, 'r'); }
     });
@@ -2749,7 +2754,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
                 // claim a brand-new one on the next attempt.
                 const transient = !ok && !shouldBurnToken(r.status, body);
                 releaseUploadToken(uploadEntry, transient);   // transient → back to queue; else discard
-                if (ok) { netLogUpdate(logId, { status: r.status, state: 'ok', note: 'uploaded' }); logStatus(`✅ ${label} uploaded`, 'g'); return; }
+                if (ok) { netLogUpdate(logId, { status: r.status, state: 'ok', note: 'uploaded' }); logStatus(`✅ ${label} uploaded`, 'g'); try { announceSuccess(label + ' uploaded'); } catch(e) {} return; }
                 if (transient && attempt < UPLOAD_MAX_TRIES) {
                     netLogUpdate(logId, { status: r.status, state: 'pending', note: `503/429 → retry ${attempt+1}` });
                     logStatus(`⏳ ${label} ${r.status} — retrying with a fresh token…`, 'y');
@@ -2784,7 +2789,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `confirmed` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Confirmed: ${missionData.mission} • ${d.appointmentSlot||''}`, 'g'); try { beepBook(); } catch(e) {} }
+            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Confirmed: ${missionData.mission} • ${d.appointmentSlot||''}`, 'g'); try { announceSuccess('Mission confirmed'); } catch(e) {} }
             else { logStatus(`❌ Confirm failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Confirm error: ${err.message}`, 'r'); }
     });
@@ -2914,7 +2919,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) {}
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) { signupState.mobileRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-mobile', '✅ OTP sent to mobile!', 'g'); logStatus('✅ Mobile OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput && !otpInput.value) { otpInput.value = otp; suMsg('ivac-msg-mobile', `📩 Auto OTP: ${otp}`, 'g'); logStatus(`📩 Signup Mobile OTP: ${otp}`, 'g'); } return undefined; }, false, false); }
+            if (ok) { signupState.mobileRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-mobile', '✅ OTP sent to mobile!', 'g'); logStatus('✅ Mobile OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { announceSuccess('Mobile OTP sent successfully'); } catch(e) {} startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput && !otpInput.value) { otpInput.value = otp; suMsg('ivac-msg-mobile', `📩 Auto OTP: ${otp}`, 'g'); logStatus(`📩 Signup Mobile OTP: ${otp}`, 'g'); } return undefined; }, false, false); }
             else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
     });
@@ -2937,7 +2942,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
-            if (verified) { signupState.mobileVerified = true; updateMobileBadge(); suMsg('ivac-msg-mobile', '✅ Mobile verified!', 'g'); logStatus('✅ Mobile verified!', 'g'); flashButton(this, '✓', 'g'); try { stopSmsFetcher('mobile verified'); beepOtpOrVerify(); } catch(e) {} }
+            if (verified) { signupState.mobileVerified = true; updateMobileBadge(); suMsg('ivac-msg-mobile', '✅ Mobile verified!', 'g'); logStatus('✅ Mobile verified!', 'g'); flashButton(this, '✓', 'g'); try { stopSmsFetcher('mobile verified'); announceSuccess('Mobile verified successfully'); } catch(e) {} }
             else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
     });
@@ -2953,7 +2958,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) {}
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
-            if (ok) { signupState.emailRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-email', '✅ OTP sent to email!', 'g'); logStatus('✅ Email OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
+            if (ok) { signupState.emailRequestId = body?.data?.requestId || body?.requestId || null; suMsg('ivac-msg-email', '✅ OTP sent to email!', 'g'); logStatus('✅ Email OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { announceSuccess('Email OTP sent successfully'); } catch(e) {} }
             else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
     });
@@ -2971,7 +2976,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
-            if (verified) { signupState.emailVerified = true; updateEmailBadge(); suMsg('ivac-msg-email', '✅ Email verified!', 'g'); logStatus('✅ Email verified!', 'g'); flashButton(this, '✓', 'g'); try { beepOtpOrVerify(); } catch(e) {} }
+            if (verified) { signupState.emailVerified = true; updateEmailBadge(); suMsg('ivac-msg-email', '✅ Email verified!', 'g'); logStatus('✅ Email verified!', 'g'); flashButton(this, '✓', 'g'); try { announceSuccess('Email verified successfully'); } catch(e) {} }
             else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
         } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
     });
@@ -3058,7 +3063,7 @@ async function forgotStep2_fetchOtp() {
     const prof = getAdvanceProfileData(); logStatus(`📱 [2/4] Fetching OTP…`, 'y'); const otpInp = document.getElementById('login-otp'); if (otpInp) otpInp.value = '';
     const otp = await new Promise((resolve) => { startSmsFetcher(prof.phone2, async (fetchedOtp) => { resolve(fetchedOtp); return undefined; }, false, false); setTimeout(() => resolve(null), 150 * 1000); });
     if (!otp) { logStatus(`❌ [2/4] No OTP received`, 'r'); return { win: false }; }
-    advanceState.otp = otp; logStatus(`✅ [2/4] OTP: ${otp}`, 'g'); try { beepOtpOrVerify(); } catch(e) {} swapLoginPhoneField(prof.phone1, 'Phone 1', 'tel'); return { win: true };
+    advanceState.otp = otp; logStatus(`✅ [2/4] OTP: ${otp}`, 'g'); try { announceSuccess('OTP received'); } catch(e) {} swapLoginPhoneField(prof.phone1, 'Phone 1', 'tel'); return { win: true };
 }
 
 async function forgotStep3_signin(signal) {
@@ -3140,7 +3145,7 @@ async function smsPollTick() {
     const otp = await fetchSmsOnce(smsFetcher.currentPhone); if (!otp) return; if (smsFetcher.usedOtps.has(otp)) return;
     smsFetcher.usedOtps.add(otp); const otpInput = document.getElementById('login-otp');
     if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); }
-    logStatus(`📩 OTP received: ${otp}`, 'g'); try { beepOtpOrVerify(); } catch(e) {}
+    logStatus(`📩 OTP received: ${otp}`, 'g'); try { announceSuccess('OTP received'); } catch(e) {}
     smsFetcher.active = false; if (smsFetcher.intervalId) { clearInterval(smsFetcher.intervalId); smsFetcher.intervalId = null; }
     if (typeof smsFetcher.onSuccess === 'function') { try { await smsFetcher.onSuccess(otp); } catch(e) {} }
 }
@@ -3881,7 +3886,7 @@ async function stepBook(signal) {
             sessionState.bookedAt = Date.now();
             persistSession();
             logStatus(`⏭ Book skipped — saved appointmentId: ${savedApptId}`, 'g');
-            try { beepBook(); } catch(e) {}
+            try { announceSuccess('Booking ready'); } catch(e) {}
             return { win: true, skipped: true, fromProfile: true };
         }
     } catch(e) {}
