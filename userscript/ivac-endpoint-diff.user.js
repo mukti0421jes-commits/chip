@@ -90,16 +90,32 @@
         return text.slice(L, R);
     }
 
+    // all quoted path literals in the bundle that share the leaf's parent dir (e.g. /forgot-password/*)
+    function siblings(text, leaf) {
+        const parent = leaf.replace(/\/[^/]+$/, '');           // /forgot-password/sendOtp → /forgot-password
+        if (!parent || parent === leaf || parent.length < 3) return [];
+        const esc = parent.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+        const re = new RegExp(esc + '\\/[A-Za-z0-9_{}-]+', 'g');
+        return [...new Set(text.match(re) || [])];
+    }
     function scan(bundleText) {
         return ENDPOINTS.map(ep => {
-            const present = bundleText.indexOf(ep.sig) !== -1;
-            if (ep.obf) return { ...ep, status: present ? 'OBFUSCATED' : 'OBFUSCATED', bundle: '' };
-            if (!present) return { ...ep, status: 'MISSING', bundle: '' };
-            const bundle = extractLiteral(bundleText, ep.sig);      // e.g. /slots/<uuid>/reserve-slot
-            // exact:true (reserve) → compare the real slot id too, so a changed uuid is caught;
-            // otherwise treat any uuid as {id}.
-            const match = ep.exact ? (bundle === ep.leaf) : (normId(bundle) === normId(ep.leaf));
-            return { ...ep, status: match ? 'OK' : 'CHANGED', bundle };
+            if (ep.obf) return { ...ep, status: 'OBFUSCATED', bundle: '', sibs: [] };
+            // EXACT-leaf match first (uuid treated as {id} unless ep.exact) — avoids a generic sig
+            // grabbing the wrong sibling endpoint.
+            const leafN = normId(ep.leaf);
+            const hasExact = ep.exact ? (bundleText.indexOf(ep.leaf) !== -1)
+                                      : (bundleText.indexOf(ep.leaf) !== -1 || (function () {
+                                            // uuid-normalised presence: scan siblings for a {id}-equal match
+                                            return siblings(bundleText, ep.leaf).some(s => normId(s) === leafN);
+                                        })());
+            if (hasExact) return { ...ep, status: 'OK', bundle: ep.exact ? ep.leaf : (extractLiteral(bundleText, ep.sig) || ep.leaf), sibs: [] };
+            // not an exact match → show what the bundle has under the same parent (candidates)
+            const sibs = siblings(bundleText, ep.leaf);
+            if (sibs.length) return { ...ep, status: 'CHANGED', bundle: sibs[0], sibs };
+            // sig not even present anywhere → truly missing / renamed / obfuscated
+            if (bundleText.indexOf(ep.sig) === -1) return { ...ep, status: 'MISSING', bundle: '', sibs: [] };
+            return { ...ep, status: 'CHANGED', bundle: extractLiteral(bundleText, ep.sig), sibs: [] };
         });
     }
 
@@ -115,10 +131,14 @@
                 console.log('%c✓ ' + pad(r.name) + '%c' + r.my + '%c   ↔ bundle: ' + r.bundle, C.ok, 'color:#c4b5fd', C.dim);
             } else if (r.status === 'CHANGED') {
                 changed++;
-                // yellow — MISMATCH. Update your code to the bundle value.
-                console.log('%c⚠ ' + pad(r.name) + 'MISMATCH%c', C.chg, '');
+                // yellow — the exact leaf isn't in the bundle. Show the candidate(s) under the same parent.
+                console.log('%c⚠ ' + pad(r.name) + 'NOT AS EXPECTED%c', C.chg, '');
                 console.log('%c      your code : ' + r.my + '   (leaf: ' + r.leaf + ')', C.dim);
-                console.log('%c      bundle now: ' + r.bundle + '   ← update to this', 'color:#f59e0b;font-weight:700');
+                if (r.sibs && r.sibs.length > 1) {
+                    console.log('%c      bundle has (under same path): ' + r.sibs.join('  ,  ') + '   ← check which one is correct', 'color:#f59e0b;font-weight:700');
+                } else {
+                    console.log('%c      bundle now: ' + r.bundle + '   ← likely update to this', 'color:#f59e0b;font-weight:700');
+                }
             } else if (r.status === 'MISSING') {
                 missing++;
                 // red — the segment is gone from the bundle (renamed/removed)
