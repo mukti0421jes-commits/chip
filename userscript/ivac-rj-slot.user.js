@@ -1745,11 +1745,6 @@ const h2html = `
 <div class="enc-cfg-actions"><button class="b5 bh" id="enc-initiate-save">💾 Save</button><button class="b2 bh" id="enc-initiate-activate">⚡ Activate</button><span class="enc-status" id="enc-initiate-status">Inactive</span></div>
 </div>
 
-<div class="enc-section" style="margin-top:6px">
-<div class="enc-title">ℹ️ Encryption Info</div>
-<div style="font-size:.58rem;color:#8888aa;line-height:1.4;padding:4px 0"> Save stores config to localStorage. Activate enables encryption for that purpose.<br> API flow: get token → check config → encrypt by version → send to server.
-</div>
-</div>
 </div>
 </div>
 </div>
