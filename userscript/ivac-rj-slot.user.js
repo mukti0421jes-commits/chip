@@ -2342,6 +2342,8 @@ function beepSoft() {
     } catch(e) {}
 }
 
+// LOUD beeps: master gain multiplier + a short attack so it's punchy, not faint.
+const BEEP_GAIN = 6.0;   // scale up the old faint volumes; ~0.10 → ~0.6 (capped near max)
 function playBeep(freq, durationMs, volume) {
     try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -2349,7 +2351,10 @@ function playBeep(freq, durationMs, volume) {
         const ctx = new Ctx();
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.type = 'sine'; osc.frequency.value = freq; gain.gain.value = volume || 0.08;
+        const vol = Math.min(0.95, (volume || 0.08) * BEEP_GAIN);
+        osc.type = 'triangle'; osc.frequency.value = freq;            // triangle = brighter/louder than sine
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + 0.01);
         osc.connect(gain).connect(ctx.destination);
         osc.start();
         gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (durationMs / 1000));
@@ -2362,16 +2367,22 @@ function playBeepSequence(beeps) {
     beeps.forEach(b => { setTimeout(() => playBeep(b.freq, b.durationMs, b.volume), offset); offset += b.durationMs + 70; });
 }
 
-function beepOtpOrVerify() { playBeep(660, 280, 0.10); }
-function beepReserve() { playBeepSequence([{ freq: 880, durationMs: 150, volume: 0.10 }, { freq: 1100, durationMs: 200, volume: 0.10 }]); }
-function beepBook() { playBeepSequence([{ freq: 880, durationMs: 130, volume: 0.10 }, { freq: 1100, durationMs: 130, volume: 0.10 }, { freq: 1320, durationMs: 200, volume: 0.10 }]); }
+// Loud beep + loud Bangla/English voice announcement for a success milestone.
+function announceSuccess(text, beeps) {
+    try { playBeepSequence(beeps || [{ freq: 880, durationMs: 150, volume: 0.16 }, { freq: 1200, durationMs: 220, volume: 0.16 }]); } catch(e) {}
+    setTimeout(() => { try { speakBangla(text); } catch(e) {} }, 500);
+}
+
+function beepOtpOrVerify() { playBeep(660, 300, 0.16); }
+function beepReserve() { playBeepSequence([{ freq: 880, durationMs: 160, volume: 0.16 }, { freq: 1100, durationMs: 220, volume: 0.16 }]); }
+function beepBook() { playBeepSequence([{ freq: 880, durationMs: 140, volume: 0.16 }, { freq: 1100, durationMs: 140, volume: 0.16 }, { freq: 1320, durationMs: 220, volume: 0.16 }]); }
 function beepInitiateAndSpeak() {
     playBeepSequence([
-        { freq: 523.25, durationMs: 180, volume: 0.10 },
-        { freq: 659.25, durationMs: 180, volume: 0.10 },
-        { freq: 783.99, durationMs: 350, volume: 0.12 }
+        { freq: 523.25, durationMs: 190, volume: 0.16 },
+        { freq: 659.25, durationMs: 190, volume: 0.16 },
+        { freq: 783.99, durationMs: 380, volume: 0.18 }
     ]);
-    setTimeout(() => speakBangla('Payment করুন'), 1000);
+    setTimeout(() => speakBangla('Payment করুন'), 900);
 }
 
 function speakBangla(text) {
@@ -2379,7 +2390,7 @@ function speakBangla(text) {
         if (!('speechSynthesis' in window)) return;
         window.speechSynthesis.cancel();
         const utter = new SpeechSynthesisUtterance(text);
-        utter.lang = 'bn-BD'; utter.rate = 0.95; utter.pitch = 1.0; utter.volume = 1.0;
+        utter.lang = 'bn-BD'; utter.rate = 0.98; utter.pitch = 1.0; utter.volume = 1.0;   // max volume
         const voices = window.speechSynthesis.getVoices();
         const bnVoice = voices.find(v => /^bn/i.test(v.lang)) || voices.find(v => /bangla|bengali/i.test(v.name));
         if (bnVoice) utter.voice = bnVoice;
@@ -3003,7 +3014,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             if (ok) {
                 suMsg('ivac-msg-submit', `✅ ${body.message || 'Created'}`, 'g');
                 logStatus(`✅ Account created: ${email || phone}`, 'g'); flashButton(btn, '✓', 'g');
-                try { showMilestonePopup('Account Created', `Signup successful for ${email || phone}`, '🎉'); } catch(e) {}
+                try { showMilestonePopup('Account Created', `Signup successful for ${email || phone}`, '🎉'); } catch(e) {} try { announceSuccess('Account created successfully'); } catch(e) {}
                 try { const prof = profiles[activeProfileName]; if (prof) { if (!prof.phone1) prof.phone1 = phone; if (!prof.email) prof.email = email; if (!prof.mobilePass) prof.mobilePass = password; if (!prof.name && (givenName||surName)) prof.name = `${givenName} ${surName}`.trim(); persistProfiles(); } } catch(e) {}
             } else {
                 const msg = body?.message || body?.error || `HTTP ${response.status}`;
@@ -3076,7 +3087,7 @@ async function forgotStep4_verify(signal) {
         if (verified) {
             raceCoord.declareWin('verify', { win: true }); logStatus(`🎉 [4/4] Forgot login complete!`, 'g'); try { stopOtpTimer('advanceOtp'); stopOtpTimer('signinOtp'); } catch(e) {} try { stopSmsFetcher('Forgot login complete'); } catch(e) {}
             markSessionVerified(); if (sessionState.loggedInAt) { const expiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; if (expiresAt - Date.now() > 0) startTokenTimerWithExpiry(expiresAt); }
-            showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); return { win: true };
+            showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); try { announceSuccess('Verification successful'); } catch(e) {} return { win: true };
         } else { logStatus(`❌ [4/4] Verify failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); return { win: false }; }
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
 }
@@ -3646,7 +3657,7 @@ async function stepSignin(signal) {
         if (r.ok && body.successFlag && body.data?.accessToken) {
             raceCoord.declareWin('signin', { win: true, data: body });
             saveSession(body.data, phone); try { startOtpTimer('signinOtp'); } catch(e) {}
-            showMilestonePopup('OTP Sent', 'OTP sent to ' + phone, '📩');
+            showMilestonePopup('OTP Sent', 'OTP sent to ' + phone, '📩'); try { announceSuccess('OTP sent successfully'); } catch(e) {}
             if (isAutoOn()) startSmsFetcher(phone, async (otp) => { return undefined; }, false);
             return { win: true, data: body };
         } return { win: false };
@@ -3678,7 +3689,7 @@ async function stepVerify(signal) {
             try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
             try { stopSmsFetcher('OTP verified'); } catch(e) {}
             document.getElementById('login-otp').value = '';
-            markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅');
+            markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); try { announceSuccess('Verification successful'); } catch(e) {}
             if (sessionState.loggedInAt) { const sessionExpiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; const remainingMs = sessionExpiresAt - Date.now(); if (remainingMs > 0) { startTokenTimerWithExpiry(sessionExpiresAt); const min = Math.floor(remainingMs / 60000); const sec = Math.floor((remainingMs % 60000) / 1000); logStatus(`✅ Verified • session ${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')} left`, 'g'); } }
         } else { if (!_forceStep && isAutoOn() && sessionState.phone) { document.getElementById('login-otp').value = ''; logStatus('⚠ Verify failed — restarting SMS fetcher', 'y'); startSmsFetcher(sessionState.phone, async () => { return undefined; }, true); } }
         return { win: verified, data: body };
@@ -3780,7 +3791,7 @@ async function loadReserveDates() {
                 sessionState.appointmentId = apptId; sessionState.bookedAt = Date.now(); persistSession();
                 if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = apptId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = apptId; }
                 logStatus(`📋 Appointment ID saved: ${apptId}`, 'g'); try { beepBook(); } catch(e) {}
-                showMilestonePopup('Booked', 'Appointment ID: ' + apptId, '📋');
+                showMilestonePopup('Booked', 'Appointment ID: ' + apptId, '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
             }
         } catch(e) {}
         const dates = body?.data?.appointmentDate;
@@ -3856,7 +3867,7 @@ async function stepReserve(signal) {
                         // Auto-extract: fill reserve ID in Upload tran ID placeholder
         try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && rd.reservationId) { trxInp.value = rd.reservationId; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } } catch(e) {}
             logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g'); try { beepReserve(); } catch(e) {}
-            showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯');
+            showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
         } return { win: reserved, data: body };
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
 }
@@ -3947,7 +3958,7 @@ async function stepBook(signal) {
 
             logStatus(`✅ Booked: ${body.data.ivacCenter||''} ${body.data.appointmentSlot||''} • ৳${body.data.totalAmount||'?'}`, 'g');
             try { beepBook(); } catch(e) {}
-            showMilestonePopup('Booked', 'Appointment ID: ' + (body.data.appointmentId || ''), '📋');
+            showMilestonePopup('Booked', 'Appointment ID: ' + (body.data.appointmentId || ''), '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
             return { win: true, data: body };
         }
         return { win: false, data: body };
