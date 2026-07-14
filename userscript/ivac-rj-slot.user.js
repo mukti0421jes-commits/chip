@@ -1428,9 +1428,14 @@ function resetCaptcha() {
 function showManualCaptcha() {
     const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
     if (useApi) return;
+    // Widget already rendered (pre-warm or earlier click)? DON'T re-render — re-rendering removes
+    // and re-creates the iframe, which is the "spark"/flicker. Leave it; it's already solving and
+    // feeding the queue. Only render when there is no widget yet.
+    if (cfWidgetId !== null) return;
     _lastRenderAt = 0;
     const tryRender = (attempts) => {
         if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;
+        if (cfWidgetId !== null) return;                              // became available meanwhile — stop
         if (typeof turnstile !== 'undefined') { renderCaptcha(); }
         else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 60); }   // first render: catch turnstile-ready fast
     };
