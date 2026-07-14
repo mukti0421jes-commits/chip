@@ -983,7 +983,7 @@ async function encConfigAutoFetch(forceReload) {
         encConfigApplyToUI('initiate');
 
         if (signin && reserve) {
-            logStatus('✅ Encryption config fully resolved from live bundle!', 'g');
+            logStatus('✅ Encryption config fully resolved from live bundle!', 'g'); try { announceSuccess('Scan successful, encryption ready'); } catch(e) {}
         } else {
             logStatus('⚠ Partial resolve — other purpose kept on current config', 'y');
         }
@@ -1111,7 +1111,7 @@ function markSessionVerified() {
     sessionState.otpVerifiedAt = Date.now();
     persistSession();
     if (!wasAlreadyVerified) {
-        try { beepOtpOrVerify(); } catch(e) {}
+        try { announceSuccess('Verification successful'); } catch(e) {}   // voice, no beep
     }
 }
 
@@ -2367,10 +2367,9 @@ function playBeepSequence(beeps) {
     beeps.forEach(b => { setTimeout(() => playBeep(b.freq, b.durationMs, b.volume), offset); offset += b.durationMs + 70; });
 }
 
-// Loud beep + loud Bangla/English voice announcement for a success milestone.
-function announceSuccess(text, beeps) {
-    try { playBeepSequence(beeps || [{ freq: 880, durationMs: 150, volume: 0.16 }, { freq: 1200, durationMs: 220, volume: 0.16 }]); } catch(e) {}
-    setTimeout(() => { try { speakBangla(text); } catch(e) {} }, 500);
+// Loud VOICE-ONLY announcement for a success milestone (no beep — spoken message is enough).
+function announceSuccess(text) {
+    try { speakBangla(text); } catch(e) {}
 }
 
 function beepOtpOrVerify() { playBeep(660, 300, 0.16); }
@@ -3087,7 +3086,7 @@ async function forgotStep4_verify(signal) {
         if (verified) {
             raceCoord.declareWin('verify', { win: true }); logStatus(`🎉 [4/4] Forgot login complete!`, 'g'); try { stopOtpTimer('advanceOtp'); stopOtpTimer('signinOtp'); } catch(e) {} try { stopSmsFetcher('Forgot login complete'); } catch(e) {}
             markSessionVerified(); if (sessionState.loggedInAt) { const expiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; if (expiresAt - Date.now() > 0) startTokenTimerWithExpiry(expiresAt); }
-            showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); try { announceSuccess('Verification successful'); } catch(e) {} return { win: true };
+            showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); return { win: true };
         } else { logStatus(`❌ [4/4] Verify failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); return { win: false }; }
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
 }
@@ -3689,7 +3688,7 @@ async function stepVerify(signal) {
             try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
             try { stopSmsFetcher('OTP verified'); } catch(e) {}
             document.getElementById('login-otp').value = '';
-            markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); try { announceSuccess('Verification successful'); } catch(e) {}
+            markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅');
             if (sessionState.loggedInAt) { const sessionExpiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; const remainingMs = sessionExpiresAt - Date.now(); if (remainingMs > 0) { startTokenTimerWithExpiry(sessionExpiresAt); const min = Math.floor(remainingMs / 60000); const sec = Math.floor((remainingMs % 60000) / 1000); logStatus(`✅ Verified • session ${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')} left`, 'g'); } }
         } else { if (!_forceStep && isAutoOn() && sessionState.phone) { document.getElementById('login-otp').value = ''; logStatus('⚠ Verify failed — restarting SMS fetcher', 'y'); startSmsFetcher(sessionState.phone, async () => { return undefined; }, true); } }
         return { win: verified, data: body };
@@ -3790,7 +3789,7 @@ async function loadReserveDates() {
             if (apptId && apptId !== sessionState.appointmentId) {
                 sessionState.appointmentId = apptId; sessionState.bookedAt = Date.now(); persistSession();
                 if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = apptId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = apptId; }
-                logStatus(`📋 Appointment ID saved: ${apptId}`, 'g'); try { beepBook(); } catch(e) {}
+                logStatus(`📋 Appointment ID saved: ${apptId}`, 'g');
                 showMilestonePopup('Booked', 'Appointment ID: ' + apptId, '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
             }
         } catch(e) {}
@@ -3866,7 +3865,7 @@ async function stepReserve(signal) {
             sessionState.reservationId = rd.reservationId || null; sessionState.reserveTtlSec = rd.reserveTtlSeconds || null; sessionState.reserveStatus = rd.status || null; sessionState.abcDate = rd.appointmentDate || appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
                         // Auto-extract: fill reserve ID in Upload tran ID placeholder
         try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && rd.reservationId) { trxInp.value = rd.reservationId; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } } catch(e) {}
-            logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g'); try { beepReserve(); } catch(e) {}
+            logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g');
             showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
         } return { win: reserved, data: body };
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
@@ -3957,7 +3956,6 @@ async function stepBook(signal) {
             } catch(e) {}
 
             logStatus(`✅ Booked: ${body.data.ivacCenter||''} ${body.data.appointmentSlot||''} • ৳${body.data.totalAmount||'?'}`, 'g');
-            try { beepBook(); } catch(e) {}
             showMilestonePopup('Booked', 'Appointment ID: ' + (body.data.appointmentId || ''), '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
             return { win: true, data: body };
         }
