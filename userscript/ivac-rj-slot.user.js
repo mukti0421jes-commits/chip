@@ -2367,9 +2367,7 @@ function playBeepSequence(beeps) {
 // so you know which account it's for, e.g. "SHIKHA 2. OTP sent successfully".
 function announceSuccess(text) {
     try {
-        let name = '';
-        try { if (typeof activeProfileName !== 'undefined' && activeProfileName) name = String(activeProfileName).trim(); } catch(e) {}
-        speakBangla((name ? name + '. ' : '') + text);
+        speakBangla(text);
     } catch(e) {}
 }
 
@@ -2385,15 +2383,28 @@ function beepInitiateAndSpeak() {
     setTimeout(() => speakBangla('Payment করুন'), 900);
 }
 
+function pickMeenaVoice() {
+    // Prefer a Bangla female voice; fall back to Hindi female (Meena's original languages), then any female.
+    const voices = window.speechSynthesis.getVoices() || [];
+    const female = v => /female|woman|girl|kajal|swara|heera|meena|priya|neerja|aditi|raveena|sara|zira|susan/i.test(v.name);
+    const bn = v => /^bn/i.test(v.lang) || /bangla|bengali/i.test(v.name);
+    const hi = v => /^hi/i.test(v.lang) || /hindi/i.test(v.name);
+    return voices.find(v => bn(v) && female(v))
+        || voices.find(v => bn(v))
+        || voices.find(v => hi(v) && female(v))
+        || voices.find(v => hi(v))
+        || voices.find(female)
+        || null;
+}
 function speakBangla(text) {
     try {
         if (!('speechSynthesis' in window)) return;
         window.speechSynthesis.cancel();
         const utter = new SpeechSynthesisUtterance(text);
-        utter.lang = 'bn-BD'; utter.rate = 0.98; utter.pitch = 1.0; utter.volume = 1.0;   // max volume
-        const voices = window.speechSynthesis.getVoices();
-        const bnVoice = voices.find(v => /^bn/i.test(v.lang)) || voices.find(v => /bangla|bengali/i.test(v.name));
-        if (bnVoice) utter.voice = bnVoice;
+        // "Meena" cartoon-style Bangla female voice: high pitch, gently slower, full volume
+        utter.lang = 'bn-BD'; utter.rate = 0.95; utter.pitch = 1.4; utter.volume = 1.0;
+        const v = pickMeenaVoice();
+        if (v) { utter.voice = v; if (!/^bn/i.test(v.lang)) utter.lang = v.lang; }
         window.speechSynthesis.speak(utter);
     } catch(e) {}
 }
