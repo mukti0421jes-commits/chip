@@ -2383,16 +2383,15 @@ function beepInitiateAndSpeak() {
     setTimeout(() => speakBangla('Payment করুন'), 900);
 }
 
-function pickMeenaVoice() {
-    // Prefer a Bangla female voice; fall back to Hindi female (Meena's original languages), then any female.
+function pickFemaleBnVoice() {
+    // Prefer a Bangla female voice; fall back to Hindi female, then any Bangla, then any female.
     const voices = window.speechSynthesis.getVoices() || [];
     const female = v => /female|woman|girl|kajal|swara|heera|meena|priya|neerja|aditi|raveena|sara|zira|susan/i.test(v.name);
     const bn = v => /^bn/i.test(v.lang) || /bangla|bengali/i.test(v.name);
     const hi = v => /^hi/i.test(v.lang) || /hindi/i.test(v.name);
     return voices.find(v => bn(v) && female(v))
-        || voices.find(v => bn(v))
         || voices.find(v => hi(v) && female(v))
-        || voices.find(v => hi(v))
+        || voices.find(v => bn(v))
         || voices.find(female)
         || null;
 }
@@ -2401,9 +2400,8 @@ function speakBangla(text) {
         if (!('speechSynthesis' in window)) return;
         window.speechSynthesis.cancel();
         const utter = new SpeechSynthesisUtterance(text);
-        // "Meena" cartoon-style Bangla female voice: high pitch, gently slower, full volume
-        utter.lang = 'bn-BD'; utter.rate = 0.95; utter.pitch = 1.4; utter.volume = 1.0;
-        const v = pickMeenaVoice();
+        utter.lang = 'bn-BD'; utter.rate = 0.98; utter.pitch = 1.0; utter.volume = 1.0;   // original tone, max volume
+        const v = pickFemaleBnVoice();
         if (v) { utter.voice = v; if (!/^bn/i.test(v.lang)) utter.lang = v.lang; }
         window.speechSynthesis.speak(utter);
     } catch(e) {}
