@@ -28,7 +28,7 @@
         { name: 'Book',     match: 'get-booking-config', method: 'GET',  headers: ['accept', 'authorization', 'cache-control', 'pragma'], body: [], enc: null },
         { name: 'Reserve',  match: 'reserve-slot',       method: 'POST', headers: ['accept', 'authorization', 'cache-control', 'content-type', 'pragma'], body: ['c', 'appointmentDate'], enc: 'c' },
         { name: 'Initiate', match: 'initiate',           method: 'POST', headers: ['accept', 'authorization', 'cache-control', 'content-type', 'pragma', 'x-token'], body: ['appointmentId'], enc: 'x-token' },
-        { name: 'Upload',   match: 'upload-file',        method: 'POST', headers: ['accept', 'authorization', 'cache-control', 'pragma', 'x-token'], body: ['file', 'isPrimary'], enc: 'x-token' }
+        { name: 'Upload',   match: 'upload_file',        method: 'POST', headers: ['accept', 'authorization', 'cache-control', 'pragma', 'x-sec-runtime-state', 'x-token'], body: ['files', 'isPrimary'], enc: 'x-token' }
     ];
     function specFor(url) { return SPEC.find(s => url.indexOf(s.match) !== -1) || null; }
 

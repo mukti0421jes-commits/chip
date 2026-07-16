@@ -71,7 +71,7 @@
         { name: 'Reserve',       my: '/iams/api/v1/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', leaf: '/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', sig: 'reserve-slot', exact: true },
         { name: 'Initiate',      my: '/iams/api/v1/payment/dg-epay/initiate',               leaf: '/payment/dg-epay/initiate',        sig: 'dg-epay', obf: true },
         { name: 'BookingConfirm',my: '/iams/api/v1/appointment/appointment-booking-config', leaf: '/appointment/appointment-booking-config', sig: 'appointment-booking-config' },
-        { name: 'Upload',        my: '/iams/api/v1/file/upload-file',                       leaf: '/file/upload-file',                sig: 'upload-file' },
+        { name: 'Upload',        my: '/iams/api/v1/file/upload_file',                       leaf: '/file/upload_file',                sig: 'upload_file' },
         { name: 'SlotStatus',    my: '/iams/api/v1/file/file-confirmation-and-slot-status', leaf: '/file/file-confirmation-and-slot-status', sig: 'file-confirmation-and-slot-status' },
         { name: 'SignupOTP',     my: '/iams/api/v1/otp/signupOtp',                          leaf: '/otp/signupOtp',                   sig: 'signupOtp' },
         { name: 'VerifyOTP',     my: '/iams/api/v1/otp/verifyOtp',                          leaf: '/otp/verifyOtp',                   sig: 'verifyOtp' },
@@ -214,7 +214,7 @@
         for (const u of urls) {
             const t = await fetchText(u);
             if (!t) continue;
-            if (/sign-in|reserve-slot|get-booking-config|upload-file|verifySigninOtp/.test(t)) { combined += '\n' + t; used.push(u.split('/').pop()); }
+            if (/sign-in|reserve-slot|get-booking-config|upload_file|upload-file|verifySigninOtp/.test(t)) { combined += '\n' + t; used.push(u.split('/').pop()); }
         }
         if (!combined) return 'nomatch';
         const sig = used.slice().sort().join('|');

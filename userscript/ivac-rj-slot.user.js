@@ -355,6 +355,17 @@ function _navState() {
     catch(e) { _navStateCached = '00000000-0000-4000-8000-000000000000'; }
     return _navStateCached;
 }
+// x-sec-runtime-state: real request uses "v1.<8hex>.<4hex>.<4hex>.<4hex>.<12hex>" (a uuid
+// with dots), stable per session like the nav-state. Generate once and cache.
+let _runtimeStateCached = null;
+function _runtimeState() {
+    if (_runtimeStateCached) return _runtimeStateCached;
+    let u;
+    try { u = (crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); }); }
+    catch(e) { u = '5a4c8831-9a53-47ed-b579-042a2c0cee5a'; }
+    _runtimeStateCached = 'v1.' + u.replace(/-/g, '.');
+    return _runtimeStateCached;
+}
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
@@ -2735,14 +2746,14 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         const fileInput = document.getElementById(fileInputId);
         const file = fileInput?.files?.length > 0 ? fileInput.files[0] : null;
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file", tag: 'upload', state: 'pending', note: `${label}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
             // Fresh FormData + a DISTINCT, not-in-use token for EVERY attempt (never reuse a token
             // across a request — that is what caused the 503). claimFreshUploadToken serialises
             // claims and guarantees uniqueness even when several files upload at once.
             const formData = new FormData();
-            if (file) formData.append('file', file);
+            if (file) formData.append('files', file);   // real endpoint expects field name "files" (plural)
             formData.append('isPrimary', String(isPrimary));
             let uploadEntry;
             try { uploadEntry = await claimFreshUploadToken(); }
@@ -2750,7 +2761,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             const uploadToken = uploadEntry.token;
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
-                const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+                const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload_file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
                 let body = null; try { body = await r.json(); } catch(e) { body = null; }
                 const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
                 // success or server-declared-invalid → token spent, release (stays out of queue).
