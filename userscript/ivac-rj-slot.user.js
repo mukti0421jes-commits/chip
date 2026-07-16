@@ -4207,7 +4207,9 @@ async function _fetchLoopTick() {
     _fetchLoop.count++;
     let body = c.body; if (body && typeof body === 'object') body = JSON.stringify(body);
     try {
-        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body });
+        // forceGM: many pasted URLs (payment gateway callbacks etc.) return NO CORS headers,
+        // so a native fetch is always blocked. Go straight through GM_xmlhttpRequest (CORS-immune).
+        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: true });
         const text = await r.text();
         let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
         console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
