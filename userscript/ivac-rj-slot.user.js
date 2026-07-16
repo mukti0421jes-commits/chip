@@ -2742,26 +2742,71 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     });
 
     const UPLOAD_MAX_TRIES = 4;   // transient 503/429 retries with a fresh distinct token each time
+    // Send a multipart/form-data upload with the file bytes encoded by hand, so the payload
+    // survives BOTH transports: native page fetch (Blob body) and the GM_xmlhttpRequest
+    // fallback (raw binary string). A plain FormData loses its File when it has to go through
+    // GM_xmlhttpRequest, which is why uploads returned 200 but stored nothing.
+    async function sendMultipartUpload(url, headers, file, fields) {
+        const boundary = '----RJUpload' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+        const fileBytes = new Uint8Array(await file.arrayBuffer());
+        const enc = s => { const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xff; return a; };
+        const parts = [];
+        parts.push(enc(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${file.name}"\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`));
+        parts.push(fileBytes);
+        parts.push(enc('\r\n'));
+        for (const k in fields) parts.push(enc(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${fields[k]}\r\n`));
+        parts.push(enc(`--${boundary}--\r\n`));
+        let total = 0; parts.forEach(p => total += p.length);
+        const bytes = new Uint8Array(total); let off = 0; parts.forEach(p => { bytes.set(p, off); off += p.length; });
+        const contentType = 'multipart/form-data; boundary=' + boundary;
+        const allHeaders = { ...headers, 'content-type': contentType };
+
+        // 1) native page fetch with a Blob body (HTTP/2, real bytes)
+        try {
+            const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch) ? unsafeWindow.fetch : fetch;
+            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'omit', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
+        } catch (e) {
+            // 2) GM fallback — send the raw bytes as a binary string
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) throw e;
+            let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return await new Promise((resolve, reject) => {
+                gmApi({
+                    method: 'POST', url, headers: allHeaders, data: bin, binary: true, timeout: 30000,
+                    onload: r => resolve(new Response(r.responseText, { status: r.status, statusText: r.statusText })),
+                    onerror: () => reject(new Error('GM upload network error')),
+                    ontimeout: () => reject(new Error('GM upload timeout'))
+                });
+            });
+        }
+    }
+
     async function uploadFile(fileInputId, isPrimary, label) {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         const fileInput = document.getElementById(fileInputId);
         const file = fileInput?.files?.length > 0 ? fileInput.files[0] : null;
+        if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return; }   // never upload an empty part
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
-            // Fresh FormData + a DISTINCT, not-in-use token for EVERY attempt (never reuse a token
-            // across a request — that is what caused the 503). claimFreshUploadToken serialises
-            // claims and guarantees uniqueness even when several files upload at once.
-            const formData = new FormData();
-            if (file) formData.append('files', file);   // real endpoint expects field name "files" (plural)
-            formData.append('isPrimary', String(isPrimary));
+            // A DISTINCT, not-in-use token for EVERY attempt (never reuse a token across a
+            // request — that is what caused the 503). claimFreshUploadToken serialises claims
+            // and guarantees uniqueness even when several files upload at once.
             let uploadEntry;
             try { uploadEntry = await claimFreshUploadToken(); }
             catch(e) { netLogUpdate(logId, { state: 'fail', status: 'err', note: `captcha: ${e.message}` }); logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
             const uploadToken = uploadEntry.token;
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
-                const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload_file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
+                // Build the multipart body by hand so the real file bytes are ALWAYS sent —
+                // GM_xmlhttpRequest drops File objects from a FormData (→ 200 with an empty file
+                // part, i.e. "server e data jaina"). sendMultipartUpload sends raw bytes on both
+                // the native-fetch and GM paths.
+                const r = await sendMultipartUpload(
+                    "https://api.ivacbd.com/iams/api/v1/file/upload_file",
+                    { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
+                    file, { isPrimary: String(isPrimary) }
+                );
                 let body = null; try { body = await r.json(); } catch(e) { body = null; }
                 const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
                 // success or server-declared-invalid → token spent, release (stays out of queue).
