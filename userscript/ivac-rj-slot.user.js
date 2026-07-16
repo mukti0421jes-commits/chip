@@ -372,7 +372,7 @@ const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOt
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
 const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
-const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot-status";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and-slot-status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 
@@ -2813,9 +2813,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         logStatus('📋 Checking file overview…', 'y');
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/overview", tag: 'upload', state: 'pending' });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view", tag: 'upload', state: 'pending' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/overview", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `fileStatus=${body.data?.fileUploadStatus||'?'}` : (body?.message || `HTTP ${r.status}`) });
