@@ -4048,12 +4048,12 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        // Matches the real initiate fetch + bundle exactly: URL carries the payment-method id,
-        // body carries the appointmentId, ONLY x-token (encrypted) is the special header — the
-        // bundle's initiate call is {headers:{"x-token": n}} and a working real fetch sent no
-        // x-sec-navigation-state, so we don't add it here. credentials:'include' (this endpoint
-        // allows credentialed CORS, unlike verify).
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, credentials: 'include', headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        // URL carries the payment-method id, body carries the appointmentId, x-token (encrypted)
+        // is the only special header (bundle initiate call is {headers:{"x-token": n}}).
+        // credentials:'omit' — the server does NOT return Access-Control-Allow-Credentials for our
+        // request (the payment WAF), so 'include' fails the CORS preflight (No ACAO) and never
+        // reaches the server. With 'omit' the request at least reaches it (Bearer is the real auth).
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
