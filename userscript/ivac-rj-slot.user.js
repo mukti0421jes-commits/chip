@@ -362,7 +362,12 @@ const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
 function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
+// initiate URL carries a fixed dg-epay payment-method id segment:
+//   /payment/{PAYMENT_METHOD_ID}/dg-epay/initiate   (confirmed from live bundle + real fetch).
+// The id is NOT the appointmentId (that goes in the body). If a future bundle changes it,
+// update PAYMENT_METHOD_ID (grep the real initiate URL).
+const PAYMENT_METHOD_ID = 'f2a2fcd1-4019-4291-ba2c-ea94a60ea54f';
+const API_INITIATE  = `https://api.ivacbd.com/iams/api/v1/payment/${PAYMENT_METHOD_ID}/dg-epay/initiate`;
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
@@ -680,7 +685,9 @@ function encryptTokenByPurpose(rawToken, purpose) {
 //   initiate         → checkbox CHECKED = ENCRYPT per Initiate config;      unchecked = raw (default).
 function encTokenForCall(rawToken, purpose) {
     if (purpose === 'initiate') {
-        return document.getElementById('chk-initiate-enc')?.checked ? encryptTokenByPurpose(rawToken, 'initiate') : rawToken;
+        // The live initiate x-token is ENCRYPTED ("1."-prefixed) — confirmed from the real fetch.
+        // Encrypt by default; the checkbox can force RAW only if ever needed for debugging.
+        return document.getElementById('chk-initiate-raw')?.checked ? rawToken : encryptTokenByPurpose(rawToken, 'initiate');
     }
     const rawChkId = purpose === 'signin' ? 'chk-signin-raw' : 'chk-reserve-raw';
     return document.getElementById(rawChkId)?.checked ? rawToken : encryptTokenByPurpose(rawToken, purpose);
@@ -4041,7 +4048,7 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: true, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache','content-type':'application/json','pragma':'no-cache','x-sec-navigation-state':_navState(),'x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
