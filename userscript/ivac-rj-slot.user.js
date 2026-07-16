@@ -345,27 +345,16 @@ H2.preWarm();
 
 // ==================== API CONFIG ====================
 const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v12-sign-in";
-// x-sec-navigation-state: the real site generates ONE uuid per page-load and reuses it
-// for every request (confirmed in HAR — same value on both failed and successful signin).
-// So generate once and cache it for this session, don't randomise per call.
-let _navStateCached = null;
-function _navState() {
-    if (_navStateCached) return _navStateCached;
-    try { _navStateCached = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); })); }
-    catch(e) { _navStateCached = '00000000-0000-4000-8000-000000000000'; }
-    return _navStateCached;
-}
-// x-sec-runtime-state: real request uses "v1.<8hex>.<4hex>.<4hex>.<4hex>.<12hex>" (a uuid
-// with dots), stable per session like the nav-state. Generate once and cache.
-let _runtimeStateCached = null;
-function _runtimeState() {
-    if (_runtimeStateCached) return _runtimeStateCached;
-    let u;
-    try { u = (crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); }); }
-    catch(e) { u = '5a4c8831-9a53-47ed-b579-042a2c0cee5a'; }
-    _runtimeStateCached = 'v1.' + u.replace(/-/g, '.');
-    return _runtimeStateCached;
-}
+// x-sec-navigation-state / x-sec-runtime-state are NOT per-session random values — they are
+// FIXED constants baked into the site bundle (the obfuscated code assembles them from string
+// literals, e.g. the "1.9a5" fragment of the runtime-state). Confirmed against the live bundle
+// + HAR. The server may validate them, so we send the exact bundle constants, not a random uuid.
+// If a future bundle changes these, update the two constants below (grep the bundle for
+// "x-sec-navigation-state" / "x-sec-runtime-state", or read them from a fresh request HAR).
+const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
+const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
+function _navState()     { return X_SEC_NAV_STATE; }
+function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
@@ -3777,7 +3766,7 @@ function getReserveAppointmentId() {
 // appointmentId. It stays the same across accounts for a given center, so the user pastes it
 // once into the Slot ID box (persisted). Falls back to appointmentId only if the box is empty.
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
-const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48ba-a48d-c65eaa4fc663';   // fixed reserve slot id
+const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48bf-a48d-c65eaa4fc663';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
     // Box value wins if present; otherwise ALWAYS the fixed slot id. Profile is never used here
