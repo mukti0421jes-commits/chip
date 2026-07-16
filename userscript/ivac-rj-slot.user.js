@@ -345,7 +345,16 @@ H2.preWarm();
 
 // ==================== API CONFIG ====================
 const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v12-sign-in";
-function _navState() { try { return (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); })); } catch(e) { return '00000000-0000-4000-8000-000000000000'; } }
+// x-sec-navigation-state: the real site generates ONE uuid per page-load and reuses it
+// for every request (confirmed in HAR — same value on both failed and successful signin).
+// So generate once and cache it for this session, don't randomise per call.
+let _navStateCached = null;
+function _navState() {
+    if (_navStateCached) return _navStateCached;
+    try { _navStateCached = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); })); }
+    catch(e) { _navStateCached = '00000000-0000-4000-8000-000000000000'; }
+    return _navStateCached;
+}
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
