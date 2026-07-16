@@ -2753,10 +2753,10 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         // 1) native page fetch with a Blob body (HTTP/2, real bytes)
         try {
             const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch) ? unsafeWindow.fetch : fetch;
-            // credentials:'include' — the real browser upload sends the session cookie so the
-            // server binds the file to the logged-in appointment. Without it the upload returns
-            // 200 but data:null (nothing stored).
-            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'include', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
+            // credentials:'omit' — this endpoint does NOT return Access-Control-Allow-Credentials,
+            // so 'include' is rejected by the CORS preflight (blocks the request). Bearer token is
+            // the real auth; the file binds via the token, not the cookie.
+            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'omit', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
         } catch (e) {
             // 2) GM fallback — send the raw bytes as a binary string
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
@@ -3137,7 +3137,7 @@ async function forgotStep3_signin(signal) {
 async function forgotStep4_verify(signal) {
     logStatus(`🔓 [4/4] Verifying…`, 'y'); const logId = netLogAdd({ method: 'POST', url: API_VERIFY, tag: 'verify', state: 'pending' });
     try {
-        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, credentials: 'include', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${advanceState.bearerToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: advanceState.requestId, phone: advanceState.forgotPhone, code: advanceState.otp, otpChannel: 'PHONE' }) });
+        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${advanceState.bearerToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: advanceState.requestId, phone: advanceState.forgotPhone, code: advanceState.otp, otpChannel: 'PHONE' }) });
         let body = null; try { body = await r.json(); } catch(e) { body = null; }
         const verified = r.status === 404 || (r.ok && body && (body.successFlag === true || body.message === 'Success'));
         netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail' });
@@ -3738,7 +3738,7 @@ async function stepVerify(signal) {
     if (raceCoord.hasWon('verify')) { logStatus(`⏭ Verify race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
     const logId = netLogAdd({ method: 'POST', url: API_VERIFY, tag: 'verify', state: 'pending', note: `verify ${otp}` });
     try {
-        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, credentials: 'include', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: sessionState.requestId, phone: sessionState.phone, code: otp, otpChannel: 'PHONE' }) });
+        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: sessionState.requestId, phone: sessionState.phone, code: otp, otpChannel: 'PHONE' }) });
         let body = null; try { body = await r.json(); } catch(e) {} const verified = isVerifiedResponse(r.status, body);
         netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'verified' : (body?.message || `HTTP ${r.status}`) });
         if (verified) {
