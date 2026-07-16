@@ -65,7 +65,7 @@
     // sig   = distinctive substring used to locate the literal in the bundle
     // obf   = built by obfuscated concatenation → can't verify literally
     const ENDPOINTS = [
-        { name: 'Signin',        my: '/iams/api/v1/auth/sign-in-v4',                        leaf: '/auth/sign-in-v4',                 sig: 'sign-in-v4' },
+        { name: 'Signin',        my: '/iams/api/v1/auth/v12-sign-in',                       leaf: '/auth/v12-sign-in',                sig: 'v12-sign-in' },
         { name: 'Verify',        my: '/iams/api/v1/otp/verifySigninOtp',                    leaf: '/otp/verifySigninOtp',             sig: 'verifySigninOtp' },
         { name: 'GetBookingConfig', my: '/iams/api/v1/appointment/get-booking-config',      leaf: '/appointment/get-booking-config',  sig: 'get-booking-config' },
         { name: 'Reserve',       my: '/iams/api/v1/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', leaf: '/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', sig: 'reserve-slot', exact: true },
