@@ -4048,12 +4048,28 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        // URL carries the payment-method id, body carries the appointmentId, x-token (encrypted)
-        // is the only special header (bundle initiate call is {headers:{"x-token": n}}).
-        // credentials:'omit' — the server does NOT return Access-Control-Allow-Credentials for our
-        // request (the payment WAF), so 'include' fails the CORS preflight (No ACAO) and never
-        // reaches the server. With 'omit' the request at least reaches it (Bearer is the real auth).
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        // The payment endpoint returns NO CORS headers → native fetch is always preflight-blocked
+        // (No ACAO), so we go straight through GM_xmlhttpRequest (forceGM). GM alone gets a 403
+        // from the "spellbound" WAF, so we also send the real browser fingerprint headers
+        // (sec-ch-ua / sec-fetch-* / accept-language / origin) to look like the genuine page
+        // request. This is a best-effort attempt to pass the payment WAF — not guaranteed.
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: true, headers: {
+            'accept':'application/json, text/plain, */*',
+            'accept-language':'en-US,en;q=0.9',
+            'authorization':`Bearer ${sessionState.accessToken}`,
+            'cache-control':'no-cache, no-store, must-revalidate',
+            'content-type':'application/json',
+            'pragma':'no-cache',
+            'priority':'u=1, i',
+            'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+            'sec-ch-ua-mobile':'?0',
+            'sec-ch-ua-platform':'"Windows"',
+            'sec-fetch-dest':'empty',
+            'sec-fetch-mode':'cors',
+            'sec-fetch-site':'same-site',
+            'origin':'https://appointment.ivacbd.com',
+            'x-token':encTokenForCall(initiateToken, 'initiate')
+        }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
