@@ -4048,7 +4048,10 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache','content-type':'application/json','pragma':'no-cache','x-sec-navigation-state':_navState(),'x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        // credentials:'include' — the bundle's http client sends withCredentials:true for initiate,
+        // and this endpoint DOES allow credentialed CORS (unlike verify), so we match the real fetch
+        // exactly (cookie sent). URL carries the payment-method id; body carries the appointmentId.
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, credentials: 'include', headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache','content-type':'application/json','pragma':'no-cache','x-sec-navigation-state':_navState(),'x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
