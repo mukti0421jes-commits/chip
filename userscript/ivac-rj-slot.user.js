@@ -207,6 +207,12 @@ const H2 = {
 
         const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
 
+        // ── FORCE GM (CORS-immune) ──────────────────────────────────────────────
+        // Some endpoints (payment/dg-epay/initiate) return NO CORS headers, so a native
+        // fetch is always blocked by the preflight. Go straight through GM_xmlhttpRequest
+        // (not subject to CORS) instead of wasting a native attempt that logs an error.
+        if (init.forceGM) return this._gmFallback(url, init, logId);
+
         // ── PER-CALL PROXY ROTATION ────────────────────────────────────────────
         // When rotation (or a single connected proxy) is active, route this call through
         // the local relay so it egresses via a proxy IP. Sticky-on-success / rotate-on-error.
@@ -4035,7 +4041,7 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: true, headers: { 'accept':'application/json, text/plain, */*','authorization':`Bearer ${sessionState.accessToken}`,'cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-token':encTokenForCall(initiateToken, 'initiate') }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
