@@ -2764,7 +2764,10 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         // 1) native page fetch with a Blob body (HTTP/2, real bytes)
         try {
             const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch) ? unsafeWindow.fetch : fetch;
-            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'omit', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
+            // credentials:'include' — the real browser upload sends the session cookie so the
+            // server binds the file to the logged-in appointment. Without it the upload returns
+            // 200 but data:null (nothing stored).
+            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'include', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
         } catch (e) {
             // 2) GM fallback — send the raw bytes as a binary string
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
