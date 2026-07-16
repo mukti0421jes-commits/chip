@@ -1705,7 +1705,7 @@ const h2html = `
 
 <div class="tp" id="pf">
 <div class="sc"> <textarea id="ivac-fetch-input" rows="3" placeholder='{"url":"...", "method":"POST", "headers":{}, "body":null}'></textarea>
-<div class="fr"><button class="b1 bh" style="flex:1" id="ivac-btn-fetch-send">Send Request</button></div>
+<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="2000" style="width:60px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span></div>
 <div class="fr"><label style="flex:none; min-width:85px">SMS OTP app</label><select style="flex:1;min-width:0" id="ivac-otp-sms-source-select"><option value="lurkbd">LurkBD OTP APP</option><option value="sptootp">Buyer OTP APP</option></select></div>
 <div class="fr"><label style="flex:none; min-width:85px">Captcha Provider</label><select style="flex:1;min-width:0" id="ivac-captcha-provider-select"><option value="capmonster">CapMonster</option><option value="capsolver">CapSolver</option><option value="2captcha">2Captcha</option><option value="yescaptcha">YesCaptcha</option></select></div>
 <div class="fr" style="flex-wrap: nowrap;"><input type="text" id="ivac-captcha-api-input" placeholder="API key" autocomplete="off"><button class="b5 bh" style="flex:none" id="ivac-btn-captcha-save">Save</button><button class="b2 bh" style="flex:none" id="ivac-btn-captcha-reset">Reset</button></div>
@@ -4160,29 +4160,80 @@ document.getElementById('blo')?.addEventListener('click', () => {
     logStatus('🔓 Logged out', 'y');
 });
 
-// ==================== FETCH TAB CUSTOM REQUEST ====================
-document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', async () => {
-    const input = document.getElementById('ivac-fetch-input')?.value || '';
-    let config;
-    try { config = JSON.parse(input); } catch(e) { logStatus('❌ Invalid JSON input', 'r'); return; }
-    if (!config.url) { logStatus('❌ Missing url in request config', 'r'); return; }
-    const method = config.method || 'GET';
-    const headers = config.headers || {};
-    let body = config.body;
-    if (body && typeof body === 'object') body = JSON.stringify(body);
-    logStatus(`📡 Sending ${method} to ${config.url}`, 'y');
+// ==================== FETCH TAB CUSTOM REQUEST (repeat loop) ====================
+// Accepts BOTH the JSON config { "url":..., "method":..., "headers":{}, "body":... }
+// AND a browser "Copy as fetch" snippet: fetch("URL", { headers:{...}, body:..., method:... }).
+function parseFetchInput(raw) {
+    raw = (raw || '').trim();
+    if (/^fetch\s*\(/.test(raw)) {
+        const urlM = raw.match(/fetch\s*\(\s*(["'`])([\s\S]*?)\1/);
+        const url = urlM ? urlM[2] : null;
+        let opts = {};
+        const braceStart = raw.indexOf('{', urlM ? urlM.index + urlM[0].length : 0);
+        if (braceStart !== -1) {
+            let depth = 0, end = -1, q = null;
+            for (let i = braceStart; i < raw.length; i++) {
+                const ch = raw[i];
+                if (q) { if (ch === '\\') { i++; continue; } if (ch === q) q = null; continue; }
+                if (ch === '"' || ch === "'" || ch === '`') q = ch;
+                else if (ch === '{') depth++;
+                else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
+            }
+            if (end !== -1) { try { opts = JSON.parse(raw.slice(braceStart, end + 1)); } catch(e) { opts = {}; } }
+        }
+        return { url, method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body ?? null };
+    }
+    const c = JSON.parse(raw);
+    return { url: c.url, method: c.method || 'GET', headers: c.headers || {}, body: c.body ?? null };
+}
+
+const _fetchLoop = { running: false, timer: null, config: null, count: 0 };
+function _setFetchLoopBtn(running) {
+    const btn = document.getElementById('ivac-btn-fetch-send');
+    if (!btn) return;
+    btn.textContent = running ? '⏹ Stop' : '▶ Start';
+    btn.classList.toggle('b8', running);   // red while running
+    btn.classList.toggle('b5', !running);  // green while idle
+}
+function stopFetchLoop(reason) {
+    if (_fetchLoop.timer) { clearTimeout(_fetchLoop.timer); _fetchLoop.timer = null; }
+    _fetchLoop.running = false;
+    _setFetchLoopBtn(false);
+    if (reason) logStatus(`⏹ Fetch loop stopped (${reason})`, 'y');
+}
+async function _fetchLoopTick() {
+    if (!_fetchLoop.running) return;
+    const c = _fetchLoop.config;
+    _fetchLoop.count++;
+    let body = c.body; if (body && typeof body === 'object') body = JSON.stringify(body);
     try {
-        const r = await H2.fetchH2(config.url, { method, headers, body });
+        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body });
         const text = await r.text();
-        let pretty = text;
-        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
-        document.getElementById('ivac-fetch-input').value = JSON.stringify({
-            url: config.url, method: method, headers: headers,
-            body: body ? (typeof config.body === 'object' ? config.body : JSON.parse(body)) : null,
-            response: { status: r.status, statusText: r.statusText, body: pretty.slice(0, 2000) + (pretty.length > 2000 ? '...' : '') }
-        }, null, 2);
-        logStatus(`✅ ${method} ${r.status} ${r.statusText}`, r.ok ? 'g' : 'y');
-    } catch(err) { logStatus(`❌ Fetch error: ${err.message}`, 'r'); }
+        let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
+        console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
+        logStatus(`📡 #${_fetchLoop.count} ${c.method} ${r.status} ${r.statusText}`, r.ok ? 'g' : 'y');
+    } catch(err) {
+        console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] error: ${err.message}`, 'color:#fca5a5;font-weight:700');
+        logStatus(`❌ #${_fetchLoop.count} Fetch error: ${err.message}`, 'r');
+    }
+    if (_fetchLoop.running) {
+        const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 2000);
+        _fetchLoop.timer = setTimeout(_fetchLoopTick, delay);
+    }
+}
+document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', () => {
+    if (_fetchLoop.running) { stopFetchLoop('manual'); return; }
+    let config;
+    try { config = parseFetchInput(document.getElementById('ivac-fetch-input')?.value || ''); }
+    catch(e) { logStatus('❌ Invalid input — paste a fetch(...) snippet or {url,method,headers,body} JSON', 'r'); return; }
+    if (!config.url) { logStatus('❌ Missing url in request', 'r'); return; }
+    _fetchLoop.config = config;
+    _fetchLoop.count = 0;
+    _fetchLoop.running = true;
+    _setFetchLoopBtn(true);
+    const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 2000);
+    logStatus(`▶ Fetch loop started — ${config.method} every ${delay}ms`, 'g');
+    _fetchLoopTick();
 });
 
 // ==================== FIX UI POSITION ====================
