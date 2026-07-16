@@ -1705,7 +1705,7 @@ const h2html = `
 
 <div class="tp" id="pf">
 <div class="sc"> <textarea id="ivac-fetch-input" rows="3" placeholder='{"url":"...", "method":"POST", "headers":{}, "body":null}'></textarea>
-<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="2000" style="width:60px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span></div>
+<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="2000" style="width:56px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span><label style="flex:none;display:flex;align-items:center;gap:3px;font-size:.6rem;color:#8888aa;font-weight:700" title="ON = GM (CORS-immune, hidden from DevTools). OFF = native fetch (shows in DevTools Fetch/XHR, but CORS-limited).">GM<div class="tg on" id="ivac-fetch-gm-toggle" style="flex:none"><div class="tg-dot"></div></div></label></div>
 <div class="fr"><label style="flex:none; min-width:85px">SMS OTP app</label><select style="flex:1;min-width:0" id="ivac-otp-sms-source-select"><option value="lurkbd">LurkBD OTP APP</option><option value="sptootp">Buyer OTP APP</option></select></div>
 <div class="fr"><label style="flex:none; min-width:85px">Captcha Provider</label><select style="flex:1;min-width:0" id="ivac-captcha-provider-select"><option value="capmonster">CapMonster</option><option value="capsolver">CapSolver</option><option value="2captcha">2Captcha</option><option value="yescaptcha">YesCaptcha</option></select></div>
 <div class="fr" style="flex-wrap: nowrap;"><input type="text" id="ivac-captcha-api-input" placeholder="API key" autocomplete="off"><button class="b5 bh" style="flex:none" id="ivac-btn-captcha-save">Save</button><button class="b2 bh" style="flex:none" id="ivac-btn-captcha-reset">Reset</button></div>
@@ -4207,9 +4207,11 @@ async function _fetchLoopTick() {
     _fetchLoop.count++;
     let body = c.body; if (body && typeof body === 'object') body = JSON.stringify(body);
     try {
-        // forceGM: many pasted URLs (payment gateway callbacks etc.) return NO CORS headers,
-        // so a native fetch is always blocked. Go straight through GM_xmlhttpRequest (CORS-immune).
-        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: true });
+        // GM toggle ON (default) → GM_xmlhttpRequest (CORS-immune, but invisible to DevTools
+        // Fetch/XHR). OFF → native fetch (shows in DevTools Network, but blocked on no-CORS URLs
+        // like the payment callback).
+        const useGM = document.getElementById('ivac-fetch-gm-toggle')?.classList.contains('on') !== false;
+        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: useGM });
         const text = await r.text();
         let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
         console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
