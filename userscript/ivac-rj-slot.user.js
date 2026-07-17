@@ -1729,7 +1729,7 @@ const h2html = `
 
 <div class="tp" id="pf">
 <div class="sc"> <textarea id="ivac-fetch-input" rows="3" placeholder='{"url":"...", "method":"POST", "headers":{}, "body":null}'></textarea>
-<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="2000" style="width:56px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span><label style="flex:none;display:flex;align-items:center;gap:3px;font-size:.6rem;color:#8888aa;font-weight:700" title="ON = GM (CORS-immune, hidden from DevTools). OFF = native fetch (shows in DevTools Fetch/XHR, but CORS-limited).">GM<div class="tg on" id="ivac-fetch-gm-toggle" style="flex:none"><div class="tg-dot"></div></div></label></div>
+<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="500" style="width:56px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span><label style="flex:none;display:flex;align-items:center;gap:3px;font-size:.6rem;color:#8888aa;font-weight:700" title="ON = GM (CORS-immune, hidden from DevTools). OFF = native fetch (shows in DevTools Fetch/XHR, but CORS-limited).">GM<div class="tg on" id="ivac-fetch-gm-toggle" style="flex:none"><div class="tg-dot"></div></div></label></div>
 <div class="fr"><label style="flex:none; min-width:85px">SMS OTP app</label><select style="flex:1;min-width:0" id="ivac-otp-sms-source-select"><option value="lurkbd">LurkBD OTP APP</option><option value="sptootp">Buyer OTP APP</option></select></div>
 <div class="fr"><label style="flex:none; min-width:85px">Captcha Provider</label><select style="flex:1;min-width:0" id="ivac-captcha-provider-select"><option value="capmonster">CapMonster</option><option value="capsolver">CapSolver</option><option value="2captcha">2Captcha</option><option value="yescaptcha">YesCaptcha</option></select></div>
 <div class="fr" style="flex-wrap: nowrap;"><input type="text" id="ivac-captcha-api-input" placeholder="API key" autocomplete="off"><button class="b5 bh" style="flex:none" id="ivac-btn-captcha-save">Save</button><button class="b2 bh" style="flex:none" id="ivac-btn-captcha-reset">Reset</button></div>
@@ -3957,9 +3957,11 @@ async function stepReserve(signal) {
         if (reserved) {
             raceCoord.declareWin('reserve', { win: true, data: body });
             const rd = (body && body.data && (body.data.reservationId || body.data.status)) ? body.data : body;   // success payload may nest under .data
-            sessionState.reservationId = rd.reservationId || null; sessionState.reserveTtlSec = rd.reserveTtlSeconds || null; sessionState.reserveStatus = rd.status || null; sessionState.abcDate = rd.appointmentDate || appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
+            // reservation id may arrive under several names — pick whichever is present
+            const _rid = rd.reservationId || rd.reserveId || rd.reservation_id || rd.tranId || rd.trxId || rd.transactionId || rd.bookingId || rd.id || (body && (body.reservationId || (body.data && body.data.reservationId))) || null;
+            sessionState.reservationId = _rid; sessionState.reserveTtlSec = rd.reserveTtlSeconds || null; sessionState.reserveStatus = rd.status || null; sessionState.abcDate = rd.appointmentDate || appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
                         // Auto-extract: fill reserve ID in Upload tran ID placeholder
-        try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && rd.reservationId) { trxInp.value = rd.reservationId; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } } catch(e) {}
+        try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && _rid) { trxInp.value = _rid; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } else if (trxInp && !_rid) { logStatus(`⚠ Reserved but no reservation-id in response — check field name`, 'y'); } } catch(e) {}
             logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g');
             showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
         } return { win: reserved, data: body };
@@ -4261,7 +4263,7 @@ async function _fetchLoopTick() {
         logStatus(`❌ #${_fetchLoop.count} Fetch error: ${err.message}`, 'r');
     }
     if (_fetchLoop.running) {
-        const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 2000);
+        const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 500);
         _fetchLoop.timer = setTimeout(_fetchLoopTick, delay);
     }
 }
@@ -4275,7 +4277,7 @@ document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', () => 
     _fetchLoop.count = 0;
     _fetchLoop.running = true;
     _setFetchLoopBtn(true);
-    const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 2000);
+    const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 500);
     logStatus(`▶ Fetch loop started — ${config.method} every ${delay}ms`, 'g');
     _fetchLoopTick();
 });
