@@ -2809,7 +2809,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
                 // the native-fetch and GM paths.
                 const r = await sendMultipartUpload(
                     "https://api.ivacbd.com/iams/api/v1/file/upload_file",
-                    { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': encTokenForCall(uploadToken, 'initiate') },
+                    { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
                     file, { isPrimary: String(isPrimary) }
                 );
                 let body = null; try { body = await r.json(); } catch(e) { body = null; }
