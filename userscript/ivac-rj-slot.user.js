@@ -4068,7 +4068,7 @@ async function stepInitiate(signal) {
             'sec-fetch-mode':'cors',
             'sec-fetch-site':'same-site',
             'origin':'https://appointment.ivacbd.com',
-            'x-token':encTokenForCall(initiateToken, 'initiate')
+            'x-token':initiateToken
         }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
