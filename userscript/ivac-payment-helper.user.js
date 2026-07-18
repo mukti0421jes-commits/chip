@@ -160,4 +160,14 @@
   document.addEventListener('DOMContentLoaded', mount);
   window.addEventListener('load', mount);
   setInterval(mount, 1500);
+
+  // callback page hole nije theke retry shuru — appointment page e manual
+  if (isCallback) {
+    showPanel();
+    running = true;
+    var b0 = document.getElementById('rj-pay-btn');
+    if (b0) { b0.textContent = '⏹ Stop'; b0.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)'; b0.style.borderColor = '#f87171'; }
+    setStatus('▶ auto-start — retrying…', '#fcd34d');
+    tick();
+  }
 })();
