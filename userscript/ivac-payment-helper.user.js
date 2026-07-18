@@ -7,6 +7,8 @@
 // @match        https://api.ivacbd.com/*payment*callback*
 // @match        https://api.ivacbd.com/*dg-epay/callback*
 // @match        https://api.ivacbd.com/iams/api/v1/payment/*/callback*
+// @match        https://appointment.ivacbd.com/*
+// @match        https://api.ivacbd.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -17,9 +19,9 @@
   // --- eta callback page tai hoy? ---
   var HERE = location.href;
   var isCallback = /\/(payment|dg-epay)\b/i.test(HERE) && /callback/i.test(HERE) && /[?&]tran_id=/i.test(HERE);
-  if (!isCallback) return;
+  // callback page na hole panel dekhabe kintu Start disabled thakbe (optional show)
 
-  var tranId = (HERE.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || '(?)';
+  var tranId = (HERE.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || (isCallback ? '(?)' : '— callback page na');
 
   // ---------------- config ----------------
   var DELAY_MS = 1000;      // proti try er majhe gap
@@ -56,8 +58,12 @@
       btn.style.background = on ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
       btn.style.borderColor = on ? '#f87171' : '#34d399';
     }
+    if (!isCallback) {
+      btn.disabled = true; btn.style.opacity = '.5'; btn.style.cursor = 'not-allowed';
+      setStatus('callback URL er opekkha…', '#8888aa');
+    }
     btn.onclick = function () {
-      if (done) return;
+      if (done || !isCallback) return;
       running = !running;
       setBtn(running);
       if (running) { setStatus('▶ retrying…', '#fcd34d'); tick(); }
