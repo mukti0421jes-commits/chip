@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.4.4
+// @version      10.4.5
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @updateURL    https://cdn.jsdelivr.net/gh/mukti0421jes-commits/chip@claude/ivac-rj-slot-http2-7n0epc/userscript/ivac-rj-slot.user.js
 // @downloadURL  https://cdn.jsdelivr.net/gh/mukti0421jes-commits/chip@claude/ivac-rj-slot-http2-7n0epc/userscript/ivac-rj-slot.user.js
@@ -11,6 +11,10 @@
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com/*
 // @match        https://*.ivacbd.com/*
 // @match        https://ivacbd.com/*
+// @match        https://payment.ivacbd.com/*
+// @match        https://epay-gw.sslcommerz.com/*
+// @match        https://checkout.pathaopay.com/*
+// @match        https://checkout.dgepay.net/*
 // @connect      api.ivacbd.com
 // @connect      capsolver.com
 // @connect      api.capmonster.cloud
