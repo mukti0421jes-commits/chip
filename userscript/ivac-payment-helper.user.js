@@ -24,7 +24,7 @@
   // ---------------- config ----------------
   var DELAY_MS = 1000;      // proti try er majhe gap
   var callbackUrl = HERE;   // same-origin, jei page e achi seti tai
-  var running = true;
+  var running = false;      // button na chapa porjonto shuru hobe na
   var count = 0;
   var done = false;
 
@@ -42,19 +42,28 @@
       '</div>' +
       '<div style="padding:10px 12px">' +
         '<div style="font:700 .62rem Consolas,monospace;color:#8888aa;word-break:break-all;margin-bottom:6px">tran_id: <span style="color:#c4b5fd">' + tranId + '</span></div>' +
-        '<div id="rj-pay-status" style="font:800 .8rem Segoe UI;color:#fcd34d;margin-bottom:4px">▶ retrying…</div>' +
+        '<button id="rj-pay-btn" style="width:100%;border:1px solid #34d399;border-radius:7px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-weight:800;font-size:.8rem;padding:8px 0;cursor:pointer;margin-bottom:8px">▶ Start</button>' +
+        '<div id="rj-pay-status" style="font:800 .8rem Segoe UI;color:#8888aa;margin-bottom:4px">idle — Start chapun</div>' +
         '<div id="rj-pay-count" style="font:700 .66rem Consolas,monospace;color:#8888aa;word-break:break-all"></div>' +
       '</div>';
     (document.body || document.documentElement).appendChild(panel);
     cEl = document.getElementById('rj-pay-count');
     sEl = document.getElementById('rj-pay-status');
 
-    document.getElementById('rj-pay-toggle').onclick = function () {
+    var btn = document.getElementById('rj-pay-btn');
+    function setBtn(on) {
+      btn.textContent = on ? '⏹ Stop' : '▶ Start';
+      btn.style.background = on ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
+      btn.style.borderColor = on ? '#f87171' : '#34d399';
+    }
+    btn.onclick = function () {
+      if (done) return;
       running = !running;
-      this.textContent = running ? '⏸' : '▶';
+      setBtn(running);
       if (running) { setStatus('▶ retrying…', '#fcd34d'); tick(); }
-      else setStatus('⏸ paused', '#8888aa');
+      else setStatus('⏹ stopped', '#8888aa');
     };
+    document.getElementById('rj-pay-toggle').onclick = function () { btn.click(); };
     // drag
     var h = document.getElementById('rj-pay-head'), dx = 0, dy = 0, drag = false;
     h.onmousedown = function (e) { drag = true; dx = e.clientX - panel.offsetLeft; dy = e.clientY - panel.offsetTop; e.preventDefault(); };
@@ -105,13 +114,12 @@
     console.log('%c[RJ Pay] SUCCESS (' + reason + ') after #' + count + ' — navigating…', 'color:#4ade80;font-weight:800');
     setStatus('✓ SUCCESS — ' + reason, '#4ade80');
     setCount('navigating to success page…', '#4ade80');
+    var b = document.getElementById('rj-pay-btn'); if (b) { b.textContent = '✓ done'; b.disabled = true; b.style.opacity = '.7'; }
     // ekbar navigate kore success page e land — 302 follow hobe browser navigation die
     setTimeout(function () { window.location.href = callbackUrl; }, 400);
   }
 
-  // start
+  // UI shudhu banao — button na chapa porjonto retry shuru hobe na
   if (document.body) buildUI();
   else document.addEventListener('DOMContentLoaded', buildUI);
-  document.addEventListener('DOMContentLoaded', buildUI);
-  tick();
 })();
