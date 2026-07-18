@@ -120,7 +120,19 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // While auto-filling, mark the document so injected.js (running in the
+  // page's world) auto-answers alert/confirm dialogs with OK.
+  let autoModeTimer = null;
+  function autoModeOn(ms) {
+    document.documentElement.setAttribute("data-ffr-auto", "1");
+    clearTimeout(autoModeTimer);
+    autoModeTimer = setTimeout(() => {
+      document.documentElement.removeAttribute("data-ffr-auto");
+    }, ms);
+  }
+
   async function play() {
+    autoModeOn(10000);
     const key = pageKey();
     const data = (await chrome.storage.local.get(key))[key];
     if (!data || Object.keys(data).length === 0) {
