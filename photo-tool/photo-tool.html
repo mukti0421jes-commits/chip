@@ -116,7 +116,7 @@ function getSegmenter() {
   segmenter = new SelfieSegmentation({
     locateFile: (f) => "lib/" + f,
   });
-  segmenter.setOptions({ modelSelection: 1 });
+  segmenter.setOptions({ modelSelection: 0 });
   return segmenter;
 }
 
@@ -139,11 +139,34 @@ async function processPhoto() {
 
   const mask = await segment(work);
 
-  // mask -> alpha, subject over pure white
+  // Clean the raw AI mask into a crisp Photoshop-style cutout:
+  // hard threshold -> keep only the largest blob -> fill holes -> feather.
+  const rawC = mkCanvas(w, h);
+  const rctx = rawC.getContext("2d");
+  rctx.drawImage(mask, 0, 0, w, h);
+  const raw = rctx.getImageData(0, 0, w, h).data;
+
+  const bin = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) bin[i] = raw[i * 4] > 140 ? 1 : 0;
+
+  const clean = largestComponent(bin, w, h);
+  if (!clean) throw new Error("ছবিতে মানুষ খুঁজে পাওয়া যায়নি");
+  fillHoles(clean, w, h);
+
+  // rebuild mask canvas from the cleaned bitmap, lightly feathered
+  const cleanImg = rctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const v = clean[i] ? 255 : 0;
+    cleanImg.data[i * 4] = v;
+    cleanImg.data[i * 4 + 1] = v;
+    cleanImg.data[i * 4 + 2] = v;
+    cleanImg.data[i * 4 + 3] = v;
+  }
+  rctx.putImageData(cleanImg, 0, 0);
   const maskC = mkCanvas(w, h);
   const mctx = maskC.getContext("2d");
-  mctx.filter = "blur(2px)"; // feather edges
-  mctx.drawImage(mask, 0, 0, w, h);
+  mctx.filter = "blur(1.2px)";
+  mctx.drawImage(rawC, 0, 0);
 
   personCanvas = mkCanvas(w, h);
   const pctx = personCanvas.getContext("2d");
@@ -154,12 +177,11 @@ async function processPhoto() {
   pctx.fillStyle = "#fff";
   pctx.fillRect(0, 0, w, h);
 
-  // auto-crop from the mask bounds (head-and-shoulders framing)
-  const md = mctx.getImageData(0, 0, w, h).data;
+  // auto-crop from the cleaned mask bounds (head-and-shoulders framing)
   let top = h, left = w, right = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (md[(y * w + x) * 4] > 128) { // mask is grayscale in red channel
+      if (clean[y * w + x]) {
         if (y < top) top = y;
         if (x < left) left = x;
         if (x > right) right = x;
@@ -246,6 +268,57 @@ async function processPassport() {
   $("download").textContent = "⬇ Download PDF (5×7 inch)";
   $("sizeHint").textContent = `5×7 inch — PDF size: ${(outBlob.size / 1024).toFixed(0)} KB`;
   $("download").onclick = () => saveBlob(outBlob, "passport-5x7.pdf");
+}
+
+// ---------------- mask cleanup ----------------
+
+// Keep only the largest 4-connected blob of the binary mask; discards
+// stray background smudges the segmenter wrongly marked as person.
+function largestComponent(bin, w, h) {
+  const labels = new Int32Array(w * h); // 0 = unvisited
+  const stack = new Int32Array(w * h);
+  let bestLabel = 0, bestSize = 0, nextLabel = 1;
+  for (let start = 0; start < w * h; start++) {
+    if (!bin[start] || labels[start]) continue;
+    let sp = 0, size = 0;
+    stack[sp++] = start;
+    labels[start] = nextLabel;
+    while (sp) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      if (x > 0 && bin[p - 1] && !labels[p - 1]) { labels[p - 1] = nextLabel; stack[sp++] = p - 1; }
+      if (x < w - 1 && bin[p + 1] && !labels[p + 1]) { labels[p + 1] = nextLabel; stack[sp++] = p + 1; }
+      if (y > 0 && bin[p - w] && !labels[p - w]) { labels[p - w] = nextLabel; stack[sp++] = p - w; }
+      if (y < h - 1 && bin[p + w] && !labels[p + w]) { labels[p + w] = nextLabel; stack[sp++] = p + w; }
+    }
+    if (size > bestSize) { bestSize = size; bestLabel = nextLabel; }
+    nextLabel++;
+  }
+  if (!bestLabel || bestSize < (w * h) * 0.02) return null; // person too small/absent
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) out[i] = labels[i] === bestLabel ? 1 : 0;
+  return out;
+}
+
+// Fill enclosed holes: flood the background from the borders; anything
+// not reached and not person is a hole -> make it person.
+function fillHoles(mask, w, h) {
+  const outside = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  let sp = 0;
+  const push = (p) => { if (!mask[p] && !outside[p]) { outside[p] = 1; stack[sp++] = p; } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+  while (sp) {
+    const p = stack[--sp];
+    const x = p % w, y = (p / w) | 0;
+    if (x > 0) push(p - 1);
+    if (x < w - 1) push(p + 1);
+    if (y > 0) push(p - w);
+    if (y < h - 1) push(p + w);
+  }
+  for (let i = 0; i < w * h; i++) if (!mask[i] && !outside[i]) mask[i] = 1;
 }
 
 // ---------------- utils ----------------
