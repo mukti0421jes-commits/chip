@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.4.3
+// @version      10.4.4
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @updateURL    https://cdn.jsdelivr.net/gh/mukti0421jes-commits/chip@claude/ivac-rj-slot-http2-7n0epc/userscript/ivac-rj-slot.user.js
 // @downloadURL  https://cdn.jsdelivr.net/gh/mukti0421jes-commits/chip@claude/ivac-rj-slot-http2-7n0epc/userscript/ivac-rj-slot.user.js
@@ -857,6 +857,20 @@ function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const
 // Returns { signin, reserve } where each is { key, skip, length, version } or null.
 function resolveBundleConfigs(text) {
     const R = buildBundleResolver(text);
+    // substitute local string-constant vars (e.g. const e="f*^(") into an expression so decoder
+    // calls that use them as an RC4 key — n(e,-177) — can be evaluated during member decode.
+    const subLocalStr = (expr, objStart) => {
+        const region = text.slice(Math.max(0, objStart - 6000), objStart);
+        const ids = [...new Set((expr.match(/[A-Za-z_$][\w$]*/g) || []))];
+        for (const id of ids) {
+            const esc = id.replace(/[$]/g, '\\$');
+            if (new RegExp('\\b' + esc + '\\s*\\(').test(expr)) continue;
+            const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
+            let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
+            if (best !== null) expr = expr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+        }
+        return expr;
+    };
     const found = [];
     let idx = 0; const NEEDLE = 'secret:';
     while ((idx = text.indexOf(NEEDLE, idx)) !== -1) {
@@ -893,8 +907,9 @@ function resolveBundleConfigs(text) {
                             const val = of2.slice(ci + 1).trim();
                             if (/^function\b/.test(val)) continue;
                             if (!/[A-Za-z_$][\w$]*\(/.test(val)) continue;   // must use a decoder call
-                            let dec = null; try { dec = R.resolveExpr(val, objStart); } catch (e3) {}
-                            if (dec && !/\s/.test(dec) && dec.length >= 10 && dec.length > bestLen) { best = val; bestLen = dec.length; }
+                            const sval = subLocalStr(val, objStart);        // resolve local key vars (const e="...")
+                            let dec = null; try { dec = R.resolveExpr(sval, objStart); } catch (e3) {}
+                            if (dec && !/\s/.test(dec) && dec.length >= 10 && dec.length > bestLen) { best = sval; bestLen = dec.length; }
                         }
                         if (best) secretExpr = best;
                     }
