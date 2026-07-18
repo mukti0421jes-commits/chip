@@ -768,26 +768,66 @@ function rectComponents(bin, w, h) {
     const lbl = nextLabel;
     nextLabel++;
     if (size < w * h * 0.015) continue;
+    // clutter (papers, boxes) usually touches the frame border; the
+    // printed photo lies fully inside the shot
+    const m2 = Math.max(3, Math.round(Math.min(w, h) * 0.015));
+    if (minX <= m2 || minY <= m2 || maxX >= w - 1 - m2 || maxY >= h - 1 - m2) continue;
     const qa = quadArea({ tl, tr, br, bl });
     if (qa < 1) continue;
-    // fill enclosed holes (the person on a printed photo) before judging
+    // component mask over its bbox
     const m = new Uint8Array(w * h);
     const x0 = Math.max(0, minX - 2), x1 = Math.min(w - 1, maxX + 2);
     const y0 = Math.max(0, minY - 2), y1 = Math.min(h - 1, maxY + 2);
     for (let y = y0; y <= y1; y++)
       for (let x = x0; x <= x1; x++)
         if (labels[y * w + x] === lbl) m[y * w + x] = 1;
-    fillHoles(m, w, h);
-    let filled = 0;
-    for (let y = y0; y <= y1; y++)
-      for (let x = x0; x <= x1; x++) filled += m[y * w + x];
-    // rectangles: extreme-corner quad ≈ filled area (round shapes differ)
-    const ratio = filled / qa;
-    if (ratio < 0.78 || ratio > 1.25) continue;
-    out.push({ tl, tr, br, bl, score: (1 - Math.abs(1 - ratio)) * Math.sqrt(filled) });
+    // point-in-quad via cross products (corners are in clockwise order)
+    const pts = [tl, tr, br, bl];
+    const inQuad = (x, y) => {
+      for (let i = 0; i < 4; i++) {
+        const a = pts[i], b2 = pts[(i + 1) % 4];
+        if ((b2.x - a.x) * (y - a.y) - (b2.y - a.y) * (x - a.x) < 0) return false;
+      }
+      return true;
+    };
+    let quadCnt = 0, maskIn = 0;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!inQuad(x, y)) continue;
+        quadCnt++;
+        maskIn += m[y * w + x];
+      }
+    }
+    if (!quadCnt) continue;
+    // round shapes bulge outside their extreme-corner quad; rectangles don't
+    const outFrac = (size - maskIn) / size;
+    if (outFrac > 0.12) continue;
+    // inside the quad: bright sheet + the printed subject (dark)
+    const cover = maskIn / quadCnt;
+    if (cover < 0.35) continue;
+    // edge continuity: sample just inside each edge; allow ONE broken edge
+    // (the subject often touches the print's bottom border)
+    const cx = (tl.x + tr.x + br.x + bl.x) / 4, cy = (tl.y + tr.y + br.y + bl.y) / 4;
+    const edgeCov = [[tl, tr], [tr, br], [br, bl], [bl, tl]].map(([a, b2]) => {
+      let hit = 0, tot = 0;
+      for (let t = 0.06; t <= 0.94; t += 0.04) {
+        let px = a.x + (b2.x - a.x) * t, py = a.y + (b2.y - a.y) * t;
+        px += (cx - px) * 0.05; py += (cy - py) * 0.05;
+        tot++;
+        if (m[Math.round(py) * w + Math.round(px)]) hit++;
+      }
+      return hit / tot;
+    }).sort((a, b2) => b2 - a);
+    if (edgeCov[2] < 0.75 || edgeCov[3] < 0.08) continue;
+    // subject-sized dark region inside the quad is strong evidence of a
+    // printed photo — prefer those candidates
+    const darkFrac = 1 - cover;
+    const subjectBoost = darkFrac > 0.08 && darkFrac < 0.55 ? 2.5 : 1;
+    out.push({ tl, tr, br, bl, score: Math.sqrt(size) * cover * subjectBoost });
   }
   return out;
 }
+
 
 // 4-point perspective transform: maps the marked quad to a straight
 // rectangle (bilinear-sampled), like a scanner app.
