@@ -142,7 +142,15 @@ $("cornerCanvas").addEventListener("pointerdown", (ev) => {
     const d = Math.hypot(q.x - p.x, q.y - p.y);
     if (d < bestD) { bestD = d; best = i; }
   });
-  if (bestD < srcImg.width * 0.12) { dragIdx = best; ev.target.setPointerCapture(ev.pointerId); }
+  // tap anywhere: the nearest dot jumps there, then follows the drag —
+  // four taps mark the four corners even when auto-detect fails
+  dragIdx = best;
+  corners[best] = {
+    x: Math.max(0, Math.min(srcImg.width, p.x)),
+    y: Math.max(0, Math.min(srcImg.height, p.y)),
+  };
+  drawCornerUI();
+  ev.target.setPointerCapture(ev.pointerId);
 });
 $("cornerCanvas").addEventListener("pointermove", (ev) => {
   if (dragIdx < 0) return;
