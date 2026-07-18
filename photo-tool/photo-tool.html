@@ -56,6 +56,9 @@
     <input type="range" id="shiftX" min="-40" max="40" value="0">
     <label>Brightness</label>
     <input type="range" id="bright" min="80" max="130" value="105">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+      <input type="checkbox" id="magic" checked style="width:auto"> ✨ Magic retouch (auto-levels + sharp + noise কমানো)
+    </label>
   </div>
   <button id="download"></button>
   <p class="hint" id="sizeHint"></p>
@@ -167,7 +170,7 @@ $("skipCrop").onclick = () => {
 // Auto-guess the photo/document corners: the sheet is usually the largest
 // bright, low-saturation region. Falls back to the full frame.
 function autoDetectCorners(img) {
-  const S = 400;
+  const S = 800; // higher res -> corners land precisely
   const sc = Math.min(1, S / Math.max(img.width, img.height));
   const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
   const c = mkCanvas(w, h);
@@ -285,7 +288,7 @@ function homography(src, dst) {
   return A.map((row, i) => b[i] / row[i]);
 }
 
-["zoom", "shiftY", "shiftX", "bright"].forEach((id) => {
+["zoom", "shiftY", "shiftX", "bright", "magic"].forEach((id) => {
   $(id).oninput = () => { if (mode === "photo" && personCanvas) renderPhoto(); };
 });
 
@@ -405,7 +408,7 @@ async function processPhoto() {
 }
 
 async function renderPhoto() {
-  const OUT = 600; // 2in × 300dpi
+  const OUT = 900; // 2in × 450dpi base; size targeting may scale further
   const zoom = $("zoom").value / 100;
   const sx = $("shiftX").value / 100, sy = $("shiftY").value / 100;
   const side = crop.side / zoom;
@@ -420,12 +423,76 @@ async function renderPhoto() {
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(personCanvas, x, y, side, side, 0, 0, OUT, OUT);
 
+  if ($("magic").checked) magicRetouch(out);
+
   showPreview(out, 300);
-  outBlob = await jpegUnder(out, 200 * 1024);
+  // visa portals reject tiny files: keep the JPEG between 150KB and 200KB
+  const r = await jpegInRange(out, 150 * 1024, 200 * 1024);
+  outBlob = r.blob;
   $("download").style.display = "block";
   $("download").textContent = "⬇ Download JPEG (2×2 inch)";
-  $("sizeHint").textContent = `600×600px (2×2 inch @300dpi) — size: ${(outBlob.size / 1024).toFixed(0)} KB`;
+  $("sizeHint").textContent = `${r.px}×${r.px}px (2×2 inch) — size: ${(outBlob.size / 1024).toFixed(0)} KB`;
   $("download").onclick = () => saveBlob(outBlob, "photo-2x2.jpg");
+}
+
+// ✨ auto-levels + unsharp mask over a lightly denoised base
+function magicRetouch(c) {
+  const w = c.width, h = c.height, ctx = c.getContext("2d");
+  const blurC = mkCanvas(w, h);
+  const bctx = blurC.getContext("2d");
+  bctx.filter = "blur(2px)";
+  bctx.drawImage(c, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h), bl = bctx.getImageData(0, 0, w, h);
+  const d = img.data, b = bl.data;
+
+  // auto-levels from the luma histogram (clip 0.4% each side)
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < w * h; i++) {
+    hist[(d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8]++;
+  }
+  const clip = w * h * 0.004;
+  let lo = 0, hi = 255, acc = 0;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
+  if (hi - lo < 60) { lo = 0; hi = 255; } // low-contrast guard
+  const scale = 255 / (hi - lo);
+
+  for (let i = 0; i < w * h * 4; i += 4) {
+    for (let ch = 0; ch < 3; ch++) {
+      // unsharp mask on the denoised base, then stretch levels
+      let v = d[i + ch] + 0.6 * (d[i + ch] - b[i + ch]);
+      v = (v - lo) * scale;
+      d[i + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// Encode targeting [minB, maxB]: search quality; if even top quality is
+// too small (flat white background compresses hard), upscale and retry.
+async function jpegInRange(canvas, minB, maxB) {
+  let px = canvas.width, cur = canvas;
+  for (;;) {
+    const top = await canvasBlob(cur, 0.97);
+    if (top.size >= minB || px >= 1800) {
+      if (top.size <= maxB) return { blob: top, px };
+      let lo = 0.4, hi = 0.97, best = top;
+      for (let i = 0; i < 8; i++) {
+        const mid = (lo + hi) / 2;
+        const b = await canvasBlob(cur, mid);
+        if (b.size > maxB) hi = mid;
+        else { best = b; lo = mid; if (b.size >= minB) break; }
+      }
+      return { blob: best, px };
+    }
+    px = Math.min(1800, Math.round(px * 1.5));
+    const c2 = mkCanvas(px, px);
+    const cctx = c2.getContext("2d");
+    cctx.imageSmoothingQuality = "high";
+    cctx.drawImage(canvas, 0, 0, px, px);
+    cur = c2;
+  }
 }
 
 // ------------- passport mode (5x7 in page, <=500KB PDF) -------------
