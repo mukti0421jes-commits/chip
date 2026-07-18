@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {
+    font: 14px/1.5 sans-serif;
+    width: 240px;
+    margin: 0;
+    padding: 12px;
+    background: #fafafa;
+  }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  button {
+    display: block;
+    width: 100%;
+    margin: 6px 0;
+    padding: 9px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    color: #fff;
+  }
+  #record { background: #d32f2f; }
+  #stop   { background: #616161; }
+  #play   { background: #2e7d32; }
+  #clear  { background: #fff; color: #b71c1c; border: 1px solid #b71c1c; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #555;
+    min-height: 18px;
+  }
+</style>
+</head>
+<body>
+  <h1>Form Autofill Recorder</h1>
+  <button id="record">⏺ Record শুরু করুন</button>
+  <button id="stop">⏹ Record বন্ধ করুন</button>
+  <button id="play">▶ Play (Auto-fill)</button>
+  <button id="clear">🗑 এই page-এর data মুছুন</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
