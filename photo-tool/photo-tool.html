@@ -36,6 +36,15 @@
   <div id="status">ছবি select করুন…</div>
 </div>
 
+<div class="card" id="cornerCard" style="display:none">
+  <p class="hint" style="margin-top:0">ছবির ৪টি কোণা লাল বিন্দু টেনে ঠিক করুন — বাঁকা থাকলে সোজা হয়ে যাবে।</p>
+  <canvas id="cornerCanvas" style="touch-action:none; cursor:crosshair"></canvas>
+  <div style="display:flex; gap:8px; margin-top:10px">
+    <button id="applyCrop" style="flex:2; padding:12px; background:#1565c0; color:#fff; border:none; border-radius:8px; font-size:15px; cursor:pointer">✂ সোজা করে Crop করুন</button>
+    <button id="skipCrop" style="flex:1; padding:12px; background:#fff; color:#555; border:1px solid #999; border-radius:8px; font-size:14px; cursor:pointer">পুরো ছবিই নিন</button>
+  </div>
+</div>
+
 <div class="card" id="adjustCard" style="display:none">
   <canvas id="preview"></canvas>
   <div class="sliders" id="photoSliders">
@@ -81,8 +90,200 @@ $("file").onchange = async (e) => {
   if (!f) return;
   status("ছবি load হচ্ছে…");
   srcImg = await loadImage(f);
+  openCornerStage();
+};
+
+// ---------------- corner stage (mark, straighten, crop) ----------------
+
+let workingImg = null; // canvas actually fed to the pipelines
+let corners = null;    // [{x,y}x4] TL,TR,BR,BL in source coords
+let dragIdx = -1;
+
+function openCornerStage() {
+  $("adjustCard").style.display = "none";
+  corners = autoDetectCorners(srcImg);
+  drawCornerUI();
+  $("cornerCard").style.display = "";
+  status("কোণাগুলো ঠিক করে '✂ সোজা করে Crop করুন' চাপুন");
+}
+
+function cornerScale() {
+  const c = $("cornerCanvas");
+  return c.getBoundingClientRect().width / srcImg.width;
+}
+
+function drawCornerUI() {
+  const c = $("cornerCanvas");
+  c.width = srcImg.width; c.height = srcImg.height;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(srcImg, 0, 0);
+  const r = Math.max(10, srcImg.width * 0.015);
+  ctx.strokeStyle = "#e53935"; ctx.lineWidth = Math.max(2, r / 4);
+  ctx.beginPath();
+  corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle = "#e53935";
+  corners.forEach((p) => { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill(); });
+}
+
+function evtPos(ev) {
+  const rect = $("cornerCanvas").getBoundingClientRect();
+  const s = srcImg.width / rect.width;
+  return { x: (ev.clientX - rect.left) * s, y: (ev.clientY - rect.top) * s };
+}
+
+$("cornerCanvas").addEventListener("pointerdown", (ev) => {
+  const p = evtPos(ev);
+  let best = -1, bestD = Infinity;
+  corners.forEach((q, i) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  if (bestD < srcImg.width * 0.12) { dragIdx = best; ev.target.setPointerCapture(ev.pointerId); }
+});
+$("cornerCanvas").addEventListener("pointermove", (ev) => {
+  if (dragIdx < 0) return;
+  const p = evtPos(ev);
+  corners[dragIdx] = {
+    x: Math.max(0, Math.min(srcImg.width, p.x)),
+    y: Math.max(0, Math.min(srcImg.height, p.y)),
+  };
+  drawCornerUI();
+});
+$("cornerCanvas").addEventListener("pointerup", () => (dragIdx = -1));
+
+$("applyCrop").onclick = () => {
+  workingImg = perspectiveWarp(srcImg, corners);
+  $("cornerCard").style.display = "none";
   process();
 };
+$("skipCrop").onclick = () => {
+  workingImg = mkCanvas(srcImg.width, srcImg.height);
+  workingImg.getContext("2d").drawImage(srcImg, 0, 0);
+  $("cornerCard").style.display = "none";
+  process();
+};
+
+// Auto-guess the photo/document corners: the sheet is usually the largest
+// bright, low-saturation region. Falls back to the full frame.
+function autoDetectCorners(img) {
+  const S = 400;
+  const sc = Math.min(1, S / Math.max(img.width, img.height));
+  const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
+  const c = mkCanvas(w, h);
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const score = new Float32Array(w * h);
+  let mean = 0;
+  for (let i = 0; i < w * h; i++) {
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const sat = Math.max(r, g, b) - Math.min(r, g, b);
+    score[i] = lum - 0.8 * sat;
+    mean += score[i];
+  }
+  mean /= w * h;
+  let sd = 0;
+  for (let i = 0; i < w * h; i++) sd += (score[i] - mean) ** 2;
+  sd = Math.sqrt(sd / (w * h));
+  const bin = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) bin[i] = score[i] > mean + 0.5 * sd ? 1 : 0;
+  const blob = largestComponent(bin, w, h);
+  const full = [
+    { x: 0, y: 0 }, { x: img.width, y: 0 },
+    { x: img.width, y: img.height }, { x: 0, y: img.height },
+  ];
+  if (!blob) return full;
+  let area = 0;
+  let tl = null, tr = null, br = null, bl = null;
+  let vTL = Infinity, vTR = -Infinity, vBR = -Infinity, vBL = Infinity;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!blob[y * w + x]) continue;
+      area++;
+      const s1 = x + y, s2 = x - y;
+      if (s1 < vTL) { vTL = s1; tl = { x, y }; }
+      if (s1 > vBR) { vBR = s1; br = { x, y }; }
+      if (s2 > vTR) { vTR = s2; tr = { x, y }; }
+      if (s2 < vBL) { vBL = s2; bl = { x, y }; }
+    }
+  }
+  if (area < w * h * 0.04) return full;
+  return [tl, tr, br, bl].map((p) => ({ x: p.x / sc, y: p.y / sc }));
+}
+
+// 4-point perspective transform: maps the marked quad to a straight
+// rectangle (bilinear-sampled), like a scanner app.
+function perspectiveWarp(img, quad) {
+  const [tl, tr, br, bl] = quad;
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let outW = Math.round(Math.max(dist(tl, tr), dist(bl, br)));
+  let outH = Math.round(Math.max(dist(tl, bl), dist(tr, br)));
+  const cap = 2400 / Math.max(outW, outH);
+  if (cap < 1) { outW = Math.round(outW * cap); outH = Math.round(outH * cap); }
+
+  // homography H: (u,v) in output rect -> (x,y) in source
+  const H = homography(
+    [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }],
+    quad
+  );
+
+  const sc = mkCanvas(img.width, img.height);
+  sc.getContext("2d").drawImage(img, 0, 0);
+  const srcD = sc.getContext("2d").getImageData(0, 0, img.width, img.height).data;
+  const out = mkCanvas(outW, outH);
+  const octx = out.getContext("2d");
+  const outImg = octx.createImageData(outW, outH);
+  const od = outImg.data;
+  const sw = img.width, sh = img.height;
+  for (let v = 0; v < outH; v++) {
+    for (let u = 0; u < outW; u++) {
+      const den = H[6] * u + H[7] * v + 1;
+      const x = (H[0] * u + H[1] * v + H[2]) / den;
+      const y = (H[3] * u + H[4] * v + H[5]) / den;
+      const o = (v * outW + u) * 4;
+      if (x < 0 || y < 0 || x >= sw - 1 || y >= sh - 1) {
+        od[o] = od[o + 1] = od[o + 2] = 255; od[o + 3] = 255;
+        continue;
+      }
+      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
+      for (let ch = 0; ch < 3; ch++) {
+        const p00 = srcD[(y0 * sw + x0) * 4 + ch], p10 = srcD[(y0 * sw + x0 + 1) * 4 + ch];
+        const p01 = srcD[((y0 + 1) * sw + x0) * 4 + ch], p11 = srcD[((y0 + 1) * sw + x0 + 1) * 4 + ch];
+        od[o + ch] = p00 * (1 - fx) * (1 - fy) + p10 * fx * (1 - fy) + p01 * (1 - fx) * fy + p11 * fx * fy;
+      }
+      od[o + 3] = 255;
+    }
+  }
+  octx.putImageData(outImg, 0, 0);
+  return out;
+}
+
+// homography mapping 4 src points -> 4 dst points; returns [h0..h7], h8=1
+function homography(src, dst) {
+  // build 8x9 system A·h = b
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x: u, y: v } = src[i];
+    const { x, y } = dst[i];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
+  }
+  // gaussian elimination
+  for (let col = 0; col < 8; col++) {
+    let piv = col;
+    for (let r = col + 1; r < 8; r++) if (Math.abs(A[r][col]) > Math.abs(A[piv][col])) piv = r;
+    [A[col], A[piv]] = [A[piv], A[col]]; [b[col], b[piv]] = [b[piv], b[col]];
+    for (let r = 0; r < 8; r++) {
+      if (r === col || A[r][col] === 0) continue;
+      const f = A[r][col] / A[col][col];
+      for (let k = col; k < 8; k++) A[r][k] -= f * A[col][k];
+      b[r] -= f * b[col];
+    }
+  }
+  return A.map((row, i) => b[i] / row[i]);
+}
 
 ["zoom", "shiftY", "shiftX", "bright"].forEach((id) => {
   $(id).oninput = () => { if (mode === "photo" && personCanvas) renderPhoto(); };
@@ -129,13 +330,14 @@ function segment(img) {
 }
 
 async function processPhoto() {
+  const inputImg = workingImg || srcImg;
   status("AI background remove করছে…");
   // work at a manageable resolution
   const maxSide = 1600;
-  const scale = Math.min(1, maxSide / Math.max(srcImg.width, srcImg.height));
-  const w = Math.round(srcImg.width * scale), h = Math.round(srcImg.height * scale);
+  const scale = Math.min(1, maxSide / Math.max(inputImg.width, inputImg.height));
+  const w = Math.round(inputImg.width * scale), h = Math.round(inputImg.height * scale);
   const work = mkCanvas(w, h);
-  work.getContext("2d").drawImage(srcImg, 0, 0, w, h);
+  work.getContext("2d").drawImage(inputImg, 0, 0, w, h);
 
   const mask = await segment(work);
 
@@ -229,6 +431,7 @@ async function renderPhoto() {
 // ------------- passport mode (5x7 in page, <=500KB PDF) -------------
 
 async function processPassport() {
+  const inputImg = workingImg || srcImg;
   status("Passport page তৈরি হচ্ছে…");
   const W = 1500, H = 2100; // 5×7 in @300dpi
   const page = mkCanvas(W, H);
@@ -237,13 +440,13 @@ async function processPassport() {
   ctx.fillRect(0, 0, W, H);
 
   // rotate landscape scans to fit the portrait page better
-  let img = srcImg;
-  if (srcImg.width > srcImg.height) {
-    const r = mkCanvas(srcImg.height, srcImg.width);
+  let img = inputImg;
+  if (inputImg.width > inputImg.height) {
+    const r = mkCanvas(inputImg.height, inputImg.width);
     const rc = r.getContext("2d");
     rc.translate(r.width / 2, r.height / 2);
     rc.rotate(Math.PI / 2);
-    rc.drawImage(srcImg, -srcImg.width / 2, -srcImg.height / 2);
+    rc.drawImage(inputImg, -inputImg.width / 2, -inputImg.height / 2);
     img = r;
   }
 
