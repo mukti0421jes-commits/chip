@@ -48,7 +48,7 @@
         '<div id="rj-pay-status" style="font:800 .8rem Segoe UI;color:#8888aa;margin-bottom:4px">idle — Start chapun</div>' +
         '<div id="rj-pay-count" style="font:700 .66rem Consolas,monospace;color:#8888aa;word-break:break-all"></div>' +
       '</div>';
-    (document.body || document.documentElement).appendChild(panel);
+    document.documentElement.appendChild(panel);
     cEl = document.getElementById('rj-pay-count');
     sEl = document.getElementById('rj-pay-status');
 
@@ -126,6 +126,10 @@
   }
 
   // UI shudhu banao — button na chapa porjonto retry shuru hobe na
-  if (document.body) buildUI();
-  else document.addEventListener('DOMContentLoaded', buildUI);
+  // baar baar cheshta: document-start, DOMContentLoaded, load, ebong proti 1.5s e re-check
+  // (SPA body swap korle panel harale abar boshabe)
+  buildUI();
+  document.addEventListener('DOMContentLoaded', buildUI);
+  window.addEventListener('load', buildUI);
+  setInterval(function () { if (!document.getElementById('rj-pay-panel')) buildUI(); }, 1500);
 })();
