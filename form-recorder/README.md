@@ -33,6 +33,20 @@ Record চালু করার সময় page-এ আগে থেকে �
 3. Record করা সব ফিল্ড অটো পূরণ হয়ে যাবে
 4. পরের page-এ গিয়ে আবার **Play** চাপুন — ৩টি page-এই একইভাবে কাজ করবে
 
+### Autopilot (এক ক্লিকে সব page)
+
+**▶▶ Autopilot** চাপলে extension নিজে নিজে:
+
+1. বর্তমান page-এর সব ফিল্ড পূরণ করবে
+2. নির্দিষ্ট প্রশ্নে বাধ্যতামূলক উত্তর বসাবে (যেমন Indian visa form-এর
+   "Pakistan nationals / Pakistan held area" প্রশ্নে সবসময় **No**)
+3. **Save and Continue** বাটন নিজে চাপবে
+4. পরের page-এ গিয়ে আবার একই কাজ করবে — যতক্ষণ recorded data আছে
+
+যে page-এর কোনো recording নেই সেখানে পৌঁছালে Autopilot নিজে থেমে যায়।
+একই page-এ ২ বার আটকে গেলেও (validation error ইত্যাদি) নিরাপত্তার জন্য
+থেমে যায়। **⏹ Autopilot বন্ধ করুন** চাপলে যেকোনো সময় থামানো যায়।
+
 ### Data মুছতে চাইলে
 
 **🗑 এই page-এর data মুছুন** চাপলে শুধু বর্তমান page-এর recording মুছে যাবে।

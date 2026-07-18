@@ -54,6 +54,19 @@ btnPlay.addEventListener("click", async () => {
   }
 });
 
+document.getElementById("playall").addEventListener("click", async () => {
+  const res = await send("playAll");
+  if (res) {
+    statusEl.textContent =
+      "▶▶ Autopilot চলছে — নিজে নিজে fill করে Save and Continue চাপবে…";
+  }
+});
+
+document.getElementById("stopauto").addEventListener("click", async () => {
+  await send("stopAuto");
+  statusEl.textContent = "Autopilot বন্ধ করা হয়েছে।";
+});
+
 btnClear.addEventListener("click", async () => {
   await send("clear");
   refresh();

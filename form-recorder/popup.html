@@ -25,6 +25,8 @@
   #record { background: #d32f2f; }
   #stop   { background: #616161; }
   #play   { background: #2e7d32; }
+  #playall { background: #1565c0; }
+  #stopauto { background: #fff; color: #1565c0; border: 1px solid #1565c0; }
   #clear  { background: #fff; color: #b71c1c; border: 1px solid #b71c1c; }
   button:disabled { opacity: .45; cursor: default; }
   #status {
@@ -39,7 +41,9 @@
   <h1>Form Autofill Recorder</h1>
   <button id="record">⏺ Record শুরু করুন</button>
   <button id="stop">⏹ Record বন্ধ করুন</button>
-  <button id="play">▶ Play (Auto-fill)</button>
+  <button id="play">▶ Play (শুধু এই page)</button>
+  <button id="playall">▶▶ Autopilot (fill + Save and Continue)</button>
+  <button id="stopauto">⏹ Autopilot বন্ধ করুন</button>
   <button id="clear">🗑 এই page-এর data মুছুন</button>
   <div id="status"></div>
   <script src="popup.js"></script>

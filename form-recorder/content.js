@@ -148,8 +148,104 @@
         filled++;
       }
     }
+    applyForcedRules();
     flashBanner(`✅ ${filled}/${entries.length} টি ফিল্ড পূরণ হয়েছে`);
     return { filled, total: entries.length };
+  }
+
+  // ---------- forced rules ----------
+  // Questions that must always get a fixed answer regardless of what was
+  // recorded, e.g. the "Pakistan nationals / Pakistan held area" radio on
+  // the Indian visa form must always be "No".
+
+  const FORCED_RULES = [{ question: /pakistan/i, answer: /^no?$/i }];
+
+  function applyForcedRules() {
+    const groups = {};
+    document.querySelectorAll('input[type="radio"]').forEach((r) => {
+      const key = r.name || fieldSelector(r);
+      (groups[key] = groups[key] || []).push(r);
+    });
+    for (const radios of Object.values(groups)) {
+      const context = radios[0].closest("tr, li, p, div");
+      const text = context ? context.textContent : "";
+      for (const rule of FORCED_RULES) {
+        if (!rule.question.test(text)) continue;
+        const target = radios.find((r) => {
+          if (rule.answer.test(r.value)) return true;
+          const label =
+            (r.labels && r.labels[0] && r.labels[0].textContent) ||
+            (r.nextSibling && r.nextSibling.textContent) ||
+            "";
+          return rule.answer.test(label.trim());
+        });
+        if (target && !target.checked) target.click();
+      }
+    }
+  }
+
+  // ---------- autopilot ----------
+  // One "Play (Auto)" press fills the page, forces the fixed answers,
+  // clicks "Save and Continue", and repeats on each following page until a
+  // page with no recording is reached.
+
+  const AUTO_FLAG = "ffr:autopilot";
+  const AUTO_TRIES = "ffr:autotries:"; // per-page attempt counter
+
+  function findContinueButton() {
+    const candidates = document.querySelectorAll(
+      'input[type="submit"], input[type="button"], button, a'
+    );
+    for (const el of candidates) {
+      const label = (el.value || el.textContent || "").trim();
+      if (/save\s*(and|&)?\s*continue/i.test(label)) return el;
+      if (/^continue$/i.test(label)) return el;
+    }
+    return null;
+  }
+
+  async function stopAutopilot() {
+    await chrome.storage.local.remove(AUTO_FLAG);
+  }
+
+  async function autopilotStep() {
+    // Loop guard: if validation keeps us on the same page, don't retry
+    // forever.
+    const triesKey = AUTO_TRIES + pageKey();
+    const tries = (await chrome.storage.local.get(triesKey))[triesKey] || 0;
+    if (tries >= 2) {
+      await stopAutopilot();
+      flashBanner("⚠️ এই page-এ আটকে গেছে — Autopilot বন্ধ হলো। বাকিটা হাতে দেখুন।");
+      return;
+    }
+    await chrome.storage.local.set({ [triesKey]: tries + 1 });
+
+    const res = await play();
+    if (res.total === 0) {
+      await stopAutopilot();
+      flashBanner("🏁 Autopilot শেষ — এই page-এর কোনো recording নেই।");
+      return;
+    }
+    // Give the page's own scripts (cascading dropdowns etc.) a moment.
+    setTimeout(() => {
+      const btn = findContinueButton();
+      if (btn) {
+        flashBanner("▶▶ Save and Continue চাপা হচ্ছে…");
+        btn.click();
+      } else {
+        stopAutopilot();
+        flashBanner("⚠️ 'Save and Continue' বাটন পাওয়া যায়নি — Autopilot বন্ধ হলো।");
+      }
+    }, 1500);
+  }
+
+  async function startAutopilot() {
+    // Reset per-page attempt counters from any previous run.
+    const all = await chrome.storage.local.get(null);
+    const stale = Object.keys(all).filter((k) => k.startsWith(AUTO_TRIES));
+    if (stale.length) await chrome.storage.local.remove(stale);
+    await chrome.storage.local.set({ [AUTO_FLAG]: true });
+    autopilotStep();
   }
 
   // ---------- UI banner ----------
@@ -220,13 +316,17 @@
 
   // ---------- init ----------
 
-  chrome.storage.local.get([REC_FLAG, pageKey()]).then((r) => {
+  chrome.storage.local.get([REC_FLAG, AUTO_FLAG, pageKey()]).then((r) => {
     pageData = r[pageKey()] || {};
     if (r[REC_FLAG]) {
       recording = true;
       showRecordingBanner();
       // Capture fields the site pre-filled on this page load.
       captureAllFields();
+    }
+    if (r[AUTO_FLAG] && window === window.top) {
+      // Autopilot in progress: continue on this page after it settles.
+      setTimeout(autopilotStep, 1500);
     }
   });
 
@@ -245,6 +345,7 @@
             break;
           case "stop":
             stopRecording();
+            await stopAutopilot();
             sendResponse({ ok: true });
             break;
           case "play": {
@@ -252,6 +353,15 @@
             sendResponse({ ok: true, ...res });
             break;
           }
+          case "playAll":
+            await startAutopilot();
+            sendResponse({ ok: true });
+            break;
+          case "stopAuto":
+            await stopAutopilot();
+            flashBanner("⏹ Autopilot বন্ধ করা হয়েছে");
+            sendResponse({ ok: true });
+            break;
           case "status":
             sendResponse({
               ok: true,
