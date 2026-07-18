@@ -4,8 +4,14 @@
 
 (() => {
   const STORAGE_PREFIX = "ffr:"; // form-fill-record
+  const REC_FLAG = "ffr:recording"; // global recording-mode flag
   let recording = false;
   let banner = null;
+  // In-memory copy of this page's recorded fields. All mutations happen
+  // here, then the whole object is written to storage — avoids the
+  // read-modify-write races of per-field get/set.
+  let pageData = {};
+  let saveTimer = null;
 
   // ---------- helpers ----------
 
@@ -13,6 +19,13 @@
     // Key recordings by origin + pathname so query strings / hashes don't
     // split the same form into different recordings.
     return STORAGE_PREFIX + location.origin + location.pathname;
+  }
+
+  function persist() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      chrome.storage.local.set({ [pageKey()]: pageData });
+    }, 200);
   }
 
   // Build a stable selector for a field. Prefer id, then name, then a
@@ -71,13 +84,11 @@
 
   // ---------- recording ----------
 
-  async function saveField(el) {
+  function saveField(el) {
     if (!isRecordable(el)) return;
-    const key = pageKey();
-    const data = (await chrome.storage.local.get(key))[key] || {};
     const entry = fieldEntry(el);
-    data[entry.selector] = entry;
-    await chrome.storage.local.set({ [key]: data });
+    pageData[entry.selector] = entry;
+    persist();
   }
 
   function onInput(e) {
@@ -87,7 +98,7 @@
 
   function captureAllFields() {
     // Snapshot everything currently filled, so fields typed before pressing
-    // Record (or autofilled by the browser) are captured too.
+    // Record (or filled by the site itself) are captured too.
     document.querySelectorAll("input, select, textarea").forEach((el) => {
       if (!isRecordable(el)) return;
       const type = (el.type || "").toLowerCase();
@@ -188,29 +199,34 @@
     setTimeout(() => b.remove(), 2500);
   }
 
-  // ---------- state persistence across page loads ----------
-  // Recording mode survives navigation (so all 3 pages can be recorded in
-  // one session) via a session flag.
+  // ---------- state ----------
+  // The recording flag lives in chrome.storage.local (content scripts can't
+  // use chrome.storage.session without extra setup), so recording mode
+  // survives navigation and all pages of a multi-step form can be recorded
+  // in one session.
 
-  const REC_FLAG = "ffr:recording";
-
-  async function startRecording() {
+  function startRecording() {
     recording = true;
-    await chrome.storage.session.set({ [REC_FLAG]: true });
     showRecordingBanner();
     captureAllFields();
+    chrome.storage.local.set({ [REC_FLAG]: true });
   }
 
-  async function stopRecording() {
+  function stopRecording() {
     recording = false;
-    await chrome.storage.session.remove(REC_FLAG);
     hideRecordingBanner();
+    chrome.storage.local.remove(REC_FLAG);
   }
 
-  chrome.storage.session.get(REC_FLAG).then((r) => {
+  // ---------- init ----------
+
+  chrome.storage.local.get([REC_FLAG, pageKey()]).then((r) => {
+    pageData = r[pageKey()] || {};
     if (r[REC_FLAG]) {
       recording = true;
       showRecordingBanner();
+      // Capture fields the site pre-filled on this page load.
+      captureAllFields();
     }
   });
 
@@ -221,35 +237,38 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
-      switch (msg.cmd) {
-        case "start":
-          await startRecording();
-          sendResponse({ ok: true });
-          break;
-        case "stop":
-          await stopRecording();
-          sendResponse({ ok: true });
-          break;
-        case "play": {
-          const res = await play();
-          sendResponse({ ok: true, ...res });
-          break;
+      try {
+        switch (msg.cmd) {
+          case "start":
+            startRecording();
+            sendResponse({ ok: true });
+            break;
+          case "stop":
+            stopRecording();
+            sendResponse({ ok: true });
+            break;
+          case "play": {
+            const res = await play();
+            sendResponse({ ok: true, ...res });
+            break;
+          }
+          case "status":
+            sendResponse({
+              ok: true,
+              recording,
+              savedCount: Object.keys(pageData).length,
+            });
+            break;
+          case "clear": {
+            pageData = {};
+            clearTimeout(saveTimer);
+            await chrome.storage.local.remove(pageKey());
+            sendResponse({ ok: true });
+            break;
+          }
         }
-        case "status": {
-          const key = pageKey();
-          const data = (await chrome.storage.local.get(key))[key] || {};
-          sendResponse({
-            ok: true,
-            recording,
-            savedCount: Object.keys(data).length,
-          });
-          break;
-        }
-        case "clear": {
-          await chrome.storage.local.remove(pageKey());
-          sendResponse({ ok: true });
-          break;
-        }
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
       }
     })();
     return true; // async response
