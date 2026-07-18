@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Tool — 2x2 ছবি ও Passport PDF</title>
+<script src="lib/selfie_segmentation.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
+<style>
+  body { font: 15px/1.6 sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin: 14px 0; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .modes { display: flex; gap: 10px; }
+  .modes button { flex: 1; padding: 12px; font-size: 15px; border: 2px solid #1565c0; background: #fff; color: #1565c0; border-radius: 8px; cursor: pointer; }
+  .modes button.active { background: #1565c0; color: #fff; }
+  #file { margin: 12px 0; }
+  canvas { max-width: 100%; background: #eee; border: 1px solid #ccc; border-radius: 6px; }
+  #preview { display: block; margin: 10px auto; }
+  .sliders label { display: block; margin: 6px 0 2px; font-size: 13px; color: #555; }
+  .sliders input { width: 100%; }
+  #download { display: none; width: 100%; padding: 14px; font-size: 16px; background: #2e7d32; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+  #status { color: #1565c0; min-height: 22px; font-size: 14px; }
+  .err { color: #b71c1c !important; }
+  .hint { font-size: 13px; color: #666; }
+</style>
+</head>
+<body>
+<h1>📸 Photo Tool</h1>
+
+<div class="card">
+  <div class="modes">
+    <button id="modePhoto" class="active">🧑 ছবি — 2×2 inch JPEG (≤200KB)</button>
+    <button id="modePassport">🛂 Passport — 5×7 inch PDF (≤500KB)</button>
+  </div>
+  <input type="file" id="file" accept="image/*">
+  <div id="status">ছবি select করুন…</div>
+</div>
+
+<div class="card" id="adjustCard" style="display:none">
+  <canvas id="preview"></canvas>
+  <div class="sliders" id="photoSliders">
+    <label>Zoom (মুখ ছোট/বড়)</label>
+    <input type="range" id="zoom" min="60" max="180" value="100">
+    <label>উপর/নিচ</label>
+    <input type="range" id="shiftY" min="-40" max="40" value="0">
+    <label>ডান/বাম</label>
+    <input type="range" id="shiftX" min="-40" max="40" value="0">
+    <label>Brightness</label>
+    <input type="range" id="bright" min="80" max="130" value="105">
+  </div>
+  <button id="download"></button>
+  <p class="hint" id="sizeHint"></p>
+</div>
+
+<p class="hint">সবকিছু আপনার browser-এর ভেতরেই হয় — ছবি কোথাও upload হয় না।
+প্রথমবার AI model load হতে কয়েক সেকেন্ড লাগতে পারে (internet লাগবে)।</p>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const status = (t, err) => { $("status").textContent = t; $("status").className = err ? "err" : ""; };
+
+let mode = "photo";           // "photo" | "passport"
+let srcImg = null;            // loaded HTMLImageElement
+let personCanvas = null;      // photo mode: subject on white bg (full res)
+let crop = null;              // {cx, cy, side} auto-detected crop square
+let outBlob = null;
+
+$("modePhoto").onclick = () => setMode("photo");
+$("modePassport").onclick = () => setMode("passport");
+function setMode(m) {
+  mode = m;
+  $("modePhoto").classList.toggle("active", m === "photo");
+  $("modePassport").classList.toggle("active", m === "passport");
+  $("photoSliders").style.display = m === "photo" ? "" : "none";
+  if (srcImg) process();
+}
+
+$("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  status("ছবি load হচ্ছে…");
+  srcImg = await loadImage(f);
+  process();
+};
+
+["zoom", "shiftY", "shiftX", "bright"].forEach((id) => {
+  $(id).oninput = () => { if (mode === "photo" && personCanvas) renderPhoto(); };
+});
+
+function loadImage(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function process() {
+  $("adjustCard").style.display = "none";
+  outBlob = null;
+  try {
+    if (mode === "photo") await processPhoto();
+    else await processPassport();
+  } catch (err) {
+    status("সমস্যা হয়েছে: " + err.message, true);
+  }
+}
+
+// ---------------- photo mode (2x2 in, white bg, <=200KB JPEG) ----------------
+
+let segmenter = null;
+function getSegmenter() {
+  if (segmenter) return segmenter;
+  segmenter = new SelfieSegmentation({
+    locateFile: (f) => "lib/" + f,
+  });
+  segmenter.setOptions({ modelSelection: 1 });
+  return segmenter;
+}
+
+function segment(img) {
+  return new Promise((resolve, reject) => {
+    const seg = getSegmenter();
+    seg.onResults((r) => resolve(r.segmentationMask));
+    seg.send({ image: img }).catch(reject);
+  });
+}
+
+async function processPhoto() {
+  status("AI background remove করছে…");
+  // work at a manageable resolution
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(srcImg.width, srcImg.height));
+  const w = Math.round(srcImg.width * scale), h = Math.round(srcImg.height * scale);
+  const work = mkCanvas(w, h);
+  work.getContext("2d").drawImage(srcImg, 0, 0, w, h);
+
+  const mask = await segment(work);
+
+  // mask -> alpha, subject over pure white
+  const maskC = mkCanvas(w, h);
+  const mctx = maskC.getContext("2d");
+  mctx.filter = "blur(2px)"; // feather edges
+  mctx.drawImage(mask, 0, 0, w, h);
+
+  personCanvas = mkCanvas(w, h);
+  const pctx = personCanvas.getContext("2d");
+  pctx.drawImage(work, 0, 0);
+  pctx.globalCompositeOperation = "destination-in";
+  pctx.drawImage(maskC, 0, 0);
+  pctx.globalCompositeOperation = "destination-over";
+  pctx.fillStyle = "#fff";
+  pctx.fillRect(0, 0, w, h);
+
+  // auto-crop from the mask bounds (head-and-shoulders framing)
+  const md = mctx.getImageData(0, 0, w, h).data;
+  let top = h, left = w, right = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (md[(y * w + x) * 4] > 128) { // mask is grayscale in red channel
+        if (y < top) top = y;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+  }
+  if (right <= left) throw new Error("ছবিতে মানুষ খুঁজে পাওয়া যায়নি");
+  const cx = (left + right) / 2;
+  const personW = right - left;
+  // passport-style: head + shoulders; side ≈ 1.35 × person width,
+  // top of head sits ~12% below the frame top
+  let side = Math.min(personW * 1.35, w, h);
+  let cy = top - 0.12 * side + side / 2;
+  crop = { cx, cy, side };
+
+  status("হয়ে গেছে — প্রয়োজনে slider দিয়ে ঠিক করুন, তারপর Download চাপুন");
+  $("adjustCard").style.display = "";
+  renderPhoto();
+}
+
+async function renderPhoto() {
+  const OUT = 600; // 2in × 300dpi
+  const zoom = $("zoom").value / 100;
+  const sx = $("shiftX").value / 100, sy = $("shiftY").value / 100;
+  const side = crop.side / zoom;
+  const x = crop.cx - side / 2 + sx * side;
+  const y = crop.cy - side / 2 + sy * side;
+
+  const out = mkCanvas(OUT, OUT);
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, OUT, OUT);
+  ctx.filter = `brightness(${$("bright").value}%) contrast(104%) saturate(105%)`;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(personCanvas, x, y, side, side, 0, 0, OUT, OUT);
+
+  showPreview(out, 300);
+  outBlob = await jpegUnder(out, 200 * 1024);
+  $("download").style.display = "block";
+  $("download").textContent = "⬇ Download JPEG (2×2 inch)";
+  $("sizeHint").textContent = `600×600px (2×2 inch @300dpi) — size: ${(outBlob.size / 1024).toFixed(0)} KB`;
+  $("download").onclick = () => saveBlob(outBlob, "photo-2x2.jpg");
+}
+
+// ------------- passport mode (5x7 in page, <=500KB PDF) -------------
+
+async function processPassport() {
+  status("Passport page তৈরি হচ্ছে…");
+  const W = 1500, H = 2100; // 5×7 in @300dpi
+  const page = mkCanvas(W, H);
+  const ctx = page.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, H);
+
+  // rotate landscape scans to fit the portrait page better
+  let img = srcImg;
+  if (srcImg.width > srcImg.height) {
+    const r = mkCanvas(srcImg.height, srcImg.width);
+    const rc = r.getContext("2d");
+    rc.translate(r.width / 2, r.height / 2);
+    rc.rotate(Math.PI / 2);
+    rc.drawImage(srcImg, -srcImg.width / 2, -srcImg.height / 2);
+    img = r;
+  }
+
+  const margin = 60;
+  const s = Math.min((W - 2 * margin) / img.width, (H - 2 * margin) / img.height);
+  const dw = img.width * s, dh = img.height * s;
+  ctx.filter = "brightness(104%) contrast(106%)";
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+
+  showPreview(page, 380);
+  // leave ~15KB headroom for PDF structure
+  const jpeg = await jpegUnder(page, 485 * 1024);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ unit: "in", format: [5, 7] });
+  pdf.addImage(await blobToDataURL(jpeg), "JPEG", 0, 0, 5, 7);
+  outBlob = pdf.output("blob");
+
+  status("হয়ে গেছে — Download চাপুন");
+  $("adjustCard").style.display = "";
+  $("download").style.display = "block";
+  $("download").textContent = "⬇ Download PDF (5×7 inch)";
+  $("sizeHint").textContent = `5×7 inch — PDF size: ${(outBlob.size / 1024).toFixed(0)} KB`;
+  $("download").onclick = () => saveBlob(outBlob, "passport-5x7.pdf");
+}
+
+// ---------------- utils ----------------
+
+function mkCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  return c;
+}
+
+function showPreview(canvas, displayW) {
+  const p = $("preview");
+  p.width = canvas.width; p.height = canvas.height;
+  p.style.width = displayW + "px";
+  p.getContext("2d").drawImage(canvas, 0, 0);
+}
+
+function canvasBlob(canvas, q) {
+  return new Promise((res) => canvas.toBlob(res, "image/jpeg", q));
+}
+
+// highest JPEG quality that stays under maxBytes
+async function jpegUnder(canvas, maxBytes) {
+  let lo = 0.3, hi = 0.95, best = await canvasBlob(canvas, lo);
+  if (best.size > maxBytes) return best; // even lowest quality is over; return it
+  for (let i = 0; i < 7; i++) {
+    const mid = (lo + hi) / 2;
+    const b = await canvasBlob(canvas, mid);
+    if (b.size <= maxBytes) { best = b; lo = mid; } else hi = mid;
+  }
+  return best;
+}
+
+function blobToDataURL(blob) {
+  return new Promise((res) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.readAsDataURL(blob);
+  });
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+</script>
+</body>
+</html>
