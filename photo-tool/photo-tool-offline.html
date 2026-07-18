@@ -713,6 +713,30 @@ function autoDetectCorners(img) {
     }
   }
   if (!best) {
+    // nothing passed the strict rectangle tests: still land the dots on
+    // the biggest bright object so they start near the photo instead of
+    // at the frame corners (easier to fine-tune by tapping/dragging)
+    let bin = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) bin[i] = rules[0](i) ? 1 : 0;
+    bin = erode(bin, w, h);
+    const blob = largestComponent(bin, w, h);
+    if (blob) {
+      let tl = null, tr = null, br = null, bl = null;
+      let vTL = Infinity, vTR = -Infinity, vBR = -Infinity, vBL = Infinity;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!blob[y * w + x]) continue;
+          const s1 = x + y, s2 = x - y;
+          if (s1 < vTL) { vTL = s1; tl = { x, y }; }
+          if (s1 > vBR) { vBR = s1; br = { x, y }; }
+          if (s2 > vTR) { vTR = s2; tr = { x, y }; }
+          if (s2 < vBL) { vBL = s2; bl = { x, y }; }
+        }
+      }
+      if (tl) best = { tl, tr, br, bl };
+    }
+  }
+  if (!best) {
     return [
       { x: 0, y: 0 }, { x: img.width, y: 0 },
       { x: img.width, y: img.height }, { x: 0, y: img.height },
