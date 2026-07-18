@@ -31,16 +31,43 @@
   var done = false;
 
   // ---------------- UI ----------------
-  var panel, cEl, sEl;
+  var panel, cEl, sEl, ball;
+
+  // choto minimize ball (onno RJ/M ball er moto)
+  function buildBall() {
+    if (document.getElementById('rj-pay-ball')) return;
+    ball = document.createElement('div');
+    ball.id = 'rj-pay-ball';
+    ball.title = 'RJ Payment Helper';
+    ball.style.cssText = 'position:fixed;bottom:20px;right:20px;width:46px;height:46px;border-radius:50%;z-index:2147483647;background:linear-gradient(145deg,#10b981,#059669);border:2px solid #34d399;box-shadow:0 6px 18px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;color:#fff;font:800 .95rem Segoe UI,system-ui,sans-serif;cursor:pointer;user-select:none';
+    ball.textContent = 'P';
+    document.documentElement.appendChild(ball);
+    var moved = false, dx = 0, dy = 0, drag = false;
+    ball.onmousedown = function (e) { drag = true; moved = false; dx = e.clientX - ball.offsetLeft; dy = e.clientY - ball.offsetTop; e.preventDefault(); };
+    document.addEventListener('mousemove', function (e) { if (!drag) return; moved = true; ball.style.left = (e.clientX - dx) + 'px'; ball.style.top = (e.clientY - dy) + 'px'; ball.style.right = 'auto'; ball.style.bottom = 'auto'; });
+    document.addEventListener('mouseup', function () { drag = false; });
+    ball.onclick = function () { if (moved) return; showPanel(); };
+  }
+  function showPanel() {
+    if (ball) ball.style.display = 'none';
+    if (panel) { panel.style.display = 'block'; return; }
+    buildUI();
+  }
+  function minimize() {
+    if (panel) panel.style.display = 'none';
+    if (!document.getElementById('rj-pay-ball')) buildBall();
+    else ball.style.display = 'flex';
+  }
+
   function buildUI() {
-    if (document.getElementById('rj-pay-panel')) return;
+    if (document.getElementById('rj-pay-panel')) { panel.style.display = 'block'; if (ball) ball.style.display = 'none'; return; }
     panel = document.createElement('div');
     panel.id = 'rj-pay-panel';
-    panel.style.cssText = 'position:fixed;top:16px;right:16px;width:290px;z-index:2147483647;background:linear-gradient(160deg,#0d0d1e,#12122c,#0a0a18);border:1px solid rgba(124,58,237,.45);border-radius:12px;box-shadow:0 18px 46px rgba(0,0,0,.85);font-family:Segoe UI,system-ui,sans-serif;color:#e0e0f0;overflow:hidden';
+    panel.style.cssText = 'position:fixed;bottom:20px;right:20px;width:290px;z-index:2147483647;background:linear-gradient(160deg,#0d0d1e,#12122c,#0a0a18);border:1px solid rgba(124,58,237,.45);border-radius:12px;box-shadow:0 18px 46px rgba(0,0,0,.85);font-family:Segoe UI,system-ui,sans-serif;color:#e0e0f0;overflow:hidden';
     panel.innerHTML =
       '<div id="rj-pay-head" style="cursor:move;display:flex;justify-content:space-between;align-items:center;padding:9px 12px;background:linear-gradient(90deg,#0a0a18,#16162f,#0a0a18);border-bottom:1px solid rgba(124,58,237,.3)">' +
         '<span style="font-weight:800;font-size:.78rem;color:#c4b5fd">RJ Payment Helper</span>' +
-        '<span id="rj-pay-toggle" style="cursor:pointer;color:#a78bfa;font-weight:800;font-size:.72rem;padding:0 6px">⏸</span>' +
+        '<span id="rj-pay-toggle" style="cursor:pointer;color:#a78bfa;font-weight:800;font-size:.9rem;padding:0 6px" title="minimize">–</span>' +
       '</div>' +
       '<div style="padding:10px 12px">' +
         '<div style="font:700 .62rem Consolas,monospace;color:#8888aa;word-break:break-all;margin-bottom:6px">tran_id: <span style="color:#c4b5fd">' + tranId + '</span></div>' +
@@ -69,7 +96,7 @@
       if (running) { setStatus('▶ retrying…', '#fcd34d'); tick(); }
       else setStatus('⏹ stopped', '#8888aa');
     };
-    document.getElementById('rj-pay-toggle').onclick = function () { btn.click(); };
+    document.getElementById('rj-pay-toggle').onclick = function () { minimize(); };
     // drag
     var h = document.getElementById('rj-pay-head'), dx = 0, dy = 0, drag = false;
     h.onmousedown = function (e) { drag = true; dx = e.clientX - panel.offsetLeft; dy = e.clientY - panel.offsetTop; e.preventDefault(); };
@@ -126,10 +153,11 @@
   }
 
   // UI shudhu banao — button na chapa porjonto retry shuru hobe na
-  // baar baar cheshta: document-start, DOMContentLoaded, load, ebong proti 1.5s e re-check
-  // (SPA body swap korle panel harale abar boshabe)
-  buildUI();
-  document.addEventListener('DOMContentLoaded', buildUI);
-  window.addEventListener('load', buildUI);
-  setInterval(function () { if (!document.getElementById('rj-pay-panel')) buildUI(); }, 1500);
+  // default e choto ball dekhabe (minimize obostha). click korle panel khulbe.
+  // SPA body swap korle harale abar boshabe.
+  function mount() { if (!document.getElementById('rj-pay-ball') && !document.getElementById('rj-pay-panel')) buildBall(); }
+  mount();
+  document.addEventListener('DOMContentLoaded', mount);
+  window.addEventListener('load', mount);
+  setInterval(mount, 1500);
 })();
