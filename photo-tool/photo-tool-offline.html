@@ -663,43 +663,84 @@ $("skipCrop").onclick = () => {
   process();
 };
 
-// Auto-guess the photo/document corners: the sheet is usually the largest
-// bright, low-saturation region. Falls back to the full frame.
+// Auto-guess the photo/document corners. Tries several binarizations
+// (relative and absolute "white paper" rules), erodes each to break thin
+// bridges to bright bedsheet stripes, and keeps the most rectangular
+// component. Falls back to the full frame.
 function autoDetectCorners(img) {
-  const S = 800; // higher res -> corners land precisely
+  const S = 800;
   const sc = Math.min(1, S / Math.max(img.width, img.height));
   const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
   const c = mkCanvas(w, h);
   const ctx = c.getContext("2d");
   ctx.drawImage(img, 0, 0, w, h);
   const d = ctx.getImageData(0, 0, w, h).data;
-  const score = new Float32Array(w * h);
+  const lum = new Float32Array(w * h), sat = new Float32Array(w * h);
   let mean = 0;
   for (let i = 0; i < w * h; i++) {
     const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
-    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    const sat = Math.max(r, g, b) - Math.min(r, g, b);
-    score[i] = lum - 0.8 * sat;
-    mean += score[i];
+    lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+    sat[i] = Math.max(r, g, b) - Math.min(r, g, b);
+    mean += lum[i] - 0.8 * sat[i];
   }
   mean /= w * h;
   let sd = 0;
-  for (let i = 0; i < w * h; i++) sd += (score[i] - mean) ** 2;
+  for (let i = 0; i < w * h; i++) sd += (lum[i] - 0.8 * sat[i] - mean) ** 2;
   sd = Math.sqrt(sd / (w * h));
-  const bin = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) bin[i] = score[i] > mean + 0.5 * sd ? 1 : 0;
-  const full = [
-    { x: 0, y: 0 }, { x: img.width, y: 0 },
-    { x: img.width, y: img.height }, { x: 0, y: img.height },
+
+  const rules = [
+    (i) => lum[i] - 0.8 * sat[i] > mean + 0.5 * sd,
+    (i) => lum[i] - 0.8 * sat[i] > mean + 0.9 * sd,
+    (i) => lum[i] > 165 && sat[i] < 55,   // white paper, absolute
+    (i) => lum[i] > 200 && sat[i] < 85,   // very bright paper
   ];
 
-  // Label every bright component and score each by how rectangular it is:
-  // a photo/document fills its 4-extreme-corner quad (~100%), while round
-  // things like bowls or plates fill far less. Pick the best rectangle.
+  let best = null, bestScore = 0;
+  for (const rule of rules) {
+    let bin = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) bin[i] = rule(i) ? 1 : 0;
+    bin = erode(bin, w, h);
+    for (const comp of rectComponents(bin, w, h)) {
+      if (comp.score > bestScore) { bestScore = comp.score; best = comp; }
+    }
+  }
+  if (!best) {
+    return [
+      { x: 0, y: 0 }, { x: img.width, y: 0 },
+      { x: img.width, y: img.height }, { x: 0, y: img.height },
+    ];
+  }
+  return [best.tl, best.tr, best.br, best.bl].map((p) => ({ x: p.x / sc, y: p.y / sc }));
+}
+
+// one-pass 4-neighbour erosion: breaks thin bridges between regions
+function erode(bin, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      out[p] = bin[p] & bin[p - 1] & bin[p + 1] & bin[p - w] & bin[p + w];
+    }
+  }
+  return out;
+}
+
+// Label components of bin and return the rectangular-looking ones with
+// their corner quads and a quality score.
+function rectComponents(bin, w, h) {
   const labels = new Int32Array(w * h);
   const stack = new Int32Array(w * h);
   let nextLabel = 1;
-  const comps = []; // {size, tl, tr, br, bl}
+  const out = [];
+  const quadArea = (q) => {
+    const pts = [q.tl, q.tr, q.br, q.bl];
+    let a = 0;
+    for (let i = 0; i < 4; i++) {
+      const p1 = pts[i], p2 = pts[(i + 1) % 4];
+      a += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(a) / 2;
+  };
   for (let start = 0; start < w * h; start++) {
     if (!bin[start] || labels[start]) continue;
     let sp = 0, size = 0;
@@ -724,53 +765,28 @@ function autoDetectCorners(img) {
       if (y > 0 && bin[p - w] && !labels[p - w]) { labels[p - w] = nextLabel; stack[sp++] = p - w; }
       if (y < h - 1 && bin[p + w] && !labels[p + w]) { labels[p + w] = nextLabel; stack[sp++] = p + w; }
     }
+    const lbl = nextLabel;
     nextLabel++;
-    if (size < w * h * 0.02) continue; // too small
-    comps.push({ size, tl, tr, br, bl, minX, maxX, minY, maxY });
-  }
-  if (!comps.length) return full;
-
-  const quadArea = (q) => {
-    // shoelace over tl,tr,br,bl
-    const pts = [q.tl, q.tr, q.br, q.bl];
-    let a = 0;
-    for (let i = 0; i < 4; i++) {
-      const p1 = pts[i], p2 = pts[(i + 1) % 4];
-      a += p1.x * p2.y - p2.x * p1.y;
-    }
-    return Math.abs(a) / 2;
-  };
-
-  let best = null, bestScore = 0;
-  for (const c2 of comps) {
-    const qa = quadArea(c2);
+    if (size < w * h * 0.015) continue;
+    const qa = quadArea({ tl, tr, br, bl });
     if (qa < 1) continue;
-    // a printed photo has the person as a big enclosed dark region inside
-    // the bright sheet — fill holes before judging the shape
-    {
-      const m = new Uint8Array(w * h);
-      const x0 = Math.max(0, c2.minX - 2), x1 = Math.min(w - 1, c2.maxX + 2);
-      const y0 = Math.max(0, c2.minY - 2), y1 = Math.min(h - 1, c2.maxY + 2);
-      const lbl = labels[c2.tl.y * w + c2.tl.x];
-      for (let y = y0; y <= y1; y++)
-        for (let x = x0; x <= x1; x++)
-          if (labels[y * w + x] === lbl) m[y * w + x] = 1;
-      fillHoles(m, w, h);
-      let filled = 0;
-      for (let y = y0; y <= y1; y++)
-        for (let x = x0; x <= x1; x++) filled += m[y * w + x];
-      c2.size = filled;
-    }
-    // For a true (even tilted) rectangle the 4 extreme points ARE its
-    // corners, so componentArea / quadArea ≈ 1. For round shapes the quad
-    // is inscribed (ellipse gives ≈ π/2 ≈ 1.57). Accept only near-1.
-    const ratio = c2.size / qa;
-    if (ratio < 0.8 || ratio > 1.2) continue; // bowls/plates drop out here
-    const s2 = (1 - Math.abs(1 - ratio)) * Math.sqrt(c2.size);
-    if (s2 > bestScore) { bestScore = s2; best = c2; }
+    // fill enclosed holes (the person on a printed photo) before judging
+    const m = new Uint8Array(w * h);
+    const x0 = Math.max(0, minX - 2), x1 = Math.min(w - 1, maxX + 2);
+    const y0 = Math.max(0, minY - 2), y1 = Math.min(h - 1, maxY + 2);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++)
+        if (labels[y * w + x] === lbl) m[y * w + x] = 1;
+    fillHoles(m, w, h);
+    let filled = 0;
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) filled += m[y * w + x];
+    // rectangles: extreme-corner quad ≈ filled area (round shapes differ)
+    const ratio = filled / qa;
+    if (ratio < 0.78 || ratio > 1.25) continue;
+    out.push({ tl, tr, br, bl, score: (1 - Math.abs(1 - ratio)) * Math.sqrt(filled) });
   }
-  if (!best) return full;
-  return [best.tl, best.tr, best.br, best.bl].map((p) => ({ x: p.x / sc, y: p.y / sc }));
+  return out;
 }
 
 // 4-point perspective transform: maps the marked quad to a straight
