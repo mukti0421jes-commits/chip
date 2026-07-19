@@ -4,8 +4,11 @@
 // @version      2.0.0
 // @description  Page er fetch/XHR intercept kore dg-epay callback (tran_id) DYNAMICALLY detect kore. Detect hole SAME-tab same-origin fetch die protite 1s por por retry. 302 = success -> navigate. 403 (spellbound) = abar try. Kono external server nei.
 // @author       RJ
-// @match        https://api.ivacbd.com/*
+// @match        https://api.ivacbd.com/*payment*callback*
+// @match        https://api.ivacbd.com/*dg-epay/callback*
+// @match        https://api.ivacbd.com/iams/api/v1/payment/*/callback*
 // @match        https://appointment.ivacbd.com/*
+// @match        https://api.ivacbd.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
