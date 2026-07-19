@@ -1663,6 +1663,7 @@ const h2html = `
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Reserve sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-reserve-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Reserve raw</label>
 <span style="flex:1"></span>
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
+<label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = native fetch (DevTools Network Fetch/XHR e DEKHABE, kintu CORS lagbe). Unchecked = GM (CORS-immune, kintu Network e lukano)."><input type="checkbox" id="chk-initiate-net" checked style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate Net</label>
 </div>
 <div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
 <div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700" title="Auto-pick date: ON = Latest (last), OFF = Earliest (first)">📆</label><div class="tg on" id="date-target-toggle" title="Auto-pick date: ON = Latest (last date), OFF = Earliest (first date)"><div class="tg-dot"></div></div><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
@@ -4096,16 +4097,15 @@ async function stepInitiate(signal) {
         // from the "spellbound" WAF, so we also send the real browser fingerprint headers
         // (sec-ch-ua / sec-fetch-* / accept-language / origin) to look like the genuine page
         // request. This is a best-effort attempt to pass the payment WAF — not guaranteed.
-        // Native fetch (forceGM baad) -> DevTools Network Fetch/XHR e DEKHABE. Asol appointment
-        // page o eta axios(XHR) die kore, tai server appointment.ivacbd.com origin er jonno CORS
-        // dey -> native fetch kaj kore. origin/sec-* forbidden header gulo browser nijei boshay,
-        // manually deoya jay na (drop hoy), tai bad deoa holo.
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: {
-            'accept':'application/json, text/plain, */*',
-            'authorization':`Bearer ${sessionState.accessToken}`,
-            'content-type':'application/json',
-            'x-token':initiateToken
-        }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        // TOGGLE "Initiate Net": checked (default) -> native fetch = DevTools Network Fetch/XHR e
+        // DEKHABE (asol page-o axios/XHR die kore, tai CORS thake). Unchecked -> forceGM = GM_xmlhttp
+        // (CORS-immune kintu Network e lukano). native e origin/sec-* forbidden header browser nijei
+        // boshay, tai native path e segulo baad; GM path e fingerprint header lage (WAF pass).
+        const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
+        const initHeaders = useNative
+            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateToken }
+            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateToken };
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
