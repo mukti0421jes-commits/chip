@@ -4096,21 +4096,14 @@ async function stepInitiate(signal) {
         // from the "spellbound" WAF, so we also send the real browser fingerprint headers
         // (sec-ch-ua / sec-fetch-* / accept-language / origin) to look like the genuine page
         // request. This is a best-effort attempt to pass the payment WAF — not guaranteed.
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: true, headers: {
+        // Native fetch (forceGM baad) -> DevTools Network Fetch/XHR e DEKHABE. Asol appointment
+        // page o eta axios(XHR) die kore, tai server appointment.ivacbd.com origin er jonno CORS
+        // dey -> native fetch kaj kore. origin/sec-* forbidden header gulo browser nijei boshay,
+        // manually deoya jay na (drop hoy), tai bad deoa holo.
+        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: {
             'accept':'application/json, text/plain, */*',
-            'accept-language':'en-US,en;q=0.9',
             'authorization':`Bearer ${sessionState.accessToken}`,
-            'cache-control':'no-cache, no-store, must-revalidate',
             'content-type':'application/json',
-            'pragma':'no-cache',
-            'priority':'u=1, i',
-            'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
-            'sec-ch-ua-mobile':'?0',
-            'sec-ch-ua-platform':'"Windows"',
-            'sec-fetch-dest':'empty',
-            'sec-fetch-mode':'cors',
-            'sec-fetch-site':'same-site',
-            'origin':'https://appointment.ivacbd.com',
             'x-token':initiateToken
         }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
