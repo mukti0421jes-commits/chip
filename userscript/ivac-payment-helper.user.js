@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Payment Callback Helper (RJ)
 // @namespace    rj-ivac-payment-helper
-// @version      2.0.0
+// @version      2.1.0
 // @description  Page er fetch/XHR intercept kore dg-epay callback (tran_id) DYNAMICALLY detect kore. Detect hole SAME-tab same-origin fetch die protite 1s por por retry. 302 = success -> navigate. 403 (spellbound) = abar try. Kono external server nei.
 // @author       RJ
 // @match        https://api.ivacbd.com/*payment*callback*
@@ -50,6 +50,32 @@
     try { if (isCallbackUrl(url)) onDetect(absUrl(url)); } catch (e) {}
     return _open.apply(this, arguments);
   };
+
+  // SOBCHEYE NIRVOROJOGGO: PerformanceObserver — page e ghota SOB network request
+  // (fetch/xhr/navigation/img sob) er URL dhore, ke pathalo ta nirbisheshe. fetch/XHR
+  // wrap fail korleo (page age reference dhorle) eta kaj korbe.
+  try {
+    var po = new PerformanceObserver(function (list) {
+      var es = list.getEntries();
+      for (var i = 0; i < es.length; i++) { if (isCallbackUrl(es[i].name)) onDetect(absUrl(es[i].name)); }
+    });
+    po.observe({ type: 'resource', buffered: true });
+    po.observe({ type: 'navigation', buffered: true });
+  } catch (e) {
+    // fallback: age theke jaoa entry gulo scan
+    try {
+      var pe = performance.getEntriesByType('resource').concat(performance.getEntriesByType('navigation'));
+      for (var j = 0; j < pe.length; j++) { if (isCallbackUrl(pe[j].name)) onDetect(absUrl(pe[j].name)); }
+    } catch (e2) {}
+  }
+  // beshi nishchit hote poll kore purono entry o scan kori (buffered miss korle)
+  setInterval(function () {
+    if (detected) return;
+    try {
+      var pe = performance.getEntriesByType('resource');
+      for (var k = pe.length - 1; k >= 0 && k > pe.length - 40; k--) { if (isCallbackUrl(pe[k].name)) { onDetect(absUrl(pe[k].name)); break; } }
+    } catch (e) {}
+  }, 1000);
 
   // location nijei callback hole (navigation case)
   if (isCallbackUrl(location.href)) onDetect(location.href);
