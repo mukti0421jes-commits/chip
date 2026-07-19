@@ -1,14 +1,11 @@
 // ==UserScript==
 // @name         IVAC Payment Callback Helper (RJ)
 // @namespace    rj-ivac-payment-helper
-// @version      1.0.0
-// @description  dg-epay callback page e boshe protite 1s por por SAME-tab, same-origin fetch kore retry kore. 302 (redirect) = success -> ekbar navigate. 403 (spellbound) = chup chap abar try. Kono external server nei.
+// @version      2.0.0
+// @description  Page er fetch/XHR intercept kore dg-epay callback (tran_id) DYNAMICALLY detect kore. Detect hole SAME-tab same-origin fetch die protite 1s por por retry. 302 = success -> navigate. 403 (spellbound) = abar try. Kono external server nei.
 // @author       RJ
-// @match        https://api.ivacbd.com/*payment*callback*
-// @match        https://api.ivacbd.com/*dg-epay/callback*
-// @match        https://api.ivacbd.com/iams/api/v1/payment/*/callback*
-// @match        https://appointment.ivacbd.com/*
 // @match        https://api.ivacbd.com/*
+// @match        https://appointment.ivacbd.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -16,24 +13,59 @@
 (function () {
   'use strict';
 
-  // --- eta callback page tai hoy? ---
-  var HERE = location.href;
-  var isCallback = /\/(payment|dg-epay)\b/i.test(HERE) && /callback/i.test(HERE) && /[?&]tran_id=/i.test(HERE);
-  // callback page na hole panel dekhabe kintu Start disabled thakbe (optional show)
-
-  var tranId = (HERE.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || (isCallback ? '(?)' : '— callback page na');
-
-  // ---------------- config ----------------
-  var DELAY_MS = 1000;      // proti try er majhe gap
-  var callbackUrl = HERE;   // same-origin, jei page e achi seti tai
-  var running = false;      // button na chapa porjonto shuru hobe na
+  // ---------------- config / state ----------------
+  var DELAY_MS = 1000;          // proti try er majhe gap
+  var callbackUrl = null;       // detect howa callback URL
+  var tranId = '— detect hoyni';
+  var detected = false;
+  var running = false;
   var count = 0;
   var done = false;
 
-  // ---------------- UI ----------------
-  var panel, cEl, sEl, ball;
+  // ---------------- callback URL cinha ----------------
+  function isCallbackUrl(u) {
+    if (!u) return false;
+    try { u = '' + u; } catch (e) { return false; }
+    return /\/(payment|dg-epay)\b/i.test(u) && /callback/i.test(u) && /[?&]tran_id=/i.test(u);
+  }
+  function absUrl(u) { try { return new URL(u, location.href).href; } catch (e) { return u; } }
 
-  // choto minimize ball (onno RJ/M ball er moto)
+  // ---------------- INTERCEPT: page er fetch + XHR ----------------
+  // dg-epay callback request ta page nijei kore (same tab XHR/fetch), tai seta wrap kore dhori.
+  var _fetch = window.fetch;
+  if (_fetch) {
+    window.fetch = function (input, init) {
+      try {
+        var u = (input && input.url) ? input.url : input;
+        if (isCallbackUrl(u)) onDetect(absUrl(u));
+      } catch (e) {}
+      return _fetch.apply(this, arguments);
+    };
+  }
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    try { if (isCallbackUrl(url)) onDetect(absUrl(url)); } catch (e) {}
+    return _open.apply(this, arguments);
+  };
+
+  // location nijei callback hole (navigation case)
+  if (isCallbackUrl(location.href)) onDetect(location.href);
+
+  function onDetect(u) {
+    if (detected && callbackUrl === u) return;   // ekbar-i
+    callbackUrl = u;
+    tranId = (u.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || '(?)';
+    detected = true;
+    console.log('%c[RJ Pay] callback DETECTED: ' + u, 'color:#4ade80;font-weight:800');
+    refreshPanel();
+    if (ball) { ball.style.background = 'linear-gradient(145deg,#f59e0b,#d97706)'; ball.style.borderColor = '#fbbf24'; }
+    // detect hoa matro nije theke retry shuru
+    if (!running && !done) startLoop();
+  }
+
+  // ---------------- UI ----------------
+  var panel, cEl, sEl, tEl, ball, btn;
+
   function buildBall() {
     if (document.getElementById('rj-pay-ball')) return;
     ball = document.createElement('div');
@@ -41,6 +73,7 @@
     ball.title = 'RJ Payment Helper';
     ball.style.cssText = 'position:fixed;bottom:20px;right:20px;width:46px;height:46px;border-radius:50%;z-index:2147483647;background:linear-gradient(145deg,#10b981,#059669);border:2px solid #34d399;box-shadow:0 6px 18px rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;color:#fff;font:800 .95rem Segoe UI,system-ui,sans-serif;cursor:pointer;user-select:none';
     ball.textContent = 'P';
+    if (detected) { ball.style.background = 'linear-gradient(145deg,#f59e0b,#d97706)'; ball.style.borderColor = '#fbbf24'; }
     document.documentElement.appendChild(ball);
     var moved = false, dx = 0, dy = 0, drag = false;
     ball.onmousedown = function (e) { drag = true; moved = false; dx = e.clientX - ball.offsetLeft; dy = e.clientY - ball.offsetTop; e.preventDefault(); };
@@ -50,7 +83,7 @@
   }
   function showPanel() {
     if (ball) ball.style.display = 'none';
-    if (panel) { panel.style.display = 'block'; return; }
+    if (panel) { panel.style.display = 'block'; refreshPanel(); return; }
     buildUI();
   }
   function minimize() {
@@ -70,104 +103,89 @@
         '<span id="rj-pay-toggle" style="cursor:pointer;color:#a78bfa;font-weight:800;font-size:.9rem;padding:0 6px" title="minimize">–</span>' +
       '</div>' +
       '<div style="padding:10px 12px">' +
-        '<div style="font:700 .62rem Consolas,monospace;color:#8888aa;word-break:break-all;margin-bottom:6px">tran_id: <span style="color:#c4b5fd">' + tranId + '</span></div>' +
+        '<div id="rj-pay-tran" style="font:700 .62rem Consolas,monospace;color:#8888aa;word-break:break-all;margin-bottom:6px">tran_id: <span style="color:#c4b5fd">' + tranId + '</span></div>' +
         '<button id="rj-pay-btn" style="width:100%;border:1px solid #34d399;border-radius:7px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-weight:800;font-size:.8rem;padding:8px 0;cursor:pointer;margin-bottom:8px">▶ Start</button>' +
-        '<div id="rj-pay-status" style="font:800 .8rem Segoe UI;color:#8888aa;margin-bottom:4px">idle — Start chapun</div>' +
+        '<div id="rj-pay-status" style="font:800 .8rem Segoe UI;color:#8888aa;margin-bottom:4px">callback detect er opekkha…</div>' +
         '<div id="rj-pay-count" style="font:700 .66rem Consolas,monospace;color:#8888aa;word-break:break-all"></div>' +
       '</div>';
     document.documentElement.appendChild(panel);
     cEl = document.getElementById('rj-pay-count');
     sEl = document.getElementById('rj-pay-status');
+    tEl = document.getElementById('rj-pay-tran');
+    btn = document.getElementById('rj-pay-btn');
 
-    var btn = document.getElementById('rj-pay-btn');
-    function setBtn(on) {
-      btn.textContent = on ? '⏹ Stop' : '▶ Start';
-      btn.style.background = on ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
-      btn.style.borderColor = on ? '#f87171' : '#34d399';
-    }
-    if (!isCallback) {
-      btn.disabled = true; btn.style.opacity = '.5'; btn.style.cursor = 'not-allowed';
-      setStatus('callback URL er opekkha…', '#8888aa');
-    }
     btn.onclick = function () {
-      if (done || !isCallback) return;
-      running = !running;
-      setBtn(running);
-      if (running) { setStatus('▶ retrying…', '#fcd34d'); tick(); }
-      else setStatus('⏹ stopped', '#8888aa');
+      if (done) return;
+      if (!detected) { setStatus('❌ akhono callback detect hoyni', '#fca5a5'); return; }
+      if (running) { stopLoop('manual'); } else { startLoop(); }
     };
     document.getElementById('rj-pay-toggle').onclick = function () { minimize(); };
-    // drag
     var h = document.getElementById('rj-pay-head'), dx = 0, dy = 0, drag = false;
     h.onmousedown = function (e) { drag = true; dx = e.clientX - panel.offsetLeft; dy = e.clientY - panel.offsetTop; e.preventDefault(); };
-    document.addEventListener('mousemove', function (e) { if (!drag) return; panel.style.left = (e.clientX - dx) + 'px'; panel.style.top = (e.clientY - dy) + 'px'; panel.style.right = 'auto'; });
+    document.addEventListener('mousemove', function (e) { if (!drag) return; panel.style.left = (e.clientX - dx) + 'px'; panel.style.top = (e.clientY - dy) + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto'; });
     document.addEventListener('mouseup', function () { drag = false; });
+    refreshPanel();
+  }
+  function setBtn(on) {
+    if (!btn) return;
+    btn.textContent = on ? '⏹ Stop' : (detected ? '▶ Start' : '⏳ waiting');
+    btn.style.background = on ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg,#10b981,#059669)';
+    btn.style.borderColor = on ? '#f87171' : '#34d399';
+    btn.style.opacity = detected ? '1' : '.6';
+  }
+  function refreshPanel() {
+    if (tEl) tEl.innerHTML = 'tran_id: <span style="color:#c4b5fd">' + tranId + '</span>';
+    if (sEl && !running && !done) setStatus(detected ? '✓ callback detect holo — Start chapun ba auto' : 'callback detect er opekkha…', detected ? '#4ade80' : '#8888aa');
+    setBtn(running);
   }
   function setStatus(t, c) { if (sEl) { sEl.textContent = t; sEl.style.color = c || '#fcd34d'; } }
   function setCount(t, c) { if (cEl) { cEl.textContent = t; cEl.style.color = c || '#8888aa'; } }
 
   // ---------------- retry loop ----------------
-  // success = 302 (redirect). same-origin + redirect:'manual' => response.type === 'opaqueredirect'.
-  // fail = 403 spellbound => abar try.
+  var timer = null;
+  function startLoop() {
+    if (!detected || !callbackUrl || done) return;
+    running = true; setBtn(true);
+    setStatus('▶ retrying…', '#fcd34d');
+    tick();
+  }
+  function stopLoop(reason) {
+    running = false; if (timer) { clearTimeout(timer); timer = null; }
+    setBtn(false); if (reason) setStatus('⏹ stopped (' + reason + ')', '#8888aa');
+  }
   function tick() {
     if (!running || done) return;
     count++;
     setCount('#' + count + ' — ' + new Date().toLocaleTimeString(), '#8888aa');
-
-    fetch(callbackUrl, {
-      method: 'GET',
-      redirect: 'manual',              // 302 dhorar jonno — auto follow korbe na
-      cache: 'no-store',
-      headers: { 'Upgrade-Insecure-Requests': '1' }
-    }).then(function (r) {
-      // opaqueredirect => 302/3xx dhora poreche => SUCCESS
-      if (r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400) || r.status === 0 && r.type === 'opaqueredirect') {
-        succeed('302 redirect');
-        return;
-      }
-      // r.ok / 200 o success dhora jete pare (kichu khetre server 200 diye success dei)
-      if (r.status >= 200 && r.status < 300) {
-        succeed(r.status + ' ok');
-        return;
-      }
-      // 403 spellbound ba onno kichu => abar
-      console.log('%c[RJ Pay #' + count + '] ' + r.status + ' ' + r.type + ' — retry', 'color:#fca5a5;font-weight:700');
-      setStatus('✗ ' + r.status + ' — retrying', '#fca5a5');
-      schedule();
-    }).catch(function (e) {
-      console.log('%c[RJ Pay #' + count + '] ERR ' + e.message + ' — retry', 'color:#fca5a5;font-weight:700');
-      setStatus('✗ err — retrying', '#fca5a5');
-      schedule();
-    });
+    fetch(callbackUrl, { method: 'GET', redirect: 'manual', cache: 'no-store', headers: { 'Upgrade-Insecure-Requests': '1' } })
+      .then(function (r) {
+        if (r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400)) { succeed('302 redirect'); return; }
+        if (r.status >= 200 && r.status < 300) { succeed(r.status + ' ok'); return; }
+        console.log('%c[RJ Pay #' + count + '] ' + r.status + ' ' + r.type + ' — retry', 'color:#fca5a5;font-weight:700');
+        setStatus('✗ ' + r.status + ' — retrying', '#fca5a5');
+        schedule();
+      }).catch(function (e) {
+        console.log('%c[RJ Pay #' + count + '] ERR ' + e.message + ' — retry', 'color:#fca5a5;font-weight:700');
+        setStatus('✗ err — retrying', '#fca5a5');
+        schedule();
+      });
   }
-  function schedule() { if (running && !done) setTimeout(tick, DELAY_MS); }
+  function schedule() { if (running && !done) timer = setTimeout(tick, DELAY_MS); }
 
   function succeed(reason) {
     done = true; running = false;
     console.log('%c[RJ Pay] SUCCESS (' + reason + ') after #' + count + ' — navigating…', 'color:#4ade80;font-weight:800');
     setStatus('✓ SUCCESS — ' + reason, '#4ade80');
     setCount('navigating to success page…', '#4ade80');
-    var b = document.getElementById('rj-pay-btn'); if (b) { b.textContent = '✓ done'; b.disabled = true; b.style.opacity = '.7'; }
-    // ekbar navigate kore success page e land — 302 follow hobe browser navigation die
+    if (btn) { btn.textContent = '✓ done'; btn.disabled = true; btn.style.opacity = '.7'; }
+    if (ball) { ball.style.background = 'linear-gradient(145deg,#10b981,#059669)'; ball.textContent = '✓'; }
     setTimeout(function () { window.location.href = callbackUrl; }, 400);
   }
 
-  // UI shudhu banao — button na chapa porjonto retry shuru hobe na
-  // default e choto ball dekhabe (minimize obostha). click korle panel khulbe.
-  // SPA body swap korle harale abar boshabe.
+  // default e choto ball. SPA body swap e harale abar boshabe.
   function mount() { if (!document.getElementById('rj-pay-ball') && !document.getElementById('rj-pay-panel')) buildBall(); }
   mount();
   document.addEventListener('DOMContentLoaded', mount);
   window.addEventListener('load', mount);
   setInterval(mount, 1500);
-
-  // callback page hole nije theke retry shuru — appointment page e manual
-  if (isCallback) {
-    showPanel();
-    running = true;
-    var b0 = document.getElementById('rj-pay-btn');
-    if (b0) { b0.textContent = '⏹ Stop'; b0.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)'; b0.style.borderColor = '#f87171'; }
-    setStatus('▶ auto-start — retrying…', '#fcd34d');
-    tick();
-  }
 })();
