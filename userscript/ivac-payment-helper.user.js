@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Payment Callback Helper (RJ)
 // @namespace    rj-ivac-payment-helper
-// @version      2.1.0
+// @version      2.2.0
 // @description  Page er fetch/XHR intercept kore dg-epay callback (tran_id) DYNAMICALLY detect kore. Detect hole SAME-tab same-origin fetch die protite 1s por por retry. 302 = success -> navigate. 403 (spellbound) = abar try. Kono external server nei.
 // @author       RJ
 // @match        https://api.ivacbd.com/*payment*callback*
@@ -175,34 +175,39 @@
   function startLoop() {
     if (!detected || !callbackUrl || done) return;
     running = true; setBtn(true);
-    setStatus('▶ retrying…', '#fcd34d');
-    tick();
+    setStatus('▶ retrying (fire every ' + DELAY_MS + 'ms)…', '#fcd34d');
+    fireOnce();                              // prothom ta sathe sathe
+    if (timer) clearInterval(timer);
+    timer = setInterval(fireOnce, DELAY_MS); // response er opekkha na kore protite fire
   }
   function stopLoop(reason) {
-    running = false; if (timer) { clearTimeout(timer); timer = null; }
+    running = false; if (timer) { clearInterval(timer); timer = null; }
     setBtn(false); if (reason) setStatus('⏹ stopped (' + reason + ')', '#8888aa');
   }
-  function tick() {
+  // FIRE-AND-FORGET: response er jonno wait kore na. Stop na kora ba success (302) na
+  // howa porjonto proti DELAY_MS e ekta notun request pathay (overlapping).
+  function fireOnce() {
     if (!running || done) return;
     count++;
-    setCount('#' + count + ' — ' + new Date().toLocaleTimeString(), '#8888aa');
+    var n = count;
+    setCount('#' + n + ' — ' + new Date().toLocaleTimeString(), '#8888aa');
     fetch(callbackUrl, { method: 'GET', redirect: 'manual', cache: 'no-store', headers: { 'Upgrade-Insecure-Requests': '1' } })
       .then(function (r) {
+        if (done) return;
         if (r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400)) { succeed('302 redirect'); return; }
         if (r.status >= 200 && r.status < 300) { succeed(r.status + ' ok'); return; }
-        console.log('%c[RJ Pay #' + count + '] ' + r.status + ' ' + r.type + ' — retry', 'color:#fca5a5;font-weight:700');
-        setStatus('✗ ' + r.status + ' — retrying', '#fca5a5');
-        schedule();
+        console.log('%c[RJ Pay #' + n + '] ' + r.status + ' ' + r.type + ' — retry', 'color:#fca5a5;font-weight:700');
+        setStatus('✗ #' + n + ' ' + r.status + ' — retrying', '#fca5a5');
       }).catch(function (e) {
-        console.log('%c[RJ Pay #' + count + '] ERR ' + e.message + ' — retry', 'color:#fca5a5;font-weight:700');
-        setStatus('✗ err — retrying', '#fca5a5');
-        schedule();
+        if (done) return;
+        console.log('%c[RJ Pay #' + n + '] ERR ' + e.message + ' — retry', 'color:#fca5a5;font-weight:700');
+        setStatus('✗ #' + n + ' err — retrying', '#fca5a5');
       });
   }
-  function schedule() { if (running && !done) timer = setTimeout(tick, DELAY_MS); }
 
   function succeed(reason) {
     done = true; running = false;
+    if (timer) { clearInterval(timer); timer = null; }
     console.log('%c[RJ Pay] SUCCESS (' + reason + ') after #' + count + ' — navigating…', 'color:#4ade80;font-weight:800');
     setStatus('✓ SUCCESS — ' + reason, '#4ade80');
     setCount('navigating to success page…', '#4ade80');
