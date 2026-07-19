@@ -4248,34 +4248,32 @@ function _setFetchLoopBtn(running) {
     btn.classList.toggle('b5', !running);  // green while idle
 }
 function stopFetchLoop(reason) {
-    if (_fetchLoop.timer) { clearTimeout(_fetchLoop.timer); _fetchLoop.timer = null; }
+    if (_fetchLoop.timer) { clearInterval(_fetchLoop.timer); _fetchLoop.timer = null; }
     _fetchLoop.running = false;
     _setFetchLoopBtn(false);
     if (reason) logStatus(`⏹ Fetch loop stopped (${reason})`, 'y');
 }
-async function _fetchLoopTick() {
+// FIRE-AND-FORGET: response er jonno wait kore na. Stop na kora porjonto proti delay-ms e
+// ekta notun request fire kore (overlapping). Ekbar-ta sathe sathe, tarpor setInterval.
+function _fetchLoopFire() {
     if (!_fetchLoop.running) return;
     const c = _fetchLoop.config;
-    _fetchLoop.count++;
+    const n = ++_fetchLoop.count;
     let body = c.body; if (body && typeof body === 'object') body = JSON.stringify(body);
-    try {
-        // GM toggle ON (default) → GM_xmlhttpRequest (CORS-immune, but invisible to DevTools
-        // Fetch/XHR). OFF → native fetch (shows in DevTools Network, but blocked on no-CORS URLs
-        // like the payment callback).
-        const useGM = document.getElementById('ivac-fetch-gm-toggle')?.classList.contains('on') !== false;
-        const r = await H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: useGM });
-        const text = await r.text();
-        let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
-        console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
-        logStatus(`📡 #${_fetchLoop.count} ${c.method} ${r.status} ${r.statusText}`, r.ok ? 'g' : 'y');
-    } catch(err) {
-        console.log(`%c[RJ Fetch Loop #${_fetchLoop.count}] error: ${err.message}`, 'color:#fca5a5;font-weight:700');
-        logStatus(`❌ #${_fetchLoop.count} Fetch error: ${err.message}`, 'r');
-    }
-    if (_fetchLoop.running) {
-        const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 1000);
-        _fetchLoop.timer = setTimeout(_fetchLoopTick, delay);
-    }
+    // GM toggle ON (default) → GM_xmlhttpRequest (CORS-immune, but invisible to DevTools Fetch/XHR).
+    // OFF → native fetch (shows in DevTools Network, but blocked on no-CORS URLs).
+    const useGM = document.getElementById('ivac-fetch-gm-toggle')?.classList.contains('on') !== false;
+    H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: useGM })
+        .then(async r => {
+            const text = await r.text();
+            let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
+            console.log(`%c[RJ Fetch Loop #${n}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
+            logStatus(`📡 #${n} ${c.method} ${r.status} ${r.statusText}`, r.ok ? 'g' : 'y');
+        })
+        .catch(err => {
+            console.log(`%c[RJ Fetch Loop #${n}] error: ${err.message}`, 'color:#fca5a5;font-weight:700');
+            logStatus(`❌ #${n} Fetch error: ${err.message}`, 'r');
+        });
 }
 document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', () => {
     if (_fetchLoop.running) { stopFetchLoop('manual'); return; }
@@ -4288,8 +4286,9 @@ document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', () => 
     _fetchLoop.running = true;
     _setFetchLoopBtn(true);
     const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 1000);
-    logStatus(`▶ Fetch loop started — ${config.method} every ${delay}ms`, 'g');
-    _fetchLoopTick();
+    logStatus(`▶ Fetch loop started — ${config.method} every ${delay}ms (fire-and-forget)`, 'g');
+    _fetchLoopFire();                                        // prothom ta sathe sathe
+    _fetchLoop.timer = setInterval(_fetchLoopFire, delay);   // response er opekkha na kore
 });
 
 // ==================== FIX UI POSITION ====================
