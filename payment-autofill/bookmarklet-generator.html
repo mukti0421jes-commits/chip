@@ -113,14 +113,42 @@ function buildBookmarklet(num, exp, cvc, name, autopay) {
       el.dispatchEvent(new Event("blur", { bubbles: true }));
       return true;
     }
+    // Card fields are often inside a same-origin iframe while Pay sits in
+    // the top page — that is why a naive fill did nothing but Pay still
+    // clicked. Search the main document AND every reachable iframe.
+    function allDocs() {
+      var docs = [document];
+      (function walk(doc) {
+        var frames = doc.querySelectorAll("iframe");
+        for (var i = 0; i < frames.length; i++) {
+          try {
+            var d = frames[i].contentDocument;
+            if (d) { docs.push(d); walk(d); }
+          } catch (e) { /* cross-origin: not reachable */ }
+        }
+      })(document);
+      return docs;
+    }
+    var DOCS = allDocs();
     function find(id, ph) {
-      return (
-        document.getElementById(id) ||
-        document.querySelector('input[placeholder="' + ph + '"]')
+      for (var i = 0; i < DOCS.length; i++) {
+        var el = DOCS[i].getElementById(id) ||
+          DOCS[i].querySelector('input[placeholder="' + ph + '"]');
+        if (el) return el;
+      }
+      return null;
+    }
+    var numEl = find("card-number-input", "Card Number");
+    if (!numEl) {
+      alert(
+        "Card-এর ঘর পাওয়া যায়নি — সম্ভবত এগুলো আলাদা (cross-origin) iframe-এ,\n" +
+        "যা নিরাপত্তার কারণে bookmarklet দিয়ে ভরানো যায় না।\n" +
+        "এই ক্ষেত্রে Pay চাপা হবে না।"
       );
+      return;
     }
     var steps = [
-      [find("card-number-input", "Card Number"), NUM],
+      [numEl, NUM],
       [find("card-expiry-input", "MM/YY"), EXP],
       [find("card-cvc-input", "CVC/CVV"), CVC],
       [find("card-holder-name-input", "Card Holder Name"), NAME],
@@ -134,12 +162,14 @@ function buildBookmarklet(num, exp, cvc, name, autopay) {
         return;
       }
       if (AUTOPAY) {
-        var pay =
-          document.querySelector('[data-payment-button="true"]') ||
-          Array.prototype.find.call(
-            document.querySelectorAll("button"),
-            function (b) { return /\bpay\b/i.test(b.textContent || b.getAttribute("aria-label") || ""); }
-          );
+        var pay = null;
+        for (var k = 0; k < DOCS.length && !pay; k++) {
+          pay = DOCS[k].querySelector('[data-payment-button="true"]') ||
+            Array.prototype.find.call(
+              DOCS[k].querySelectorAll("button"),
+              function (b) { return /\bpay\b/i.test(b.textContent || b.getAttribute("aria-label") || ""); }
+            );
+        }
         if (pay) setTimeout(function () { pay.click(); }, 600);
       }
     })();
