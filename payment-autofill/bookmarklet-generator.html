@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Autofill — Bookmarklet তৈরি করুন</title>
+<style>
+  body { font: 15px/1.6 sans-serif; max-width: 640px; margin: 0 auto; padding: 16px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin: 14px 0; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  label { display: block; margin: 10px 0 3px; font-size: 13px; color: #555; }
+  input[type=text] { width: 100%; padding: 10px; font-size: 15px; border: 1px solid #bbb; border-radius: 6px; box-sizing: border-box; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .chk { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 14px; }
+  .chk input { width: auto; }
+  #make { width: 100%; padding: 13px; font-size: 16px; background: #1565c0; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 14px; }
+  #result { display: none; }
+  #blink { display: inline-block; padding: 12px 18px; background: #2e7d32; color: #fff; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .warn { background: #fff8e1; border: 1px solid #ffca28; border-radius: 8px; padding: 12px; font-size: 13px; color: #6d4c00; }
+  code { background: #eee; padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+  textarea { width: 100%; height: 90px; font-size: 11px; margin-top: 8px; box-sizing: border-box; }
+  .hint { font-size: 13px; color: #666; }
+</style>
+</head>
+<body>
+<h1>💳 Payment Autofill Bookmarklet</h1>
+
+<div class="warn">
+  ⚠️ এটি আপনার <b>নিজের</b> কার্ড দিয়ে <b>নিজের</b> পেমেন্ট দ্রুত করার জন্য।
+  কার্ডের তথ্য শুধু আপনার এই ব্রাউজারে (localStorage) থাকে ও bookmarklet-এর
+  ভেতরে লেখা থাকে — কোথাও পাঠানো হয় না। কিন্তু bookmark-এ কার্ড নম্বর
+  সাদা চোখে দেখা যায়, তাই ব্যক্তিগত/নিরাপদ কম্পিউটারেই রাখবেন।
+</div>
+
+<div class="card">
+  <label>Card Number</label>
+  <input type="text" id="num" inputmode="numeric" placeholder="4111 1111 1111 1111">
+  <div class="row">
+    <div>
+      <label>Expiry (MM/YY)</label>
+      <input type="text" id="exp" placeholder="12/28">
+    </div>
+    <div>
+      <label>CVC / CVV</label>
+      <input type="text" id="cvc" placeholder="123">
+    </div>
+  </div>
+  <label>Card Holder Name</label>
+  <input type="text" id="name" placeholder="MD SHARIFUL ISLAM">
+
+  <label class="chk"><input type="checkbox" id="autopay" checked> ✅ ভরাট করার পর <b>Pay button</b>-এ নিজে থেকে ক্লিক করবে</label>
+
+  <button id="make">🔗 Bookmarklet তৈরি করুন</button>
+</div>
+
+<div class="card" id="result">
+  <p><b>ধাপ ১:</b> নিচের সবুজ বাটনটি <b>টেনে (drag)</b> আপনার browser-এর
+    bookmarks bar-এ ছেড়ে দিন। (মোবাইলে: bookmarklet code কপি করে একটি নতুন
+    bookmark বানিয়ে URL-এর জায়গায় পেস্ট করুন।)</p>
+  <p><a id="blink" href="#">💳 Auto Pay</a></p>
+  <p><b>ধাপ ২:</b> পেমেন্ট page খুলে (Card ট্যাব সিলেক্ট করা অবস্থায়) এই
+    bookmark-এ ক্লিক করুন — সব ঘর ভরে যাবে ও Pay চাপা হবে।</p>
+  <details>
+    <summary class="hint">Bookmarklet code (কপি করার জন্য)</summary>
+    <textarea id="code" readonly onclick="this.select()"></textarea>
+  </details>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const FIELDS = ["num", "exp", "cvc", "name", "autopay"];
+
+// restore saved values
+try {
+  const saved = JSON.parse(localStorage.getItem("payAutofill") || "{}");
+  FIELDS.forEach((f) => {
+    if (saved[f] === undefined) return;
+    if (f === "autopay") $(f).checked = saved[f];
+    else $(f).value = saved[f];
+  });
+} catch (e) {}
+
+function buildBookmarklet(num, exp, cvc, name, autopay) {
+  // This function's source is stringified into the bookmarklet. It runs on
+  // the payment page. React-controlled inputs need the native value setter
+  // plus a bubbling 'input' event, otherwise the framework ignores the value.
+  const run = function (NUM, EXP, CVC, NAME, AUTOPAY) {
+    function set(el, val) {
+      if (!el) return false;
+      el.focus();
+      var proto = Object.getPrototypeOf(el);
+      var desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) desc.set.call(el, val);
+      else el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+      return true;
+    }
+    function find(id, ph) {
+      return (
+        document.getElementById(id) ||
+        document.querySelector('input[placeholder="' + ph + '"]')
+      );
+    }
+    set(find("card-number-input", "Card Number"), NUM);
+    set(find("card-expiry-input", "MM/YY"), EXP);
+    set(find("card-cvc-input", "CVC/CVV"), CVC);
+    set(find("card-holder-name-input", "Card Holder Name"), NAME);
+    if (AUTOPAY) {
+      var pay =
+        document.querySelector('[data-payment-button="true"]') ||
+        Array.prototype.find.call(
+          document.querySelectorAll("button"),
+          function (b) { return /\bpay\b/i.test(b.textContent || b.getAttribute("aria-label") || ""); }
+        );
+      if (pay) setTimeout(function () { pay.click(); }, 700);
+    }
+  };
+  const args = [num, exp, cvc, name, autopay].map((v) => JSON.stringify(v)).join(",");
+  return "javascript:(" + run.toString() + ")(" + args + ");void 0;";
+}
+
+$("make").onclick = () => {
+  const num = $("num").value.replace(/\s+/g, "");
+  const exp = $("exp").value.trim();
+  const cvc = $("cvc").value.trim();
+  const name = $("name").value.trim();
+  const autopay = $("autopay").checked;
+
+  localStorage.setItem("payAutofill", JSON.stringify({ num: $("num").value, exp, cvc, name, autopay }));
+
+  const bm = buildBookmarklet(num, exp, cvc, name, autopay);
+  const link = $("blink");
+  link.href = bm;
+  link.onclick = (e) => { e.preventDefault(); alert("এটি টেনে bookmarks bar-এ ছাড়ুন — এখানে ক্লিক করলে কাজ হবে না।"); };
+  $("code").value = bm;
+  $("result").style.display = "";
+  $("result").scrollIntoView({ behavior: "smooth" });
+};
+</script>
+</body>
+</html>
