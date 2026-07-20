@@ -87,14 +87,28 @@ function buildBookmarklet(num, exp, cvc, name, autopay) {
   // the payment page. React-controlled inputs need the native value setter
   // plus a bubbling 'input' event, otherwise the framework ignores the value.
   const run = function (NUM, EXP, CVC, NAME, AUTOPAY) {
-    function set(el, val) {
+    // Simulate real human typing: React/payment fields often ignore a bulk
+    // value set and only accept per-keystroke input (auto-formatters, Luhn
+    // validators, keystroke gates). Type character by character using the
+    // prototype setter (bypasses React's instance value-tracker) with
+    // keydown/input/keyup around each character.
+    function type(el, value) {
       if (!el) return false;
       el.focus();
+      try { el.click(); } catch (e) {}
       var proto = Object.getPrototypeOf(el);
-      var desc = Object.getOwnPropertyDescriptor(proto, "value");
-      if (desc && desc.set) desc.set.call(el, val);
-      else el.value = val;
+      var setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+      setter.call(el, "");
+      if (el._valueTracker) el._valueTracker.setValue("");
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      for (var i = 0; i < value.length; i++) {
+        var ch = value.charAt(i);
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
+        setter.call(el, el.value + ch); // read fresh so auto-format is kept
+        if (el._valueTracker) el._valueTracker.setValue("");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
+      }
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("blur", { bubbles: true }));
       return true;
@@ -105,19 +119,30 @@ function buildBookmarklet(num, exp, cvc, name, autopay) {
         document.querySelector('input[placeholder="' + ph + '"]')
       );
     }
-    set(find("card-number-input", "Card Number"), NUM);
-    set(find("card-expiry-input", "MM/YY"), EXP);
-    set(find("card-cvc-input", "CVC/CVV"), CVC);
-    set(find("card-holder-name-input", "Card Holder Name"), NAME);
-    if (AUTOPAY) {
-      var pay =
-        document.querySelector('[data-payment-button="true"]') ||
-        Array.prototype.find.call(
-          document.querySelectorAll("button"),
-          function (b) { return /\bpay\b/i.test(b.textContent || b.getAttribute("aria-label") || ""); }
-        );
-      if (pay) setTimeout(function () { pay.click(); }, 700);
-    }
+    var steps = [
+      [find("card-number-input", "Card Number"), NUM],
+      [find("card-expiry-input", "MM/YY"), EXP],
+      [find("card-cvc-input", "CVC/CVV"), CVC],
+      [find("card-holder-name-input", "Card Holder Name"), NAME],
+    ];
+    var i = 0;
+    (function next() {
+      if (i < steps.length) {
+        type(steps[i][0], steps[i][1]);
+        i++;
+        setTimeout(next, 150); // let each field's validator settle
+        return;
+      }
+      if (AUTOPAY) {
+        var pay =
+          document.querySelector('[data-payment-button="true"]') ||
+          Array.prototype.find.call(
+            document.querySelectorAll("button"),
+            function (b) { return /\bpay\b/i.test(b.textContent || b.getAttribute("aria-label") || ""); }
+          );
+        if (pay) setTimeout(function () { pay.click(); }, 600);
+      }
+    })();
   };
   const args = [num, exp, cvc, name, autopay].map((v) => JSON.stringify(v)).join(",");
   return "javascript:(" + run.toString() + ")(" + args + ");void 0;";
