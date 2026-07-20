@@ -556,6 +556,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       <input type="checkbox" id="magic" checked style="width:auto"> ✨ Magic retouch (auto-levels + sharp + noise কমানো)
     </label>
   </div>
+  <div class="sliders" id="colourSliders">
+    <label>🎨 রঙের ঘনত্ব (Colour / saturation)</label>
+    <input type="range" id="sat" min="70" max="150" value="112">
+    <label>🌡️ উষ্ণতা (Warm ⇄ Cool)</label>
+    <input type="range" id="warmth" min="-30" max="30" value="4">
+  </div>
   <button id="download"></button>
   <p class="hint" id="sizeHint"></p>
 </div>
@@ -933,9 +939,35 @@ function homography(src, dst) {
   return A.map((row, i) => b[i] / row[i]);
 }
 
-["zoom", "shiftY", "shiftX", "bright", "magic"].forEach((id) => {
-  $(id).oninput = () => { if (mode === "photo" && personCanvas) renderPhoto(); };
+let reRenderTimer = null;
+["zoom", "shiftY", "shiftX", "bright", "magic", "sat", "warmth"].forEach((id) => {
+  $(id).oninput = () => {
+    if (mode === "photo") { if (personCanvas) renderPhoto(); return; }
+    // passport: debounce, re-run the (heavier) PDF build
+    clearTimeout(reRenderTimer);
+    if (workingImg || srcImg) reRenderTimer = setTimeout(processPassport, 250);
+  };
 });
+
+// Manual colour grade applied last so the user's tweak is always what
+// ends up in the file (temperature + saturation around luma).
+function applyColour(c) {
+  const warmth = +$("warmth").value;      // -30 (cool) .. +30 (warm)
+  const sat = +$("sat").value / 100;      // 0.70 .. 1.50
+  if (warmth === 0 && Math.abs(sat - 1) < 0.001) return;
+  const ctx = c.getContext("2d");
+  const im = ctx.getImageData(0, 0, c.width, c.height);
+  const d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i] + warmth, g = d[i + 1], b = d[i + 2] - warmth;
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;
+    d[i] = r < 0 ? 0 : r > 255 ? 255 : r;
+    d[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+    d[i + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
+  }
+  ctx.putImageData(im, 0, 0);
+}
 
 function loadImage(file) {
   return new Promise((res, rej) => {
@@ -1053,7 +1085,7 @@ async function processPhoto() {
 }
 
 async function renderPhoto() {
-  const OUT = 900; // 2in × 450dpi base; size targeting may scale further
+  const OUT = 1200; // 2in × 600dpi base; size targeting may scale further
   const zoom = $("zoom").value / 100;
   const sx = $("shiftX").value / 100, sy = $("shiftY").value / 100;
   const side = crop.side / zoom;
@@ -1069,6 +1101,7 @@ async function renderPhoto() {
   ctx.drawImage(personCanvas, x, y, side, side, 0, 0, OUT, OUT);
 
   if ($("magic").checked) magicRetouch(out);
+  applyColour(out);
 
   showPreview(out, 300);
   // visa portals reject tiny files: keep the JPEG between 150KB and 200KB
@@ -1145,7 +1178,7 @@ async function jpegInRange(canvas, minB, maxB) {
 async function processPassport() {
   const inputImg = workingImg || srcImg;
   status("Passport page তৈরি হচ্ছে…");
-  const W = 1500, H = 2100; // 5×7 in @300dpi
+  const W = 1800, H = 2520; // 5×7 in @360dpi
   const page = mkCanvas(W, H);
   const ctx = page.getContext("2d");
   ctx.fillStyle = "#fff";
@@ -1168,6 +1201,7 @@ async function processPassport() {
   ctx.filter = "brightness(104%) contrast(106%)";
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  applyColour(page);
 
   showPreview(page, 380);
   // leave ~15KB headroom for PDF structure
