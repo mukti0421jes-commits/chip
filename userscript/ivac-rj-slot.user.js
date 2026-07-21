@@ -1271,6 +1271,7 @@ function restoreSession() {
 }
 
 function clearAllSession() {
+    _autoReserveKicked = false;   // notun cycle e abar auto-reserve fire korte parbe
     sessionState.accessToken        = null;
     sessionState.userId             = null;
     sessionState.requestId          = null;
@@ -3680,6 +3681,7 @@ const raceCoord = {
 // ==================== STOP FLAG + STEP RUNNER ====================
 const stopFlag = { value: false };
 let _forceStep = false;
+let _autoReserveKicked = false;   // date load hole ekbar-i auto-reserve fire korte
 const STEP_ORDER = ['signin', 'verify', 'book', 'reserve', 'initiate'];
 function isSingleOn()   { return document.getElementById('btn-single')?.classList.contains('b5'); }
 function isAutoOn()     { return document.getElementById('btn-auto')?.classList.contains('b5'); }
@@ -3921,6 +3923,24 @@ async function loadReserveDates() {
 (function initReserveDateAutoSync() {
     let last = '';
     let lastApiTry = 0;
+    // AUTO-RESERVE: date dropdown e date load + select howar SATHE SATHE, Auto ON thakle nije
+    // theke reserve (→ initiate) chain shuru kore — manual click er dorkar nei. Date gulo jokhon
+    // alada auto date-sync poll die ashe (pipeline cholmaan noy), tokhon reserve nijei fire kore.
+    const maybeAutoReserve = () => {
+        try {
+            const sel = document.getElementById('ivac-reserve-date');
+            if (!sel || !sel.value) return;                          // date load + select hoyeche?
+            if (!isAutoOn()) return;                                 // Auto OFF hole kichu na
+            if (!sessionState.accessToken || !sessionState.isVerified) return;
+            if (!sessionState.appointmentId) return;                 // book (appointmentId) chai
+            if (sessionState.reservationId) return;                  // already reserved
+            if (pipelineRunning || slotDuty.chainRunning) return;    // pipeline already cholche
+            if (_autoReserveKicked || raceCoord.hasWon('reserve')) return;
+            _autoReserveKicked = true;
+            logStatus('▶ Auto reserve — date loaded, chain shuru', 'g');
+            manualStepClick('reserve');                             // manual click er hubohu behavior
+        } catch (e) {}
+    };
     const tick = async () => {
         try {
             const sel = document.getElementById('ivac-reserve-date'); if (!sel) return;
@@ -3928,6 +3948,7 @@ async function loadReserveDates() {
             if (dates.length) {                              // on the time-slot page → mirror live
                 const sig = dates.join(',');
                 if (sig !== last) { last = sig; populateReserveDates(dates); }
+                maybeAutoReserve();
                 return;
             }
             // not on the page: pull via API only while we still need it. Once we already have an
@@ -3947,6 +3968,7 @@ async function loadReserveDates() {
                 lastApiTry = Date.now();
                 try { await loadReserveDates(); } catch (e) {}
             }
+            maybeAutoReserve();   // date load hoye thakle Auto ON e reserve chain shuru
         } catch (e) {}
     };
     try { const start = () => { setInterval(tick, 1500); tick(); }; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start(); } catch (e) {}
@@ -4185,7 +4207,7 @@ async function startPipelineFrom(startStep) {
     }
 })();
 
-(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
+(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; _autoReserveKicked = false; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
 
 (() => { ['btn-single', 'btn-auto'].forEach(id => { const old = document.getElementById(id); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', function() { if (this.classList.contains('b8')) { this.classList.remove('b8'); this.classList.add('b5'); } else { this.classList.remove('b5'); this.classList.add('b8'); } }); }); })();
 
