@@ -354,7 +354,7 @@ function getTagFromUrl(url) {
 H2.preWarm();
 
 // ==================== API CONFIG ====================
-const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v12-sign-in";
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v23-sign-in";
 // x-sec-navigation-state / x-sec-runtime-state are NOT per-session random values — they are
 // FIXED constants baked into the site bundle (the obfuscated code assembles them from string
 // literals, e.g. the "1.9a5" fragment of the runtime-state). Confirmed against the live bundle
@@ -1666,7 +1666,7 @@ const h2html = `
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = native fetch (DevTools Network Fetch/XHR e DEKHABE, kintu CORS lagbe). Unchecked = GM (CORS-immune, kintu Network e lukano)."><input type="checkbox" id="chk-initiate-net" checked style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate Net</label>
 </div>
-<div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (ccd3dd63-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
+<div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (54ea9f13-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
 <div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700" title="Auto-pick date: ON = Latest (last), OFF = Earliest (first)">📆</label><div class="tg on" id="date-target-toggle" title="Auto-pick date: ON = Latest (last date), OFF = Earliest (first date)"><div class="tg-dot"></div></div><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
 <div class="fr"><button class="b8" style="width:100%" id="bst">Stop All</button></div>
 <div class="tr">
@@ -2834,7 +2834,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const fileInput = document.getElementById(fileInputId);
         const file = fileInput?.files?.length > 0 ? fileInput.files[0] : null;
         if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return; }   // never upload an empty part
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file", tag: 'upload', state: 'pending', note: `${label}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
             // A DISTINCT, not-in-use token for EVERY attempt (never reuse a token across a
@@ -2851,7 +2851,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
                 // part, i.e. "server e data jaina"). sendMultipartUpload sends raw bytes on both
                 // the native-fetch and GM paths.
                 const r = await sendMultipartUpload(
-                    "https://api.ivacbd.com/iams/api/v1/file/upload_file",
+                    "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23",
                     { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
                     file, { isPrimary: String(isPrimary) }
                 );
@@ -3819,11 +3819,11 @@ function getReserveAppointmentId() {
     return id || '';
 }
 
-// The reserve-slot URL uses a CENTER-FIXED slot UUID (e.g. ccd3dd63-…), NOT the per-user
+// The reserve-slot URL uses a CENTER-FIXED slot UUID (e.g. 54ea9f13-…), NOT the per-user
 // appointmentId. It stays the same across accounts for a given center, so the user pastes it
 // once into the Slot ID box (persisted). Falls back to appointmentId only if the box is empty.
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
-const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48bf-a48d-c65eaa4fc663';   // fixed reserve slot id
+const RESERVE_SLOT_ID_FIXED = '54ea9f13-f1e2-4cea-9e08-f525e8242ccf';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
     // Box value wins if present; otherwise ALWAYS the fixed slot id. Profile is never used here
@@ -3982,7 +3982,7 @@ async function stepReserve(signal) {
     const encryptedCaptchaToken = encTokenForCall(captchaToken, 'reserve');
     // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
     const slotId = getReserveSlotId();
-    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (ccd3dd63-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (54ea9f13-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
     let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
     if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
     if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
