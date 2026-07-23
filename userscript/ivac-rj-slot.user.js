@@ -370,7 +370,7 @@ const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 //   /payment/{PAYMENT_METHOD_ID}/dg-epay/initiate   (confirmed from live bundle + real fetch).
 // The id is NOT the appointmentId (that goes in the body). If a future bundle changes it,
 // update PAYMENT_METHOD_ID (grep the real initiate URL).
-const PAYMENT_METHOD_ID = 'f2a2fcd1-4019-4291-ba2c-ea94a60ea54f';
+const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ed-b57c-60416e01617e';
 const API_INITIATE  = `https://api.ivacbd.com/iams/api/v1/payment/${PAYMENT_METHOD_ID}/dg-epay/initiate`;
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
@@ -4123,10 +4123,13 @@ async function stepInitiate(signal) {
         // DEKHABE (asol page-o axios/XHR die kore, tai CORS thake). Unchecked -> forceGM = GM_xmlhttp
         // (CORS-immune kintu Network e lukano). native e origin/sec-* forbidden header browser nijei
         // boshay, tai native path e segulo baad; GM path e fingerprint header lage (WAF pass).
+        // x-token ENCRYPTED ("1."-prefix) — real initiate fetch confirmed. encTokenForCall encrypts
+        // by Initiate config (same live-scanned v8 cipher); chk-initiate-raw checkbox can force RAW.
+        const initiateXToken = encTokenForCall(initiateToken, 'initiate');
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
         const initHeaders = useNative
-            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateToken }
-            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateToken };
+            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateXToken }
+            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateXToken };
         const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
