@@ -3067,7 +3067,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         let mobileOtpToken; try { mobileOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'mobile-otp' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, otpChannel: "PHONE" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ phone, email, otpChannel: "PHONE" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
