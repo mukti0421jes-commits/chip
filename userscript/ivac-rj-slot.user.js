@@ -2441,7 +2441,9 @@ async function autoEncScanTick() {
     if (autoEncScan.busy) return;            // don't overlap scans
     autoEncScan.busy = true;
     try {
-        try { rjResolveEndpointsLive(); } catch (e) {}   // DYNAMIC: endpoints + slot-id from bundle (only via A_E now)
+        // Resolve endpoints FIRST (awaited) so any changed endpoint/slot-id is in the rewrite map
+        // BEFORE encryption resolves and auto-signin fires — no stale-endpoint race.
+        try { await rjResolveEndpointsLive(); } catch (e) {}
         const ok = await scanAndMaybeAutoSignin('🔁 A_E auto-scan — checking bundle for encryption config…');
         if (ok) { stopAutoEncScan(true); logStatus('✅ A_E: config found → auto-scan OFF, Signin started', 'g'); }
     } catch (e) { console.error('[A_E] scan error:', e); }
