@@ -2429,8 +2429,21 @@ document.getElementById('scan-btn')?.addEventListener('click', async () => {
     const ok = await scanAndMaybeAutoSignin('🔍 Manual scan — resolving encryption secret from live bundle…');
     if (!ok) logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
 });
-// DYNAMIC: live-scan endpoints once at startup (in the background) so URL rewrites are ready
-setTimeout(() => { try { rjResolveEndpointsLive(); } catch (e) {} }, 2000);
+// DYNAMIC: one-shot auto-resolve on load (background) — endpoints + reserve slot-id AND the
+// encryption config. encConfigAutoFetch(false) is cached (does nothing if already fresh) and
+// re-resolves automatically when the bundle hash changes — so encryption stays in sync without a
+// manual SCAN. This is a single call, NOT the old 1s loop that hung the browser. Manual 🔑 SCAN
+// still works too.
+setTimeout(() => {
+    try { rjResolveEndpointsLive(); } catch (e) {}
+    try { encConfigAutoFetch(false); } catch (e) {}
+}, 2500);
+// Re-check on tab focus (cheap: cached unless the bundle actually changed) so a mid-session
+// server bundle swap is picked up without a reload.
+window.addEventListener('focus', () => {
+    try { rjResolveEndpointsLive(); } catch (e) {}
+    try { encConfigAutoFetch(false); } catch (e) {}
+});
 
 // A_E: auto-scan every 2s (same work as manual SCAN). As soon as encryption config
 // is found/activated, it turns itself OFF and auto-starts Signin. Click again to cancel.
