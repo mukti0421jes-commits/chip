@@ -2424,21 +2424,8 @@ document.getElementById('scan-btn')?.addEventListener('click', async () => {
     const ok = await scanAndMaybeAutoSignin('🔍 Manual scan — resolving encryption secret from live bundle…');
     if (!ok) logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
 });
-// DYNAMIC: one-shot auto-resolve on load (background) — endpoints + reserve slot-id AND the
-// encryption config. encConfigAutoFetch(false) is cached (does nothing if already fresh) and
-// re-resolves automatically when the bundle hash changes — so encryption stays in sync without a
-// manual SCAN. This is a single call, NOT the old 1s loop that hung the browser. Manual 🔑 SCAN
-// still works too.
-setTimeout(() => {
-    try { rjResolveEndpointsLive(); } catch (e) {}
-    try { encConfigAutoFetch(false); } catch (e) {}
-}, 2500);
-// Re-check on tab focus (cheap: cached unless the bundle actually changed) so a mid-session
-// server bundle swap is picked up without a reload.
-window.addEventListener('focus', () => {
-    try { rjResolveEndpointsLive(); } catch (e) {}
-    try { encConfigAutoFetch(false); } catch (e) {}
-});
+// NOTE: no auto bundle-scan on page load. Endpoint + encryption resolve runs ONLY when the user
+// clicks A_E (auto-scan) or the 🔑 SCAN button — so nothing hits the bundle before you ask.
 
 // A_E: auto-scan every 2s (same work as manual SCAN). As soon as encryption config
 // is found/activated, it turns itself OFF and auto-starts Signin. Click again to cancel.
@@ -2454,6 +2441,7 @@ async function autoEncScanTick() {
     if (autoEncScan.busy) return;            // don't overlap scans
     autoEncScan.busy = true;
     try {
+        try { rjResolveEndpointsLive(); } catch (e) {}   // DYNAMIC: endpoints + slot-id from bundle (only via A_E now)
         const ok = await scanAndMaybeAutoSignin('🔁 A_E auto-scan — checking bundle for encryption config…');
         if (ok) { stopAutoEncScan(true); logStatus('✅ A_E: config found → auto-scan OFF, Signin started', 'g'); }
     } catch (e) { console.error('[A_E] scan error:', e); }
