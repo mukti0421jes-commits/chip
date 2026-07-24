@@ -2882,6 +2882,10 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     // fallback (raw binary string). A plain FormData loses its File when it has to go through
     // GM_xmlhttpRequest, which is why uploads returned 200 but stored nothing.
     async function sendMultipartUpload(url, headers, file, fields) {
+        // DYNAMIC: upload goes straight through unsafeWindow.fetch (not H2.fetchH2), so apply the
+        // endpoint-rewrite map here too — otherwise a changed upload endpoint wouldn't auto-update.
+        try { if (typeof rjRewriteUrl === 'function') url = rjRewriteUrl(url); } catch (e) {}
+        try { if (typeof rjApplyDynHeaders === 'function') { const _i = rjApplyDynHeaders(url, { headers }); if (_i && _i.headers) headers = _i.headers; } } catch (e) {}
         const boundary = '----RJUpload' + Math.random().toString(16).slice(2) + Date.now().toString(16);
         const fileBytes = new Uint8Array(await file.arrayBuffer());
         const enc = s => { const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xff; return a; };
