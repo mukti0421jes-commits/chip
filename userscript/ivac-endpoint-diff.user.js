@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Endpoint Diff Checker
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      2.0.0
 // @description  Auto-extracts the API endpoint segments from the live IVAC bundle chunks, compares them with the endpoints your RJ SLOT script uses, and highlights any change in the console (and a tiny on-page badge). Run-only diagnostics — sends nothing.
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -65,17 +65,22 @@
     // sig   = distinctive substring used to locate the literal in the bundle
     // obf   = built by obfuscated concatenation → can't verify literally
     const ENDPOINTS = [
-        { name: 'Signin',        my: '/iams/api/v1/auth/v12-sign-in',                       leaf: '/auth/v12-sign-in',                sig: 'v12-sign-in' },
+        { name: 'SignupOTP',     my: '/iams/api/v1/otp/signupOtp',                          leaf: '/otp/signupOtp',                   sig: 'signupOtp' },
+        { name: 'VerifyOTP',     my: '/iams/api/v1/otp/verify-otp',                         leaf: '/otp/verify-otp',                  sig: 'verify-otp' },
+        { name: 'Signin',        my: '/iams/api/v1/auth/v23-sign-in',                       leaf: '/auth/v23-sign-in',                sig: 'v23-sign-in' },
         { name: 'Verify',        my: '/iams/api/v1/otp/verifySigninOtp',                    leaf: '/otp/verifySigninOtp',             sig: 'verifySigninOtp' },
         { name: 'GetBookingConfig', my: '/iams/api/v1/appointment/get-booking-config',      leaf: '/appointment/get-booking-config',  sig: 'get-booking-config' },
-        { name: 'Reserve',       my: '/iams/api/v1/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', leaf: '/slots/ccd3dd63-e781-48ba-a48d-c65eaa4fc663/reserve-slot', sig: 'reserve-slot', exact: true },
-        { name: 'Initiate',      my: '/iams/api/v1/payment/dg-epay/initiate',               leaf: '/payment/dg-epay/initiate',        sig: 'dg-epay', obf: true },
         { name: 'BookingConfirm',my: '/iams/api/v1/appointment/appointment-booking-config', leaf: '/appointment/appointment-booking-config', sig: 'appointment-booking-config' },
-        { name: 'Upload',        my: '/iams/api/v1/file/upload_file',                       leaf: '/file/upload_file',                sig: 'upload_file' },
-        { name: 'SlotStatus',    my: '/iams/api/v1/file/file-confirmation-and-slot-status', leaf: '/file/file-confirmation-and-slot-status', sig: 'file-confirmation-and-slot-status' },
-        { name: 'SignupOTP',     my: '/iams/api/v1/otp/signupOtp',                          leaf: '/otp/signupOtp',                   sig: 'signupOtp' },
-        { name: 'VerifyOTP',     my: '/iams/api/v1/otp/verifyOtp',                          leaf: '/otp/verifyOtp',                   sig: 'verifyOtp' },
-        { name: 'ForgotOTP',     my: '/iams/api/v1/forgot-password/sendOtp',                leaf: '/forgot-password/sendOtp',         sig: 'forgot-password' }
+        { name: 'Reserve',       my: '/iams/api/v1/slots/54ea9f13-f1e2-4cea-9e08-f525e8242ccf/reserve-slot', leaf: '/slots/54ea9f13-f1e2-4cea-9e08-f525e8242ccf/reserve-slot', sig: 'reserve-slot' },
+        { name: 'Upload',        my: '/iams/api/v1/file/upload_file_v23',                   leaf: '/file/upload_file_v23',            sig: 'upload_file_v23' },
+        { name: 'Overviews',     my: '/iams/api/v1/file/over-views',                        leaf: '/file/over-views',                 sig: 'over-views' },
+        { name: 'SlotStatus',    my: '/iams/api/v1/file/file-confirmation_and_slot-status', leaf: '/file/file-confirmation_and_slot-status', sig: 'file-confirmation_and_slot-status' },
+        { name: 'PaymentAmount', my: '/iams/api/v1/file/payment-amount',                    leaf: '/file/payment-amount',             sig: 'payment-amount' },
+        { name: 'FileDelete',    my: '/iams/api/v1/file/delete',                            leaf: '/file/delete',                     sig: 'file/delete' },
+        { name: 'Initiate',      my: '/iams/api/v1/payment/{method}/dg-epay/initiate',      leaf: '/payment/{method}/dg-epay/initiate', sig: 'dg-epay', obf: true },
+        { name: 'ForgotVerify',  my: '/iams/api/v1/forgot-password/verify',                 leaf: '/forgot-password/verify',          sig: 'forgot-password/verify' },
+        { name: 'ForgotSetPass', my: '/iams/api/v1/forgot-password/set-password',           leaf: '/forgot-password/set-password',    sig: 'forgot-password/set-password' },
+        { name: 'ForgotResend',  my: '/iams/api/v1/forgot-password/resend',                 leaf: '/forgot-password/resend',          sig: 'forgot-password/resend' }
     ];
 
     const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -153,9 +158,12 @@
         // where each endpoint lives in your script (constant name, or a note for inline URLs)
         const WHERE = {
             Signin: 'API_SIGNIN_V2', Verify: 'API_VERIFY', GetBookingConfig: 'API_BOOK',
-            Initiate: 'API_INITIATE', ForgotOTP: 'API_FORGOT', SlotStatus: 'API_SLOT_STATUS',
+            Initiate: 'API_INITIATE / PAYMENT_METHOD_ID', SlotStatus: 'API_SLOT_STATUS',
             Reserve: 'RESERVE_SLOT_ID_FIXED', BookingConfirm: 'appointment-booking-config URL (Upload tab handler)',
-            Upload: 'upload-file URL (uploadFile fn)', SignupOTP: 'signupOtp URL (Sign Up handlers)', VerifyOTP: 'verifyOtp URL (Sign Up handlers)'
+            Upload: 'upload_file_v23 URL (uploadFile fn)', Overviews: 'over-views URL (File Checking btn)',
+            PaymentAmount: 'payment-amount URL', FileDelete: 'file/delete URL',
+            SignupOTP: 'signupOtp URL (Sign Up handlers)', VerifyOTP: 'verify-otp URL (Sign Up handlers)',
+            ForgotVerify: 'forgot-password/verify', ForgotSetPass: 'forgot-password/set-password', ForgotResend: 'forgot-password/resend'
         };
         const actions = results.filter(r => r.status === 'CHANGED' || r.status === 'MISSING').map(r => {
             if (r.name === 'Reserve') {
