@@ -2787,6 +2787,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     });
 
     const UPLOAD_MAX_TRIES = 4;   // transient 503/429 retries with a fresh distinct token each time
+    // Persisted (per-profile, reload-surviving) upload Files, keyed by input id. Filled by
+    // initPersistentUploads; uploadFile() falls back to these when no fresh file is picked.
+    var rjSavedUploads = rjSavedUploads || {};
     // Send a multipart/form-data upload with the file bytes encoded by hand, so the payload
     // survives BOTH transports: native page fetch (Blob body) and the GM_xmlhttpRequest
     // fallback (raw binary string). A plain FormData loses its File when it has to go through
@@ -2832,7 +2835,10 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     async function uploadFile(fileInputId, isPrimary, label) {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         const fileInput = document.getElementById(fileInputId);
-        const file = fileInput?.files?.length > 0 ? fileInput.files[0] : null;
+        // Prefer a freshly-picked file; else fall back to the PERSISTED file (survives reload,
+        // per-profile, IndexedDB). Browser security forbids setting input.files programmatically,
+        // so the saved File is kept in memory (rjSavedUploads) and used directly here.
+        const file = (fileInput?.files?.length > 0) ? fileInput.files[0] : (rjSavedUploads[fileInputId] || null);
         if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return; }   // never upload an empty part
         const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23", tag: 'upload', state: 'pending', note: `${label}` });
 
@@ -2885,6 +2891,43 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
     document.getElementById('ivac-btn-file-upload-3')?.addEventListener('click', () => uploadFile('ivac-file-upload-3', false, 'Attendant 2'));
     document.getElementById('ivac-btn-file-upload-4')?.addEventListener('click', () => uploadFile('ivac-file-upload-4', false, 'Attendant 3'));
+
+    // ============ PERSISTENT PDF UPLOADS (per-profile, IndexedDB) ============
+    // Patient/Attendant PDFs stay saved across reload until overwritten (new pick) or cleared (🗑).
+    // Browser forbids setting input.files programmatically, so saved Files live in rjSavedUploads
+    // (memory) and uploadFile() falls back to them. Bytes persist in IndexedDB keyed per profile.
+    (function initPersistentUploads() {
+        const SLOTS = [
+            { input: 'ivac-file-upload',   slot: 'patient', label: 'Patient File' },
+            { input: 'ivac-file-upload-2', slot: 'atten1',  label: 'Attendant 1' },
+            { input: 'ivac-file-upload-3', slot: 'atten2',  label: 'Attendant 2' },
+            { input: 'ivac-file-upload-4', slot: 'atten3',  label: 'Attendant 3' },
+        ];
+        const DB = 'rj_uploads', STORE = 'files';
+        function openDB() { return new Promise((res, rej) => { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+        async function idbPut(k, v) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+        async function idbGet(k) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readonly'); const rq = t.objectStore(STORE).get(k); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => rej(rq.error); }); }
+        async function idbDel(k) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+        const keyFor = (slot) => `${(typeof activeProfileName !== 'undefined' && activeProfileName) || 'default'}::${slot}`;
+
+        function setLabel(input, name) { const el = document.getElementById('rj-svd-' + input); if (!el) return; if (name) { el.innerHTML = '💾 <span style="color:#4ade80">' + name + '</span> <span data-clr="' + input + '" title="clear saved file" style="cursor:pointer;color:#f87171;font-weight:800">🗑</span>'; el.style.display = 'block'; } else { el.textContent = ''; el.style.display = 'none'; } }
+
+        // inject a tiny saved-file status line under each input row
+        SLOTS.forEach(s => { const inp = document.getElementById(s.input); if (!inp || document.getElementById('rj-svd-' + s.input)) return; const row = inp.closest('.fr') || inp.parentElement; const d = document.createElement('div'); d.id = 'rj-svd-' + s.input; d.style.cssText = 'display:none;font:700 .58rem Consolas,monospace;color:#4ade80;word-break:break-all;margin:0 0 3px 2px'; row.insertAdjacentElement('afterend', d); });
+
+        // clear (🗑) via delegation
+        document.addEventListener('click', async (e) => { const t = e.target; if (t && t.dataset && t.dataset.clr) { const input = t.dataset.clr; const s = SLOTS.find(x => x.input === input); if (!s) return; delete rjSavedUploads[input]; try { await idbDel(keyFor(s.slot)); } catch (err) {} setLabel(input, ''); logStatus(`🗑 ${s.label} saved file cleared`, 'y'); } });
+
+        // on new file pick → save bytes to IDB + memory
+        SLOTS.forEach(s => { const inp = document.getElementById(s.input); if (!inp) return; inp.addEventListener('change', async () => { const f = inp.files && inp.files[0]; if (!f) return; try { const buf = await f.arrayBuffer(); await idbPut(keyFor(s.slot), { name: f.name, type: f.type || 'application/pdf', bytes: buf, savedAt: Date.now() }); rjSavedUploads[s.input] = f; setLabel(s.input, f.name); logStatus(`💾 ${s.label} saved (${Math.round(f.size / 1024)}KB)`, 'g'); } catch (err) { logStatus(`⚠ ${s.label} save failed: ${err.message}`, 'y'); } }); });
+
+        // load the active profile's saved files into memory + labels
+        async function loadForProfile() { for (const s of SLOTS) { try { const rec = await idbGet(keyFor(s.slot)); if (rec && rec.bytes) { rjSavedUploads[s.input] = new File([rec.bytes], rec.name, { type: rec.type || 'application/pdf' }); setLabel(s.input, rec.name); } else { delete rjSavedUploads[s.input]; setLabel(s.input, ''); } } catch (err) {} } }
+        window.__rjReloadSavedUploads = loadForProfile;
+
+        setTimeout(loadForProfile, 700);   // initial
+        ['main-profile-select', 'pm-profile-select'].forEach(id => { const sel = document.getElementById(id); if (sel) sel.addEventListener('change', () => setTimeout(loadForProfile, 200)); });
+    })();
 
     const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
 
