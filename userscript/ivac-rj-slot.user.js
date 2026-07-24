@@ -4166,9 +4166,9 @@ async function stepInitiate(signal) {
         // DEKHABE (asol page-o axios/XHR die kore, tai CORS thake). Unchecked -> forceGM = GM_xmlhttp
         // (CORS-immune kintu Network e lukano). native e origin/sec-* forbidden header browser nijei
         // boshay, tai native path e segulo baad; GM path e fingerprint header lage (WAF pass).
-        // x-token ENCRYPTED ("1."-prefix) — real initiate fetch confirmed. encTokenForCall encrypts
-        // by Initiate config (same live-scanned v8 cipher); chk-initiate-raw checkbox can force RAW.
-        const initiateXToken = encTokenForCall(initiateToken, 'initiate');
+        // x-token = RAW captcha token. Only Signin & Reserve (body "c") use encryption; initiate
+        // (like upload/signup) sends the raw token. The "1."-prefix is the raw token's own format.
+        const initiateXToken = initiateToken;
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
         const initHeaders = useNative
             ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateXToken }
