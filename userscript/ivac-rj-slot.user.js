@@ -310,6 +310,14 @@ const H2 = {
             this.preWarm().catch(() => {});
         }
 
+        // DYNAMIC: rewrite the URL from the live-scanned / intercepted endpoint map so the code
+        // auto-adapts when the server bumps an endpoint (v23→v24), the reserve slot-id, or the
+        // dg-epay payment-method-id — without touching any call site. Empty map = no change.
+        try { if (typeof rjRewriteUrl === 'function') url = rjRewriteUrl(url); } catch (e) {}
+        // DYNAMIC: inject captured fixed headers (x-sec-*, x-v-request-meta) when the site's own
+        // values are known and this call already carries a same-named header (so we only refresh).
+        try { if (typeof rjApplyDynHeaders === 'function') init = rjApplyDynHeaders(url, init); } catch (e) {}
+
         const h2Init = { ...init, credentials: init.credentials || 'omit' };
 
         this._state.activeStreams++;
@@ -379,6 +387,84 @@ const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-bookin
 const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot-status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
+
+// ==================== DYNAMIC ENDPOINT / ID / HEADER RESOLVER ====================
+// Auto-adapts to server bundle changes WITHOUT hand-edits, via a single URL-rewrite chokepoint
+// in H2.fetchH2. Two sources:
+//   1) BUNDLE live-scan  → current literal endpoints + reserve slot-id  (rjResolveEndpointsLive)
+//   2) RUNTIME intercept → dg-epay payment-method-id + fixed headers from the site's own requests
+// Everything is guarded + falls back to the hardcoded constants above if a source yields nothing.
+const RJ_DYN = { epMap: {}, headers: {}, resolvedAt: 0, payId: null };
+
+// substring replacements applied to every outgoing URL (only confident, specific mappings added)
+function rjRewriteUrl(url) {
+    try { const m = RJ_DYN.epMap; for (const from in m) { if (from && m[from] && from !== m[from] && url.indexOf(from) !== -1) url = url.split(from).join(m[from]); } } catch (e) {}
+    return url;
+}
+// refresh known fixed headers with the site's real captured values — ONLY for headers the call
+// already sends (so we never add a header a request didn't intend to carry).
+function rjApplyDynHeaders(url, init) {
+    try {
+        const H = RJ_DYN.headers; if (!init || !init.headers) return init;
+        const hdr = init.headers; let touched = false; const out = { ...hdr };
+        for (const k in hdr) { const lk = k.toLowerCase(); if (H[lk] && hdr[k] !== H[lk]) { out[k] = H[lk]; touched = true; } }
+        return touched ? { ...init, headers: out } : init;
+    } catch (e) { return init; }
+}
+
+// endpoint families: code = what our constants currently use; re = how to find the CURRENT literal
+// in the bundle. If the bundle's literal differs, we map code→bundle so URLs auto-rewrite.
+const RJ_EP_FAMILIES = [
+    { code: '/auth/v23-sign-in',                        re: /\/auth\/v\d+-sign-in/ },
+    { code: '/file/upload_file_v23',                    re: /\/file\/upload_file(?:_v\d+)?/ },
+    { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp/ },
+    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp/ },
+    { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp/ },
+    { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config/ },
+    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config/ },
+    { code: '/file/over-views',                         re: /\/file\/over-views?/ },
+    { code: '/file/file-confirmation_and_slot-status',  re: /\/file\/file-confirmation[_a-z-]*slot-status/i },
+    { code: '/file/payment-amount',                     re: /\/file\/payment-amount/ }
+];
+
+// scan the live bundle chunk(s) and build epMap for anything that changed
+async function rjResolveEndpointsLive() {
+    try {
+        const urls = await findBundleUrls(); if (!urls.length) return;
+        let text = '';
+        for (const u of urls) { const t = await fetchText(u); if (t) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; } }
+        if (!text) return;
+        // endpoint families
+        for (const f of RJ_EP_FAMILIES) { const m = text.match(f.re); if (m && m[0] && m[0] !== f.code) RJ_DYN.epMap[f.code] = m[0]; }
+        // reserve slot-id
+        const sm = text.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
+        if (sm && sm[1]) { try { if (typeof RESERVE_SLOT_ID_FIXED !== 'undefined' && sm[1].toLowerCase() !== RESERVE_SLOT_ID_FIXED.toLowerCase()) RJ_DYN.epMap[RESERVE_SLOT_ID_FIXED] = sm[1]; } catch (e) {} }
+        RJ_DYN.resolvedAt = Date.now();
+        const n = Object.keys(RJ_DYN.epMap).length;
+        console.log(`%c[RJ Dyn] endpoints live-scanned — ${n} change(s) mapped`, 'color:#4ade80;font-weight:700', RJ_DYN.epMap);
+        try { logStatus(`🔄 Endpoints live-scanned — ${n} change(s)`, n ? 'y' : 'g'); } catch (e) {}
+    } catch (e) { console.log('[RJ Dyn] endpoint scan failed:', e.message); }
+}
+
+// intercept the site's OWN requests to learn the live payment-method-id + fixed headers
+(function rjInstallRuntimeIntercept() {
+    try {
+        const cap = (url, headers) => {
+            try {
+                if (url) { const pm = ('' + url).match(/\/payment\/([0-9a-fA-F-]{36})\/dg-epay\/initiate/); if (pm && pm[1]) { RJ_DYN.payId = pm[1]; try { if (typeof PAYMENT_METHOD_ID !== 'undefined' && pm[1].toLowerCase() !== PAYMENT_METHOD_ID.toLowerCase()) RJ_DYN.epMap[PAYMENT_METHOD_ID] = pm[1]; } catch (e) {} } }
+                if (headers) { const g = (n) => { try { return typeof headers.get === 'function' ? headers.get(n) : headers[n] || headers[n.toLowerCase()]; } catch (e) { return null; } };
+                    for (const n of ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta']) { const v = g(n); if (v) RJ_DYN.headers[n] = v; } }
+            } catch (e) {}
+        };
+        const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        const of = w.fetch;
+        if (of && !of.__rjWrapped) { const nf = function (input, init) { try { const u = (input && input.url) ? input.url : input; cap(u, (init && init.headers) || (input && input.headers)); } catch (e) {} return of.apply(this, arguments); }; nf.__rjWrapped = true; try { w.fetch = nf; } catch (e) {} }
+        const oo = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
+        const os = w.XMLHttpRequest && w.XMLHttpRequest.prototype.setRequestHeader;
+        if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
+        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'].includes(lk)) RJ_DYN.headers[lk] = v; } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+    } catch (e) {}
+})();
 
 function getDeviceId() {
     let id = localStorage.getItem('rj_device_id');
@@ -2339,9 +2425,12 @@ async function scanAndMaybeAutoSignin(reason) {
 }
 
 document.getElementById('scan-btn')?.addEventListener('click', async () => {
+    try { rjResolveEndpointsLive(); } catch (e) {}   // DYNAMIC: refresh endpoints + slot-id from bundle too
     const ok = await scanAndMaybeAutoSignin('🔍 Manual scan — resolving encryption secret from live bundle…');
     if (!ok) logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
 });
+// DYNAMIC: live-scan endpoints once at startup (in the background) so URL rewrites are ready
+setTimeout(() => { try { rjResolveEndpointsLive(); } catch (e) {} }, 2000);
 
 // A_E: auto-scan every 2s (same work as manual SCAN). As soon as encryption config
 // is found/activated, it turns itself OFF and auto-starts Signin. Click again to cancel.
