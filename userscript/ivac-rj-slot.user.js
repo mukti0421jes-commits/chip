@@ -1635,34 +1635,8 @@ async function performSignin(phone, password, captchaToken) {
     return { ok: response.ok, status: response.status, body: result };
 }
 
-// ==================== INITIATE API CALL (H2) ====================
-async function performInitiate(accessToken, appointmentId) {
-    const body = JSON.stringify({ appointmentId });
-    const response = await H2.fetchH2Critical(API_INITIATE, {
-        method: "POST",
-        headers: {
-            "accept": "application/json, text/plain, */*",
-            "authorization": `Bearer ${accessToken}`,
-            "cache-control": "no-cache, no-store, must-revalidate",
-            "content-type": "application/json",
-            "pragma": "no-cache",
-            "x-device-id": getDeviceId()
-        },
-        referrer: API_REFERRER,
-        body: body
-    });
-
-    const contentType = response.headers.get('content-type') || '';
-    let result;
-    if (contentType.includes('application/json')) {
-        result = await response.json();
-    } else {
-        const text = await response.text();
-        try { result = JSON.parse(text); } catch(e) { result = { raw: text }; }
-    }
-    return { ok: response.ok, status: response.status, body: result };
-}
-
+// Active initiate is stepInitiate (STEP_FACTORY). The old performInitiate() helper was unused
+// dead code (it carried no x-token) and has been removed.
 function extractPaymentUrl(body) {
     if (!body) return null;
     const d = body.data || body;
