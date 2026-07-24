@@ -376,7 +376,7 @@ const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOt
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
 const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
-const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and-slot-status";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot-status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 
