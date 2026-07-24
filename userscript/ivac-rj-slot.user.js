@@ -394,7 +394,14 @@ const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 //   1) BUNDLE live-scan  → current literal endpoints + reserve slot-id  (rjResolveEndpointsLive)
 //   2) RUNTIME intercept → dg-epay payment-method-id + fixed headers from the site's own requests
 // Everything is guarded + falls back to the hardcoded constants above if a source yields nothing.
-const RJ_DYN = { epMap: {}, headers: {}, resolvedAt: 0, payId: null };
+const RJ_DYN_KEY = 'rj_dyn_captured';
+const RJ_DYN = (function () {
+    // restore learned values (Method 2: captured from the site's real traffic) so they survive reload
+    const base = { epMap: {}, headers: {}, resolvedAt: 0, payId: null };
+    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.payId = s.payId || null; } } catch (e) {}
+    return base;
+})();
+function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, payId: RJ_DYN.payId })); } catch (e) {} }
 
 // substring replacements applied to every outgoing URL (only confident, specific mappings added)
 function rjRewriteUrl(url) {
@@ -449,11 +456,25 @@ async function rjResolveEndpointsLive() {
 // intercept the site's OWN requests to learn the live payment-method-id + fixed headers
 (function rjInstallRuntimeIntercept() {
     try {
+        // Method 2: learn EVERYTHING from the site's real traffic (endpoints, reserve slot-id,
+        // payment-method-id, fixed headers). Whatever the site sends is ground-truth; map old→new
+        // and persist so it survives reload. Encryption is the only thing NOT learnable here (the
+        // site sends the encrypted result, not the cipher) — that stays on the bundle scan.
+        const setMap = (from, to) => { if (from && to && from !== to && RJ_DYN.epMap[from] !== to) { RJ_DYN.epMap[from] = to; return true; } return false; };
         const cap = (url, headers) => {
             try {
-                if (url) { const pm = ('' + url).match(/\/payment\/([0-9a-fA-F-]{36})\/dg-epay\/initiate/); if (pm && pm[1]) { RJ_DYN.payId = pm[1]; try { if (typeof PAYMENT_METHOD_ID !== 'undefined' && pm[1].toLowerCase() !== PAYMENT_METHOD_ID.toLowerCase()) RJ_DYN.epMap[PAYMENT_METHOD_ID] = pm[1]; } catch (e) {} } }
+                let changed = false;
+                const u = url ? ('' + url) : '';
+                if (u) {
+                    const pm = u.match(/\/payment\/([0-9a-fA-F-]{36})\/dg-epay\/initiate/);
+                    if (pm && pm[1]) { RJ_DYN.payId = pm[1]; try { if (typeof PAYMENT_METHOD_ID !== 'undefined' && pm[1].toLowerCase() !== PAYMENT_METHOD_ID.toLowerCase() && setMap(PAYMENT_METHOD_ID, pm[1])) changed = true; } catch (e) {} }
+                    const sm = u.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
+                    if (sm && sm[1]) { try { if (typeof RESERVE_SLOT_ID_FIXED !== 'undefined' && sm[1].toLowerCase() !== RESERVE_SLOT_ID_FIXED.toLowerCase() && setMap(RESERVE_SLOT_ID_FIXED, sm[1])) changed = true; } catch (e) {} }
+                    try { if (typeof RJ_EP_FAMILIES !== 'undefined') { for (const f of RJ_EP_FAMILIES) { const m = u.match(f.re); if (m && m[0] && m[0] !== f.code && setMap(f.code, m[0])) changed = true; } } } catch (e) {}
+                }
                 if (headers) { const g = (n) => { try { return typeof headers.get === 'function' ? headers.get(n) : headers[n] || headers[n.toLowerCase()]; } catch (e) { return null; } };
-                    for (const n of ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta']) { const v = g(n); if (v) RJ_DYN.headers[n] = v; } }
+                    for (const n of ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta']) { const v = g(n); if (v && RJ_DYN.headers[n] !== v) { RJ_DYN.headers[n] = v; changed = true; } } }
+                if (changed) { rjPersistDyn(); try { console.log('%c[RJ Dyn] learned from site traffic', 'color:#4ade80;font-weight:700', RJ_DYN.epMap, RJ_DYN.headers); } catch (e) {} }
             } catch (e) {}
         };
         const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
@@ -462,7 +483,7 @@ async function rjResolveEndpointsLive() {
         const oo = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
         const os = w.XMLHttpRequest && w.XMLHttpRequest.prototype.setRequestHeader;
         if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
-        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'].includes(lk)) RJ_DYN.headers[lk] = v; } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'].includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
     } catch (e) {}
 })();
 
