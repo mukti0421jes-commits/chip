@@ -451,10 +451,15 @@ const RJ_EP_FAMILIES = [
 // scan the live bundle chunk(s) and build epMap for anything that changed
 async function rjResolveEndpointsLive() {
     try {
-        const urls = await findBundleUrls(); if (!urls.length) return;
+        const urls = await findBundleUrls(); if (!urls.length) { try { logStatus('⚠ Endpoint scan: no bundle chunks found', 'y'); } catch (e) {} return; }
+        // fetch each chunk with pageFetch (native, same as encryption scan) + GM fallback
+        const grab = async (u) => {
+            try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
+            return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
+        };
         let text = '';
-        for (const u of urls) { const t = await fetchText(u); if (t) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; } }
-        if (!text) return;
+        for (const u of urls) { const t = await grab(u); if (t) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; } }
+        if (!text) { try { logStatus('⚠ Endpoint scan: bundle fetch empty', 'y'); } catch (e) {} return; }
         // endpoint families → store the bundle's CURRENT literal per family (used to rewrite any version)
         RJ_DYN.fam = RJ_DYN.fam || {};
         for (const f of RJ_EP_FAMILIES) { const m = text.match(f.re); if (m && m[0]) RJ_DYN.fam[f.code] = m[0]; }
