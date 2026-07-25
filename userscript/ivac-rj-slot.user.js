@@ -480,6 +480,17 @@ async function rjResolveEndpointsLive() {
         // payment-method-id, fixed headers). Whatever the site sends is ground-truth; map old→new
         // and persist so it survives reload. Encryption is the only thing NOT learnable here (the
         // site sends the encrypted result, not the cipher) — that stays on the bundle scan.
+        const FIXED_HDRS = ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'];
+        // Announce a freshly-captured fixed header (green log + panel status) so you can SEE it worked
+        // when you log in through the real IVAC page. These two values live only in the site's runtime
+        // objects (not the bundle), so traffic capture is the ONLY dynamic source for them.
+        const noteHeader = (name, val) => {
+            try {
+                const short = val.length > 14 ? val.slice(0, 10) + '…' + val.slice(-4) : val;
+                console.log('%c[RJ Dyn] 🔐 Captured ' + name + ' from site → saved (' + short + ')', 'color:#4ade80;font-weight:800');
+                if (typeof logStatus === 'function') logStatus('🔐 Captured ' + name + ' → saved', 'g');
+            } catch (e) {}
+        };
         const setMap = (from, to) => { if (from && to && from !== to && RJ_DYN.epMap[from] !== to) { RJ_DYN.epMap[from] = to; return true; } return false; };
         const cap = (url, headers) => {
             try {
@@ -493,7 +504,7 @@ async function rjResolveEndpointsLive() {
                     try { if (typeof RJ_EP_FAMILIES !== 'undefined') { for (const f of RJ_EP_FAMILIES) { const m = u.match(f.re); if (m && m[0] && m[0] !== f.code && setMap(f.code, m[0])) changed = true; } } } catch (e) {}
                 }
                 if (headers) { const g = (n) => { try { return typeof headers.get === 'function' ? headers.get(n) : headers[n] || headers[n.toLowerCase()]; } catch (e) { return null; } };
-                    for (const n of ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta']) { const v = g(n); if (v && RJ_DYN.headers[n] !== v) { RJ_DYN.headers[n] = v; changed = true; } } }
+                    for (const n of FIXED_HDRS) { const v = g(n); if (v && RJ_DYN.headers[n] !== v) { RJ_DYN.headers[n] = v; changed = true; noteHeader(n, v); } } }
                 if (changed) { rjPersistDyn(); try { console.log('%c[RJ Dyn] learned from site traffic', 'color:#4ade80;font-weight:700', RJ_DYN.epMap, RJ_DYN.headers); } catch (e) {} }
             } catch (e) {}
         };
@@ -503,7 +514,7 @@ async function rjResolveEndpointsLive() {
         const oo = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
         const os = w.XMLHttpRequest && w.XMLHttpRequest.prototype.setRequestHeader;
         if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
-        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'].includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (FIXED_HDRS.includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); noteHeader(lk, v); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
     } catch (e) {}
 })();
 
