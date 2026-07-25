@@ -422,13 +422,32 @@ function rjRewriteUrl(url) {
     } catch (e) {}
     return url;
 }
-// refresh known fixed headers with the site's real captured values — ONLY for headers the call
-// already sends (so we never add a header a request didn't intend to carry).
+// Apply learned headers to an outgoing call:
+//   (1) refresh any fixed header the call already carries → captured value (System 2 / bundle).
+//   (2) from the per-endpoint SUCCESS record, ADD headers the call is missing (learn NEW headers the
+//       server started requiring) and refresh existing ones — EXCEPT the per-call/forbidden set
+//       (RJ_HDR_SKIP: authorization, x-token, content-type…), which our code always sets itself.
 function rjApplyDynHeaders(url, init) {
     try {
-        const H = RJ_DYN.headers; if (!init || !init.headers) return init;
-        const hdr = init.headers; let touched = false; const out = { ...hdr };
+        if (!init || !init.headers) return init;
+        const hdr = init.headers; const out = { ...hdr }; let touched = false;
+        const H = RJ_DYN.headers;
+        // (1) refresh fixed headers already present
         for (const k in hdr) { const lk = k.toLowerCase(); if (H[lk] && hdr[k] !== H[lk]) { out[k] = H[lk]; touched = true; } }
+        // (2) per-endpoint recorded header set → add-missing + refresh
+        try {
+            const fam = (typeof rjEndpointFamily === 'function') ? rjEndpointFamily(url) : null;
+            const rec = fam && typeof RJ_REC !== 'undefined' && RJ_REC[fam];
+            if (rec && rec.headers) {
+                const lowerToActual = {}; for (const k in out) lowerToActual[k.toLowerCase()] = k;
+                for (const lk in rec.headers) {
+                    if (RJ_HDR_SKIP.includes(lk)) continue;              // never touch per-call/forbidden
+                    const val = rec.headers[lk];
+                    if (lowerToActual[lk] === undefined) { out[lk] = val; touched = true; }   // NEW header → add
+                    else if (out[lowerToActual[lk]] !== val) { out[lowerToActual[lk]] = val; touched = true; }  // refresh
+                }
+            }
+        } catch (e) {}
         return touched ? { ...init, headers: out } : init;
     } catch (e) { return init; }
 }
@@ -447,6 +466,80 @@ const RJ_EP_FAMILIES = [
     { code: '/file/file-confirmation_and_slot-status',  re: /\/file\/file-confirmation[_a-z-]*slot-status/i },
     { code: '/file/payment-amount',                     re: /\/file\/payment-amount/ }
 ];
+
+// ==================== REQUEST RECORDER (success-gated) ====================
+// System 2: when the SITE itself makes a SUCCESSFUL call (e.g. you log in through the real IVAC
+// page after System 1 / bundle-scan couldn't fix a signin), capture that call's endpoint + FULL
+// header set + body-field structure + response shape, keyed per endpoint-family, and persist it.
+// Our own code then reuses the recorded headers (so a NEW/changed header the bundle can't provide
+// is auto-applied). ONLY successful responses are recorded — a failed call is never learned from.
+// The encrypted body value `c` is NEVER replayed (single-use); our code always builds a fresh `c`
+// with the bundle cipher (System 1). So: System 1 = cipher+endpoint from bundle; System 2 =
+// headers+structure from a real success. Together the next code-call rebuilds a valid request.
+const RJ_REC_KEY = 'rj_req_records';
+const RJ_REC = (function () { try { const s = JSON.parse(localStorage.getItem(RJ_REC_KEY) || 'null'); return (s && typeof s === 'object') ? s : {}; } catch (e) { return {}; } })();
+function rjPersistRec() { try { localStorage.setItem(RJ_REC_KEY, JSON.stringify(RJ_REC)); } catch (e) {} }
+// headers our code MUST keep per-call — never overwrite/add these from a recorded (stale) value:
+//   authorization = our live Bearer; x-token = our fresh captcha/upload token; content-type carries
+//   the multipart boundary; the rest are per-connection/forbidden.
+const RJ_HDR_SKIP = ['authorization', 'x-token', 'content-type', 'content-length', 'cookie', 'host', 'connection', 'x-device-id'];
+// map a URL to its endpoint-family code (the record key)
+function rjEndpointFamily(url) {
+    try { const u = '' + url;
+        for (const f of RJ_EP_FAMILIES) { if (f.re.test(u)) return f.code; }
+        if (/\/dg-epay\/initiate/.test(u)) return '/payment/dg-epay/initiate';
+        if (/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/.test(u)) return '/slots/reserve-slot';
+        if (/\/auth\/signup\b/.test(u)) return '/auth/signup';
+    } catch (e) {}
+    return null;
+}
+// SUCCESS gate — only a genuinely successful response is worth learning from
+function rjIsSuccessBody(status, txt) {
+    if (!(status >= 200 && status < 300)) return false;
+    if (!txt) return true;
+    try { const b = JSON.parse(txt);
+        if (b.successFlag === true) return true;
+        if (b.data && (b.data.accessToken || b.data.requestId || b.data.appointmentId || b.data.reservationId || b.data.webview_url || b.data.status)) return true;
+        if (b.message === 'Success' || b.statusCode === 200 || b.statusCode === 201) return true;
+        return false;
+    } catch (e) { return true; }   // non-JSON 2xx (e.g. invoice pdf) — treat as success
+}
+// normalize any headers container → { lowercased-name: value }
+function rjHeadersToLowerObj(headers) {
+    const hdr = {};
+    try {
+        if (!headers) return hdr;
+        if (typeof headers.forEach === 'function' && !Array.isArray(headers)) { headers.forEach((v, k) => { hdr[('' + k).toLowerCase()] = v; }); }
+        else if (Array.isArray(headers)) { for (const pair of headers) { if (pair && pair.length >= 2) hdr[('' + pair[0]).toLowerCase()] = pair[1]; } }
+        else { for (const k in headers) hdr[('' + k).toLowerCase()] = headers[k]; }
+    } catch (e) {}
+    return hdr;
+}
+// record ONE successful call. Called from the fetch/XHR response hooks.
+function rjRecordSuccess(url, method, headers, body, status, respText) {
+    try {
+        const fam = rjEndpointFamily(url); if (!fam) return;
+        if (!rjIsSuccessBody(status, respText)) return;
+        const hdr = rjHeadersToLowerObj(headers);
+        // learn every non-per-call header into the global fixed-header map too (so refresh works even
+        // for calls that already carry the header name), and note what's newly learned.
+        const learned = [];
+        for (const k in hdr) { if (RJ_HDR_SKIP.includes(k)) continue; if (RJ_DYN.headers[k] !== hdr[k]) { RJ_DYN.headers[k] = hdr[k]; learned.push(k); } }
+        let bodyKeys = null; try { const bo = (body && typeof body === 'string') ? JSON.parse(body) : (body && typeof body === 'object' ? body : null); if (bo && typeof bo === 'object' && !Array.isArray(bo)) bodyKeys = Object.keys(bo); } catch (e) {}
+        let respShape = null; try { const rb = JSON.parse(respText); respShape = { keys: Object.keys(rb || {}), dataKeys: (rb && rb.data && typeof rb.data === 'object') ? Object.keys(rb.data) : null }; } catch (e) {}
+        const next = { url: '' + url, method: (method || 'GET').toUpperCase(), headers: hdr, bodyKeys: bodyKeys, respShape: respShape };
+        // skip if nothing meaningful changed since last record (avoids log/write spam on polling)
+        const prev = RJ_REC[fam];
+        const sameHdr = prev && JSON.stringify(prev.headers) === JSON.stringify(hdr) && (prev.method || '') === next.method && JSON.stringify(prev.bodyKeys) === JSON.stringify(bodyKeys);
+        if (sameHdr && !learned.length) { RJ_REC[fam].at = Date.now(); return; }
+        next.at = Date.now(); RJ_REC[fam] = next;
+        rjPersistDyn(); rjPersistRec();
+        try {
+            console.log('%c[RJ Rec] ✅ recorded SUCCESS ' + fam + (learned.length ? ' (+headers: ' + learned.join(', ') + ')' : ''), 'color:#4ade80;font-weight:800', RJ_REC[fam]);
+            if (typeof logStatus === 'function') logStatus('📼 Recorded success: ' + fam.split('/').pop() + (learned.length ? ' (+' + learned.length + ' hdr)' : ''), 'g');
+        } catch (e) {}
+    } catch (e) {}
+}
 
 // scan the live bundle chunk(s) and build epMap for anything that changed
 async function rjResolveEndpointsLive() {
@@ -510,11 +603,29 @@ async function rjResolveEndpointsLive() {
         };
         const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
         const of = w.fetch;
-        if (of && !of.__rjWrapped) { const nf = function (input, init) { try { const u = (input && input.url) ? input.url : input; cap(u, (init && init.headers) || (input && input.headers)); } catch (e) {} return of.apply(this, arguments); }; nf.__rjWrapped = true; try { w.fetch = nf; } catch (e) {} }
+        if (of && !of.__rjWrapped) {
+            const nf = function (input, init) {
+                let u, hdrs, bodyC, methodC;
+                try { u = (input && input.url) ? input.url : input; hdrs = (init && init.headers) || (input && input.headers); methodC = (init && init.method) || (input && input.method) || 'GET'; bodyC = (init && init.body); cap(u, hdrs); } catch (e) {}
+                const p = of.apply(this, arguments);
+                // RECORDER: on a SUCCESS response for a tracked endpoint, learn its headers/body/response.
+                // Clone the response so reading its body does NOT disturb the site's own consumption.
+                try {
+                    const uu = u, hh = hdrs, bb = bodyC, mm = methodC;
+                    if (uu && typeof rjEndpointFamily === 'function' && rjEndpointFamily(uu) && p && typeof p.then === 'function') {
+                        p.then(function (resp) { try { if (!resp || typeof resp.clone !== 'function') return; resp.clone().text().then(function (txt) { try { rjRecordSuccess(uu, mm, hh, bb, resp.status, txt); } catch (e) {} }).catch(function () {}); } catch (e) {} }).catch(function () {});
+                    }
+                } catch (e) {}
+                return p;
+            };
+            nf.__rjWrapped = true; try { w.fetch = nf; } catch (e) {}
+        }
         const oo = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
         const os = w.XMLHttpRequest && w.XMLHttpRequest.prototype.setRequestHeader;
-        if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
-        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (FIXED_HDRS.includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); noteHeader(lk, v); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+        const osend = w.XMLHttpRequest && w.XMLHttpRequest.prototype.send;
+        if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; this.__rjMethod = m; this.__rjHdrs = {}; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
+        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (this.__rjHdrs) this.__rjHdrs[lk] = v; if (FIXED_HDRS.includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); noteHeader(lk, v); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+        if (osend && !osend.__rjWrapped) { const nsend = function (body) { try { this.__rjBody = body; const self = this; this.addEventListener('load', function () { try { const url = self.__rjUrl; if (url && typeof rjEndpointFamily === 'function' && rjEndpointFamily(url)) rjRecordSuccess(url, self.__rjMethod || 'GET', self.__rjHdrs || {}, self.__rjBody, self.status, self.responseText); } catch (e) {} }); } catch (e) {} return osend.apply(this, arguments); }; nsend.__rjWrapped = true; w.XMLHttpRequest.prototype.send = nsend; }
     } catch (e) {}
 })();
 
