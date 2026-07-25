@@ -192,10 +192,6 @@ const H2 = {
 
         const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
 
-        // ── FORCE GM (CORS-immune) ──────────────────────────────────────────────
-        // Some endpoints (payment/dg-epay/initiate) return NO CORS headers, so a native
-        // fetch is always blocked by the preflight. Go straight through GM_xmlhttpRequest
-        // (not subject to CORS) instead of wasting a native attempt that logs an error.
         if (init.forceGM) return this._gmFallback(url, init, logId);
 
         // ── PER-CALL PROXY ROTATION ────────────────────────────────────────────
@@ -343,21 +339,11 @@ H2.preWarm();
 
 // ==================== API CONFIG ====================
 const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v23-sign-in";
-// x-sec-navigation-state / x-sec-runtime-state are NOT per-session random values — they are
-// FIXED constants baked into the site bundle (the obfuscated code assembles them from string
-// literals, e.g. the "1.9a5" fragment of the runtime-state). Confirmed against the live bundle
-// + HAR. The server may validate them, so we send the exact bundle constants, not a random uuid.
-// If a future bundle changes these, update the two constants below (grep the bundle for
-// "x-sec-navigation-state" / "x-sec-runtime-state", or read them from a fresh request HAR).
 const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
 const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
 function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-// initiate URL carries a fixed dg-epay payment-method id segment:
-//   /payment/{PAYMENT_METHOD_ID}/dg-epay/initiate   (confirmed from live bundle + real fetch).
-// The id is NOT the appointmentId (that goes in the body). If a future bundle changes it,
-// update PAYMENT_METHOD_ID (grep the real initiate URL).
 const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ed-b57c-60416e01617e';
 const API_INITIATE  = `https://api.ivacbd.com/iams/api/v1/payment/${PAYMENT_METHOD_ID}/dg-epay/initiate`;
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
@@ -368,12 +354,6 @@ const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmati
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 
-// ==================== DYNAMIC ENDPOINT / ID / HEADER RESOLVER ====================
-// Auto-adapts to server bundle changes WITHOUT hand-edits, via a single URL-rewrite chokepoint
-// in H2.fetchH2. Two sources:
-//   1) BUNDLE live-scan  → current literal endpoints + reserve slot-id  (rjResolveEndpointsLive)
-//   2) RUNTIME intercept → dg-epay payment-method-id + fixed headers from the site's own requests
-// Everything is guarded + falls back to the hardcoded constants above if a source yields nothing.
 const RJ_DYN_KEY = 'rj_dyn_captured';
 const RJ_DYN = (function () {
     // restore learned values (Method 2: captured from the site's real traffic) so they survive reload
@@ -402,11 +382,6 @@ function rjRewriteUrl(url) {
     } catch (e) {}
     return url;
 }
-// Apply learned headers to an outgoing call:
-//   (1) refresh any fixed header the call already carries → captured value (System 2 / bundle).
-//   (2) from the per-endpoint SUCCESS record, ADD headers the call is missing (learn NEW headers the
-//       server started requiring) and refresh existing ones — EXCEPT the per-call/forbidden set
-//       (RJ_HDR_SKIP: authorization, x-token, content-type…), which our code always sets itself.
 function rjApplyDynHeaders(url, init) {
     try {
         if (!init || !init.headers) return init;
@@ -447,15 +422,6 @@ const RJ_EP_FAMILIES = [
     { code: '/file/payment-amount',                     re: /\/file\/payment-amount/ }
 ];
 
-// ==================== REQUEST RECORDER (success-gated) ====================
-// System 2: when the SITE itself makes a SUCCESSFUL call (e.g. you log in through the real IVAC
-// page after System 1 / bundle-scan couldn't fix a signin), capture that call's endpoint + FULL
-// header set + body-field structure + response shape, keyed per endpoint-family, and persist it.
-// Our own code then reuses the recorded headers (so a NEW/changed header the bundle can't provide
-// is auto-applied). ONLY successful responses are recorded — a failed call is never learned from.
-// The encrypted body value `c` is NEVER replayed (single-use); our code always builds a fresh `c`
-// with the bundle cipher (System 1). So: System 1 = cipher+endpoint from bundle; System 2 =
-// headers+structure from a real success. Together the next code-call rebuilds a valid request.
 const RJ_REC_KEY = 'rj_req_records';
 const RJ_REC = (function () { try { const s = JSON.parse(localStorage.getItem(RJ_REC_KEY) || 'null'); return (s && typeof s === 'object') ? s : {}; } catch (e) { return {}; } })();
 function rjPersistRec() { try { localStorage.setItem(RJ_REC_KEY, JSON.stringify(RJ_REC)); } catch (e) {} }
@@ -549,10 +515,6 @@ async function rjResolveEndpointsLive() {
 // intercept the site's OWN requests to learn the live payment-method-id + fixed headers
 (function rjInstallRuntimeIntercept() {
     try {
-        // Method 2: learn EVERYTHING from the site's real traffic (endpoints, reserve slot-id,
-        // payment-method-id, fixed headers). Whatever the site sends is ground-truth; map old→new
-        // and persist so it survives reload. Encryption is the only thing NOT learnable here (the
-        // site sends the encrypted result, not the cipher) — that stays on the bundle scan.
         const FIXED_HDRS = ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'];
         // Announce a freshly-captured fixed header (green log + panel status) so you can SEE it worked
         // when you log in through the real IVAC page. These two values live only in the site's runtime
@@ -951,10 +913,6 @@ function encConfigInit() {
     }, 500);
 }
 
-// Collect ALL candidate /assets/*.js chunk URLs (Vite code-splits the cipher config into
-// its own chunk, so the FIRST script tag is usually NOT the one holding `secret:`). We gather
-// every chunk from the DOM + index.html, then encConfigAutoFetch fetches them until one yields
-// a resolvable config. Order: DOM scripts first, then any extra chunks from index.html.
 async function findBundleUrls() {
     const BUNDLE_RE_G = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js/g;
     const BUNDLE_RE   = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js(?:$|\?)/;
@@ -973,13 +931,6 @@ async function findBundleUrls() {
     return urls;
 }
 
-// ── ROBUST N-ARRAY SECRET RESOLVER (ported from extract_ciphers.js) ──────────
-// The old resolveConfig re-ran the obfuscated decoders + rotation IIFEs via a single
-// text-assembled new Function(). That FAILED today whenever a secret was assembled from
-// 2+ string-arrays (the assembly missed a rotation / mixed scopes). This version instead
-// RECONSTRUCTS each string-array + its base64/RC4 decoder from scratch, then finds each
-// array's correct rotation INDEPENDENTLY by requiring its decoded terms to be printable —
-// so it scales to ANY number of arrays (cost = sum of array lengths, not the product).
 function buildBundleResolver(src) {
     function mB(s,i,o,c){let d=0;for(;i<s.length;i++){if(s[i]===o)d++;else if(s[i]===c){d--;if(d===0)return i;}}return -1;}
     function mP(s,i){let d=0,q=null;for(;i<s.length;i++){const c=s[i];if(q){if(c==="\\"){i++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="(")d++;else if(c===")"){d--;if(d===0)return i;}}return -1;}
@@ -2512,11 +2463,6 @@ document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
     logStatus('🧹 Encryption config cleared — signin auto-retry stopped', 'g');
 });
 
-// SCAN button: manually resolve encryption config from the live bundle.
-// On a successful fresh resolve that activates signin, auto-fire the signin pipeline
-// (Task 3 — auto-signin ONLY after a manual scan, never from background polling).
-// Shared: run ONE bundle scan; if it activates the signin config, auto-start Signin.
-// Returns true when signin config became active (so callers like A_E can stop looping).
 async function scanAndMaybeAutoSignin(reason) {
     localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     if (reason) logStatus(reason, 'y');
@@ -2858,11 +2804,6 @@ function refreshProxyStatusLine() {
 
 function getActiveProxy() { const id = getActiveProxyId(); return loadProxies().find(p => p.id === id) || null; }
 
-// ── PER-CALL PROXY ROTATION ─────────────────────────────────────────────────
-// Rotation ON  → every API call egresses via a proxy from the pool. Sticky-on-success
-//               (keeps the same proxy while it works) / rotate-on-error (switches on failure).
-// Rotation OFF → falls back to the single connected proxy (window._rjActiveProxy), or direct.
-// Pool = saved proxies, optionally narrowed to the start–end range (1-indexed) in the Fetch tab.
 window._rjRotState = window._rjRotState || { current: null };
 function rjRotationOn() { return !!document.getElementById('ivac-parallel-proxy-rotation-toggle')?.classList.contains('on'); }
 function rjProxyPool() {
@@ -2993,10 +2934,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     // Persisted (per-profile, reload-surviving) upload Files, keyed by input id. Filled by
     // initPersistentUploads; uploadFile() falls back to these when no fresh file is picked.
     var rjSavedUploads = rjSavedUploads || {};
-    // Send a multipart/form-data upload with the file bytes encoded by hand, so the payload
-    // survives BOTH transports: native page fetch (Blob body) and the GM_xmlhttpRequest
-    // fallback (raw binary string). A plain FormData loses its File when it has to go through
-    // GM_xmlhttpRequest, which is why uploads returned 200 but stored nothing.
     async function sendMultipartUpload(url, headers, file, fields) {
         // DYNAMIC: upload goes straight through unsafeWindow.fetch (not H2.fetchH2), so apply the
         // endpoint-rewrite map here too — otherwise a changed upload endpoint wouldn't auto-update.
@@ -3059,10 +2996,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             const uploadToken = uploadEntry.token;
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
-                // Build the multipart body by hand so the real file bytes are ALWAYS sent —
-                // GM_xmlhttpRequest drops File objects from a FormData (→ 200 with an empty file
-                // part, i.e. "server e data jaina"). sendMultipartUpload sends raw bytes on both
-                // the native-fetch and GM paths.
                 const r = await sendMultipartUpload(
                     "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23",
                     { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
@@ -3070,10 +3003,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
                 );
                 let body = null; try { body = await r.json(); } catch(e) { body = null; }
                 const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-                // success or server-declared-invalid → token spent, release (stays out of queue).
-                // transient (bodyless 503 / 429) → token never reached the server: DON'T reuse it here
-                // (reusing the same token is exactly what 503s). Release it back to the queue and
-                // claim a brand-new one on the next attempt.
                 const transient = !ok && !shouldBurnToken(r.status, body);
                 releaseUploadToken(uploadEntry, transient);   // transient → back to queue; else discard
                 if (ok) { netLogUpdate(logId, { status: r.status, state: 'ok', note: 'uploaded' }); logStatus(`✅ ${label} uploaded`, 'g'); try { announceSuccess(label + ' uploaded'); } catch(e) {} return; }
@@ -3099,10 +3028,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-upload-3')?.addEventListener('click', () => uploadFile('ivac-file-upload-3', false, 'Attendant 2'));
     document.getElementById('ivac-btn-file-upload-4')?.addEventListener('click', () => uploadFile('ivac-file-upload-4', false, 'Attendant 3'));
 
-    // ============ PERSISTENT PDF UPLOADS (per-profile, IndexedDB) ============
-    // Patient/Attendant PDFs stay saved across reload until overwritten (new pick) or cleared (🗑).
-    // Browser forbids setting input.files programmatically, so saved Files live in rjSavedUploads
-    // (memory) and uploadFile() falls back to them. Bytes persist in IndexedDB keyed per profile.
     (function initPersistentUploads() {
         const SLOTS = [
             { input: 'ivac-file-upload',   slot: 'patient', label: 'Patient File' },
@@ -3784,11 +3709,6 @@ async function getCaptchaTokenSmart() {
 
 async function solveCaptchaByProvider(provider) { return solveCaptchaSilent(provider); }
 
-// ── FILE-UPLOAD TOKEN: claim a DISTINCT pre-solved token per file ───────────────
-// File upload isn't a race, so each file must get its OWN fresh token (never a reused one).
-// We CLAIM (remove) the freshest queued token so the next file grabs a different one — instant,
-// like the queue, and reuse-proof, like 10.0.5. If the queue is empty we solve live (10.0.5 style).
-// Returns the whole queue entry {token, source, createdAt} so a transient failure can re-queue it.
 function _requeueTokenEntry(entry) {
     if (!entry || !entry.token) return;
     tokenQueueCleanExpired();
@@ -3832,11 +3752,6 @@ function claimFreshUploadToken() {
 // or retries. Reusing a token the server has already seen is exactly what returns 503.
 const _uploadSpent = new Set();
 
-// ── DEDICATED UPLOAD TOKEN QUEUE ────────────────────────────────────────────
-// Upload needs tokens the SERVER HAS NEVER SEEN. The shared tokenQueue is unsafe: signin/verify/
-// book/reserve REUSE queued tokens without removing them, so a "queued" token may already be spent
-// → 503. So uploads use their OWN pool, solved in the background and consumed ONCE each. Never
-// shared with other steps ⇒ no reuse ⇒ no 503, and pre-solved ⇒ instant at click time.
 const UPLOAD_Q_MAX = 4;
 const uploadTokenQueue = [];                 // [{token, source, createdAt}]
 let _uploadFillerBusy = 0;
@@ -4099,10 +4014,6 @@ function _normDate(v) {
     return '';
 }
 
-// Scrape the appointment dates the site itself is showing on the /appointment/time-slot page.
-// The date dropdown renders each date as a leaf element like "12-07-2026" (DD-MM-YYYY, dash only).
-// We deliberately ignore slash-format dates (e.g. our own panel clock "08/05/2026") and skip
-// anything inside our own UI so only the site's real date list is captured.
 function scrapePageDates() {
     const set = new Set();
     const onlyDash = (t) => {
@@ -4364,17 +4275,6 @@ async function stepInitiate(signal) {
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
     const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
     try {
-        // The payment endpoint returns NO CORS headers → native fetch is always preflight-blocked
-        // (No ACAO), so we go straight through GM_xmlhttpRequest (forceGM). GM alone gets a 403
-        // from the "spellbound" WAF, so we also send the real browser fingerprint headers
-        // (sec-ch-ua / sec-fetch-* / accept-language / origin) to look like the genuine page
-        // request. This is a best-effort attempt to pass the payment WAF — not guaranteed.
-        // TOGGLE "Initiate Net": checked (default) -> native fetch = DevTools Network Fetch/XHR e
-        // DEKHABE (asol page-o axios/XHR die kore, tai CORS thake). Unchecked -> forceGM = GM_xmlhttp
-        // (CORS-immune kintu Network e lukano). native e origin/sec-* forbidden header browser nijei
-        // boshay, tai native path e segulo baad; GM path e fingerprint header lage (WAF pass).
-        // x-token = RAW captcha token. Only Signin & Reserve (body "c") use encryption; initiate
-        // (like upload/signup) sends the raw token. The "1."-prefix is the raw token's own format.
         const initiateXToken = initiateToken;
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
         const initHeaders = useNative
