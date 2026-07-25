@@ -123,18 +123,6 @@ const H2 = {
         });
     },
 
-    _detectProtocol() {
-        try {
-            const entries = performance.getEntriesByType('resource');
-            const apiEntries = entries.filter(e => e.name.includes('api.ivacbd.com'));
-            if (apiEntries.length > 0) {
-                const latest = apiEntries[apiEntries.length - 1];
-                const proto = latest.nextHopProtocol || '';
-                this._state.h2Confirmed = (proto === 'h2' || proto === 'h2c');
-            }
-        } catch(e) {}
-    },
-
     _startKeepAlive() {
         if (this._state.keepAliveTimerId) clearInterval(this._state.keepAliveTimerId);
 
@@ -145,13 +133,6 @@ const H2 = {
             await this._silentKeepAlivePing();
             this._state.lastActivity = Date.now();
         }, this._state.keepAliveIntervalMs);
-    },
-
-    stopKeepAlive() {
-        if (this._state.keepAliveTimerId) {
-            clearInterval(this._state.keepAliveTimerId);
-            this._state.keepAliveTimerId = null;
-        }
     },
 
     headersToObject(headers) {
@@ -341,7 +322,6 @@ const H2 = {
     },
 
     async fetchH2Critical(url, init = {}) { return this.fetchH2(url, { ...init, keepalive: true }); },
-    async fetchH2Upload(url, init = {}) { return this.fetchH2(url, { ...init, keepalive: false }); },
     getStats() { return { warmed: this._state.warmed, h2Confirmed: this._state.h2Confirmed, activeStreams: this._state.activeStreams, totalRequests: this._state.totalRequests, idleMs: Date.now() - this._state.lastActivity, failedCount: this._state.failedCount }; }
 };
 
@@ -992,9 +972,6 @@ async function findBundleUrls() {
     } catch(e) {}
     return urls;
 }
-
-// Back-compat single-URL helper (first candidate).
-async function findBundleUrl() { const u = await findBundleUrls(); return u.length ? u[0] : null; }
 
 // ── ROBUST N-ARRAY SECRET RESOLVER (ported from extract_ciphers.js) ──────────
 // The old resolveConfig re-ran the obfuscated decoders + rotation IIFEs via a single
@@ -2667,9 +2644,6 @@ function announceSuccess(text) {
     } catch(e) {}
 }
 
-function beepOtpOrVerify() { playBeep(660, 300, 0.16); }
-function beepReserve() { playBeepSequence([{ freq: 880, durationMs: 160, volume: 0.16 }, { freq: 1100, durationMs: 220, volume: 0.16 }]); }
-function beepBook() { playBeepSequence([{ freq: 880, durationMs: 140, volume: 0.16 }, { freq: 1100, durationMs: 140, volume: 0.16 }, { freq: 1320, durationMs: 220, volume: 0.16 }]); }
 function beepInitiateAndSpeak() {
     playBeepSequence([
         { freq: 523.25, durationMs: 190, volume: 0.16 },
@@ -4597,20 +4571,6 @@ setTimeout(() => { if (panel) { panel.style.transform = 'translateY(-50%)'; pane
 
 // ==================== SESSION RESTORE ====================
 setTimeout(() => { try { const restored = restoreSession(); if (restored) { const ageMin = Math.floor((Date.now() - sessionState.loggedInAt) / 60000); const ageSec = Math.floor(((Date.now() - sessionState.loggedInAt) % 60000) / 1000); const status = sessionState.isVerified ? 'verified' : 'unverified (need OTP)'; const h2Status = H2.getStats().h2Confirmed ? 'H/2 ✅' : 'H/2 ⏳'; logStatus(`🔓 Session restored • ${status} • ${ageMin}m ${ageSec}s old • ${h2Status}`, 'g'); if (sessionState.phone) { const phoneInp = document.getElementById('login-phone'); if (phoneInp && !phoneInp.value) phoneInp.value = sessionState.phone; } } } catch(e) {} }, 600);
-
-// ==================== SERVER-UP WATCHER + CONFIG-GATED AUTO-START ====================
-// 503 window এ থেকেও (reload ছাড়াই) background poll করে — server up হলেই bundle live-scan
-// করে encryption config resolve করে; config ready (Encrypt tab এ Active) হলে তবেই Signin
-// auto শুরু করে। logged-in/valid session থাকলে কিছুই auto-click হয় না।
-// ── AUTO-START WATCHER DISABLED ──────────────────────────────────────────────
-// The old watcher polled every 1s and called encConfigAutoFetch(false) in a loop,
-// which fetched/parsed the huge bundle repeatedly and hung the browser — and could
-// fire signin off a stale/half-resolved config. Per request, encryption config is now
-// resolved ONLY on a manual SCAN (⟳) click, and auto-signin fires from that same
-// handler once the config is freshly resolved and activated (see scan-btn handler).
-(function serverUpWatcherAutoStart() {
-    /* intentionally disabled — see scan-btn handler for manual scan + auto-signin */
-})();
 
 // ==================================================================
 //  ★★★ MANUAL PANEL MODULE (clone UI, wired to RJ engine) ★★★
