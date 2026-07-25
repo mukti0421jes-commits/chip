@@ -157,8 +157,6 @@ const H2 = {
         return obj;
     },
 
-    // POST the request to the local relay (proxy-relay.js on :8781); the relay performs it
-    // through the chosen proxy (real Chromium → passes Cloudflare) and returns { status, body }.
     _relayFetch(url, init, proxy, logId) {
         return new Promise((resolve, reject) => {
             const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
@@ -173,9 +171,6 @@ const H2 = {
                     onload: (resp) => {
                         let j; try { j = JSON.parse(resp.responseText); } catch(e) { return tryRelay(); }
                         if (resp.status >= 200 && resp.status < 300 && j && typeof j.status === 'number') {
-                            // relay returns status 0 when the in-browser fetch itself failed
-                            // (bad proxy / Cloudflare network block). Response() only accepts
-                            // 200–599, so map any out-of-range/0 status to 502 (→ triggers rotate).
                             const raw = j.status;
                             const safeStatus = (raw >= 200 && raw <= 599) ? raw : 502;
                             const nullBody = [101, 103, 204, 205, 304].includes(safeStatus);
@@ -207,9 +202,6 @@ const H2 = {
 
         const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
 
-        // ── PER-CALL PROXY ROTATION ────────────────────────────────────────────
-        // When rotation (or a single connected proxy) is active, route this call through
-        // the local relay so it egresses via a proxy IP. Sticky-on-success / rotate-on-error.
         const _proxy = (typeof pickProxyForCall === 'function') ? pickProxyForCall() : ((typeof window !== 'undefined') ? window._rjActiveProxy : null);
         const _bodySimple = (body == null || typeof body === 'string');
         if (_proxy && _proxy.host && !isConnectionCheck && _bodySimple) {
@@ -369,9 +361,6 @@ function getDeviceId() {
 const CAPTCHA_CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
 const CAPTCHA_ALPHA_LEN = CAPTCHA_CHARSET.length;
 
-// ==================== CAPTCHA CIPHER ALGORITHMS ====================
-// Verified byte-for-byte against the live IVAC bundle (via cipher_tool.js registry).
-// IVAC rotates which version+key is active ~2x/day; the math per version is fixed.
 function _cs_idx(ch) { return CAPTCHA_CHARSET.indexOf(ch); }
 
 // Shared driver for additive-shift ciphers.
@@ -536,9 +525,6 @@ function generateShiftsLCG(key, length) {
     return shifts;
 }
 
-// --- v9: mod_square / BBS-style x=x*x mod A additive-shift ---
-// A is fixed in the algorithm; if a future bundle uses a different modulus, the
-// live-scan overrides encConfig.modulus (see resolveConfig) and it is used here.
 function generateShiftsModSquare(key, length, A) {
     A = A || 1000036000099n;
     let s = 314159265n;
@@ -584,9 +570,6 @@ function encryptByVersion(version, token, key, prefixLen, encodeLen, modulus) {
 const ENC_SIGNIN_KEY  = 'rj_enc_signin_cfg_v2';
 const ENC_RESERVE_KEY = 'rj_enc_reserve_cfg_v2';
 
-// NO hardcoded key/version — IVAC rotates the bundle ~2x/day, so key+version+skip+length
-// are ALWAYS resolved live from the bundle (encConfigAutoFetch). The algorithm math for
-// each version (below) is fixed and does not rotate, so those stay in code.
 const encConfig = {
     signin:  {},
     reserve: {}
@@ -656,17 +639,12 @@ function encryptTokenByPurpose(rawToken, purpose) {
     }
 }
 
-// Respect the raw-token checkboxes next to Signin / Reserve:
-//   checkbox CHECKED = send RAW token (skip encryption); unchecked = encrypted (default).
 function encTokenForCall(rawToken, purpose) {
     const rawChkId = purpose === 'signin' ? 'chk-signin-raw' : 'chk-reserve-raw';
     return document.getElementById(rawChkId)?.checked ? rawToken : encryptTokenByPurpose(rawToken, purpose);
 }
 
 const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
-
-// NO hardcoded defaults — config is ALWAYS resolved live from the IVAC bundle.
-// If live resolve fails, encryption is DISABLED (not sent with wrong key).
 
 function encConfigInit() {
     encConfigLoad('signin');
@@ -678,8 +656,6 @@ function encConfigInit() {
             encConfigSave(p);
         }
     }
-    // NOTE: no auto bundle-fetch here — it hangs the browser. Config is resolved
-    // ONLY when the user clicks the SCAN (⟳) button. See scan-btn handler below.
     setTimeout(() => {
         encConfigApplyToUI('signin');
         encConfigApplyToUI('reserve');
@@ -691,9 +667,6 @@ async function findBundleUrl() {
     // 1) from the loaded page DOM
     const el = [...document.querySelectorAll('script[src]')].find(s => BUNDLE_RE.test(s.src));
     if (el) return el.src;
-    // 2) fallback: fetch index.html directly. Works without full page render / without reload \u2014
-    //    e.g. right after the server recovers from its pre-open 503 window. During 503 the fetch
-    //    returns !ok, so we return null and the watcher retries.
     try {
         const r = await pageFetch(location.origin + '/', { cache: 'no-store' });
         if (!r.ok) return null;
@@ -704,13 +677,6 @@ async function findBundleUrl() {
     return null;
 }
 
-// ── ROBUST N-ARRAY SECRET RESOLVER (ported from extract_ciphers.js) ──────────
-// The old resolveConfig re-ran the obfuscated decoders + rotation IIFEs via a single
-// text-assembled new Function(). That FAILED today whenever a secret was assembled from
-// 2+ string-arrays (the assembly missed a rotation / mixed scopes). This version instead
-// RECONSTRUCTS each string-array + its base64/RC4 decoder from scratch, then finds each
-// array's correct rotation INDEPENDENTLY by requiring its decoded terms to be printable —
-// so it scales to ANY number of arrays (cost = sum of array lengths, not the product).
 function buildBundleResolver(src) {
     function mB(s,i,o,c){let d=0;for(;i<s.length;i++){if(s[i]===o)d++;else if(s[i]===c){d--;if(d===0)return i;}}return -1;}
     function mP(s,i){let d=0,q=null;for(;i<s.length;i++){const c=s[i];if(q){if(c==="\\"){i++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="(")d++;else if(c===")"){d--;if(d===0)return i;}}return -1;}
@@ -780,17 +746,12 @@ function encRoleScores(src, pos) {
     return { sig: sM.length, res: rM.length };
 }
 
-// --- config-object parsing helpers (handle new bundle format) ---
-// split on top-level commas (respect quotes and ()[]{} nesting)
 function _splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
 // config integer: prefer a QUOTED number (Number("1"), c[f(1486)](_,"27")), else a bare int (old startAt:4)
 function _cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
 // brace-match an object literal starting at `{` (respect quotes)
 function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
 
-// Resolve config(s) directly from the bundle object literals (handles both old {secret:...,startAt:4,...}
-// and new {secret:...,startAt:Number("1"),length:c[f()](_,"27"),version:...} formats).
-// Returns { signin, reserve } where each is { key, skip, length, version } or null.
 function resolveBundleConfigs(text) {
     const R = buildBundleResolver(text);
     const found = [];
@@ -808,9 +769,6 @@ function resolveBundleConfigs(text) {
         const skip = _cfgNum(map.startAt), length = _cfgNum(map.length), version = _cfgNum(map.version);
         if (isNaN(skip) || isNaN(length) || isNaN(version)) continue;
         let secretExpr = map.secret;
-        // Member-access secret (secret: n[o(191)] or n.prop): the key lives inside an object
-        // property. Decode each concatenation-valued property; the captcha KEY is the spaceless
-        // one (sibling message strings contain spaces). Handles bundles with no direct expression.
         try {
             const t0 = secretExpr.trim();
             const mm = /^([A-Za-z_$][\w$]*)\s*[\.\[]/.exec(t0);
@@ -901,8 +859,6 @@ async function encConfigAutoFetch(forceReload) {
         });
         console.log('[RJ EncAuto] Bundle fetched:', text.length, 'chars from', bundleSrc);
 
-        // Robust N-array resolve: find every {secret,startAt,length,version} literal,
-        // decode each secret (handles ANY number of string-arrays), assign signin/reserve by keyword.
         const resolved = resolveBundleConfigs(text);
         const signin  = resolved.signin;
         const reserve = resolved.reserve;
@@ -1398,9 +1354,6 @@ const cfCheck = setInterval(() => {
     if (typeof turnstile === 'undefined') return;
     if (!document.getElementById('cfTurnstile')) return; // wait for the panel/container
     clearInterval(cfCheck);
-    // Pre-warm ONLY in manual (non-API) mode: render the widget as soon as
-    // Turnstile + container are ready so a solved token is already queued before
-    // Sign In is clicked — no render latency at click time. API mode never pre-warms.
     try {
         const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
         if (!useApi && cfWidgetId === null) { _lastRenderAt = 0; renderCaptcha(); }
@@ -1757,7 +1710,6 @@ document.getElementById('enc-bundle-force')?.addEventListener('click', () => {
     logStatus('💡 Force re-resolve (ignoring cache)…', 'y');
     encConfigAutoFetch(true);
 });
-
 
 // ==================== TAB SWITCHING ====================
 const tmap = { l: 'pl', s: 'ps', u: 'pu', f: 'pf', e: 'pe', x: 'px' };
@@ -2120,9 +2072,6 @@ document.getElementById('pl-del-appt')?.addEventListener('click', () => {
     } catch(e) {}
 });
 
-// E_encrpt button: fully clear encryption config.
-// A half-cleared previous config keeps signin auto-retrying (dangerous) — this wipes
-// the live config, localStorage, and the Encrypt-tab input fields so nothing lingers.
 document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
     try { stopFlag.value = true; } catch (e) {}          // halt any running/retrying pipeline
     try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch (e) {}  // stop A_E auto-scan
@@ -2149,11 +2098,6 @@ document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
     logStatus('🧹 Encryption config cleared — signin auto-retry stopped', 'g');
 });
 
-// SCAN button: manually resolve encryption config from the live bundle.
-// On a successful fresh resolve that activates signin, auto-fire the signin pipeline
-// (Task 3 — auto-signin ONLY after a manual scan, never from background polling).
-// Shared: run ONE bundle scan; if it activates the signin config, auto-start Signin.
-// Returns true when signin config became active (so callers like A_E can stop looping).
 async function scanAndMaybeAutoSignin(reason) {
     localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     if (reason) logStatus(reason, 'y');
@@ -2180,8 +2124,6 @@ document.getElementById('scan-btn')?.addEventListener('click', async () => {
     if (!ok) logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
 });
 
-// A_E: auto-scan every 2s (same work as manual SCAN). As soon as encryption config
-// is found/activated, it turns itself OFF and auto-starts Signin. Click again to cancel.
 const autoEncScan = { timerId: null, busy: false };
 function stopAutoEncScan(silent) {
     if (autoEncScan.timerId) { clearInterval(autoEncScan.timerId); autoEncScan.timerId = null; }
@@ -2479,11 +2421,6 @@ function refreshProxyStatusLine() {
 
 function getActiveProxy() { const id = getActiveProxyId(); return loadProxies().find(p => p.id === id) || null; }
 
-// ── PER-CALL PROXY ROTATION ─────────────────────────────────────────────────
-// Rotation ON  → every API call egresses via a proxy from the pool. Sticky-on-success
-//               (keeps the same proxy while it works) / rotate-on-error (switches on failure).
-// Rotation OFF → falls back to the single connected proxy (window._rjActiveProxy), or direct.
-// Pool = saved proxies, optionally narrowed to the start–end range (1-indexed) in the Fetch tab.
 window._rjRotState = window._rjRotState || { current: null };
 function rjRotationOn() { return !!document.getElementById('ivac-parallel-proxy-rotation-toggle')?.classList.contains('on'); }
 function rjProxyPool() {
@@ -2615,8 +2552,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const formData = new FormData();
         if (fileInput?.files?.length > 0) formData.append('file', fileInput.files[0]);
         formData.append('isPrimary', String(isPrimary));
-        // Claim a DISTINCT fresh token for THIS file (removed from queue → next file gets a different one).
-        // No token is ever reused after a successful/invalid response, so the reuse-503 cannot happen.
         let uploadEntry; try { uploadEntry = await claimFreshUploadToken(); } catch(e) { logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return; }
         const uploadToken = uploadEntry.token;
         logStatus(`📄 Uploading ${label}…`, 'y');
@@ -2625,8 +2560,6 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             const r = await H2.fetchH2Upload("https://api.ivacbd.com/iams/api/v1/file/upload-file", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': uploadToken }, referrer: API_REFERRER, body: formData });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
-            // success (used) or server-declared-invalid → token is spent, keep it OUT of the queue.
-            // transient 503/429 → token was never accepted, return it to the queue so a retry reuses it.
             const consumed = ok || shouldBurnToken(r.status, body);
             if (!consumed) _requeueTokenEntry(uploadEntry);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `uploaded` : (body?.message || `HTTP ${r.status}`) });
@@ -3211,8 +3144,6 @@ let _lastSilentSolveTime = 0;
 const SILENT_SOLVE_COOLDOWN = 500;
 
 async function getCaptchaTokenSmart() {
-    // ALWAYS reuse a queued token first (manual turnstile OR API-solved) — at API-call
-    // time any valid token in the queue is used, regardless of how it was solved.
     tokenQueueCleanExpired();
     const queuedAny = tokenQueue.find(t => t.token);
     if (queuedAny) { console.log(`[RJ Captcha] Reusing queued token (${queuedAny.source}, ${tokenQueue.length}/${TOKEN_QUEUE_MAX})`); return queuedAny.token; }
@@ -3247,11 +3178,6 @@ async function getCaptchaTokenSmart() {
 
 async function solveCaptchaByProvider(provider) { return solveCaptchaSilent(provider); }
 
-// ── FILE-UPLOAD TOKEN: claim a DISTINCT pre-solved token per file ───────────────
-// File upload isn't a race, so each file must get its OWN fresh token (never a reused one).
-// We CLAIM (remove) the freshest queued token so the next file grabs a different one — instant,
-// like the queue, and reuse-proof, like 10.0.5. If the queue is empty we solve live (10.0.5 style).
-// Returns the whole queue entry {token, source, createdAt} so a transient failure can re-queue it.
 function _requeueTokenEntry(entry) {
     if (!entry || !entry.token) return;
     tokenQueueCleanExpired();
@@ -3416,25 +3342,16 @@ async function stepVerify(signal) {
     } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
 }
 
-// ==================== RESERVE: slot-id (= saved appointmentId) + date picker ====================
-// Reserve endpoint is now /slots/{appointmentId}/reserve-slot with body {c, appointmentDate}.
-// The {appointmentId} is the SAME id saved to the profile after file upload (initiate uses it too).
 function getReserveAppointmentId() {
     let id = sessionState.appointmentId;
     if (!id) { try { const p = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (p && p.length >= 10) id = p; } catch(e) {} }
     return id || '';
 }
 
-// The reserve-slot URL uses a CENTER-FIXED slot UUID (e.g. ccd3dd63-…), NOT the per-user
-// appointmentId. It stays the same across accounts for a given center, so the user pastes it
-// once into the Slot ID box (persisted). Falls back to appointmentId only if the box is empty.
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
 const RESERVE_SLOT_ID_FIXED = 'ccd3dd63-e781-48ba-a48d-c65eaa4fc663';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
-    // Whatever is in the box wins verbatim. If the box is emptied, return '' so the
-    // reserve URL falls back to the PLAIN endpoint (no /slots/{id}/ segment). Profile is
-    // never used here (profile stores the appointmentId, a different thing).
     const inp = document.getElementById('ivac-reserve-slot-id');
     return _cleanUuid(inp?.value);
 }
@@ -3455,10 +3372,6 @@ function _normDate(v) {
     return '';
 }
 
-// Scrape the appointment dates the site itself is showing on the /appointment/time-slot page.
-// The date dropdown renders each date as a leaf element like "12-07-2026" (DD-MM-YYYY, dash only).
-// We deliberately ignore slash-format dates (e.g. our own panel clock "08/05/2026") and skip
-// anything inside our own UI so only the site's real date list is captured.
 function scrapePageDates() {
     const set = new Set();
     const onlyDash = (t) => {
@@ -3509,9 +3422,6 @@ async function loadReserveDates() {
     } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`✗ Load dates: ${err.message}`, 'r'); return null; }
 }
 
-// Auto-sync: mirror the time-slot page's date list into the dropdown when on that page; and when
-// NOT on that page (working from a single panel), auto-pull the dates from get-booking-config so
-// the dropdown fills dynamically without visiting /appointment/time-slot. API pull is throttled.
 (function initReserveDateAutoSync() {
     let last = '';
     let lastApiTry = 0;
@@ -3811,23 +3721,10 @@ setTimeout(() => { if (panel) { panel.style.transform = 'translateY(-50%)'; pane
 // ==================== SESSION RESTORE ====================
 setTimeout(() => { try { const restored = restoreSession(); if (restored) { const ageMin = Math.floor((Date.now() - sessionState.loggedInAt) / 60000); const ageSec = Math.floor(((Date.now() - sessionState.loggedInAt) % 60000) / 1000); const status = sessionState.isVerified ? 'verified' : 'unverified (need OTP)'; const h2Status = H2.getStats().h2Confirmed ? 'H/2 ✅' : 'H/2 ⏳'; logStatus(`🔓 Session restored • ${status} • ${ageMin}m ${ageSec}s old • ${h2Status}`, 'g'); if (sessionState.phone) { const phoneInp = document.getElementById('login-phone'); if (phoneInp && !phoneInp.value) phoneInp.value = sessionState.phone; } } } catch(e) {} }, 600);
 
-// ==================== SERVER-UP WATCHER + CONFIG-GATED AUTO-START ====================
-// 503 window এ থেকেও (reload ছাড়াই) background poll করে — server up হলেই bundle live-scan
-// করে encryption config resolve করে; config ready (Encrypt tab এ Active) হলে তবেই Signin
-// auto শুরু করে। logged-in/valid session থাকলে কিছুই auto-click হয় না।
-// ── AUTO-START WATCHER DISABLED ──────────────────────────────────────────────
-// The old watcher polled every 1s and called encConfigAutoFetch(false) in a loop,
-// which fetched/parsed the huge bundle repeatedly and hung the browser — and could
-// fire signin off a stale/half-resolved config. Per request, encryption config is now
-// resolved ONLY on a manual SCAN (⟳) click, and auto-signin fires from that same
-// handler once the config is freshly resolved and activated (see scan-btn handler).
 (function serverUpWatcherAutoStart() {
     /* intentionally disabled — see scan-btn handler for manual scan + auto-signin */
 })();
 
-// ==================================================================
-//  ★★★ MANUAL PANEL MODULE (clone UI, wired to RJ engine) ★★★
-// ==================================================================
 (function manualPanelModule() {
     const mpStop = { value: false };
     function manualStopAllImpl() { mpStop.value = true; }
@@ -4068,6 +3965,5 @@ setTimeout(() => { try { const restored = restoreSession(); if (restored) { cons
 
     logStatus('🖐 Manual Panel ready (minimized)', 'g');
 })();
-
 
 })();
