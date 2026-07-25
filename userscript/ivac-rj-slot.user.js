@@ -397,15 +397,27 @@ const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 const RJ_DYN_KEY = 'rj_dyn_captured';
 const RJ_DYN = (function () {
     // restore learned values (Method 2: captured from the site's real traffic) so they survive reload
-    const base = { epMap: {}, headers: {}, resolvedAt: 0, payId: null };
-    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.payId = s.payId || null; } } catch (e) {}
+    const base = { epMap: {}, headers: {}, fam: {}, slotId: null, resolvedAt: 0, payId: null };
+    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.fam = s.fam || {}; base.slotId = s.slotId || null; base.payId = s.payId || null; } } catch (e) {}
     return base;
 })();
-function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, payId: RJ_DYN.payId })); } catch (e) {} }
+function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, fam: RJ_DYN.fam, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId })); } catch (e) {} }
 
-// substring replacements applied to every outgoing URL (only confident, specific mappings added)
+// Rewrite every outgoing URL to the bundle's CURRENT literals. Works no matter what version the
+// code sends (v22/v23/…): the family regex finds whatever version is in the URL and swaps in the
+// bundle's current one. Also rewrites the reserve slot-id and dg-epay payment-method-id uuids.
 function rjRewriteUrl(url) {
-    try { const m = RJ_DYN.epMap; for (const from in m) { if (from && m[from] && from !== m[from] && url.indexOf(from) !== -1) url = url.split(from).join(m[from]); } } catch (e) {}
+    try {
+        // 1) exact-string maps learned from the site's real traffic (belt-and-suspenders)
+        const m = RJ_DYN.epMap; for (const from in m) { if (from && m[from] && from !== m[from] && url.indexOf(from) !== -1) url = url.split(from).join(m[from]); }
+        // 2) bundle-current family rewrite: URL's version → bundle's current version (fixes v22→v23 etc.)
+        const F = RJ_DYN.fam || {};
+        for (const f of RJ_EP_FAMILIES) { const cur = F[f.code]; if (!cur) continue; const mm = url.match(f.re); if (mm && mm[0] !== cur) url = url.replace(mm[0], cur); }
+        // 3) reserve slot-id: ANY /slots/<uuid>/reserve-slot → bundle's current slot-id
+        if (RJ_DYN.slotId) url = url.replace(/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/, '/slots/' + RJ_DYN.slotId + '/reserve-slot');
+        // 4) dg-epay payment-method-id: ANY /payment/<uuid>/dg-epay/initiate → captured current id
+        if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-fA-F-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');
+    } catch (e) {}
     return url;
 }
 // refresh known fixed headers with the site's real captured values — ONLY for headers the call
@@ -441,11 +453,13 @@ async function rjResolveEndpointsLive() {
         let text = '';
         for (const u of urls) { const t = await fetchText(u); if (t) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; } }
         if (!text) return;
-        // endpoint families
-        for (const f of RJ_EP_FAMILIES) { const m = text.match(f.re); if (m && m[0] && m[0] !== f.code) RJ_DYN.epMap[f.code] = m[0]; }
-        // reserve slot-id
+        // endpoint families → store the bundle's CURRENT literal per family (used to rewrite any version)
+        RJ_DYN.fam = RJ_DYN.fam || {};
+        for (const f of RJ_EP_FAMILIES) { const m = text.match(f.re); if (m && m[0]) RJ_DYN.fam[f.code] = m[0]; }
+        // reserve slot-id → store the bundle's current slot-id (rewrite target)
         const sm = text.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
-        if (sm && sm[1]) { try { if (typeof RESERVE_SLOT_ID_FIXED !== 'undefined' && sm[1].toLowerCase() !== RESERVE_SLOT_ID_FIXED.toLowerCase()) RJ_DYN.epMap[RESERVE_SLOT_ID_FIXED] = sm[1]; } catch (e) {} }
+        if (sm && sm[1]) RJ_DYN.slotId = sm[1];
+        rjPersistDyn();
         RJ_DYN.resolvedAt = Date.now();
         const n = Object.keys(RJ_DYN.epMap).length;
         console.log(`%c[RJ Dyn] endpoints live-scanned — ${n} change(s) mapped`, 'color:#4ade80;font-weight:700', RJ_DYN.epMap);
