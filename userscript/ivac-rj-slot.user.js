@@ -408,6 +408,7 @@ function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify(
 // bundle's current one. Also rewrites the reserve slot-id and dg-epay payment-method-id uuids.
 function rjRewriteUrl(url) {
     try {
+        const orig = url;
         // 1) exact-string maps learned from the site's real traffic (belt-and-suspenders)
         const m = RJ_DYN.epMap; for (const from in m) { if (from && m[from] && from !== m[from] && url.indexOf(from) !== -1) url = url.split(from).join(m[from]); }
         // 2) bundle-current family rewrite: URL's version → bundle's current version (fixes v22→v23 etc.)
@@ -417,6 +418,7 @@ function rjRewriteUrl(url) {
         if (RJ_DYN.slotId) url = url.replace(/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/, '/slots/' + RJ_DYN.slotId + '/reserve-slot');
         // 4) dg-epay payment-method-id: ANY /payment/<uuid>/dg-epay/initiate → captured current id
         if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-fA-F-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');
+        if (url !== orig) console.log('%c[RJ Dyn] URL rewritten: ' + orig + ' → ' + url, 'color:#4ade80;font-weight:700');
     } catch (e) {}
     return url;
 }
@@ -461,10 +463,9 @@ async function rjResolveEndpointsLive() {
         if (sm && sm[1]) RJ_DYN.slotId = sm[1];
         rjPersistDyn();
         RJ_DYN.resolvedAt = Date.now();
-        const n = Object.keys(RJ_DYN.epMap).length;
-        console.log(`%c[RJ Dyn] endpoints live-scanned — ${n} change(s) mapped`, 'color:#4ade80;font-weight:700', RJ_DYN.epMap);
-        try { logStatus(`🔄 Endpoints live-scanned — ${n} change(s)`, n ? 'y' : 'g'); } catch (e) {}
-    } catch (e) { console.log('[RJ Dyn] endpoint scan failed:', e.message); }
+        console.log('%c[RJ Dyn] endpoints resolved from bundle', 'color:#4ade80;font-weight:800', { fam: RJ_DYN.fam, slotId: RJ_DYN.slotId });
+        try { logStatus(`🔄 Endpoints resolved (${Object.keys(RJ_DYN.fam).length} families, slot ${RJ_DYN.slotId ? RJ_DYN.slotId.slice(0,8) : '?'})`, 'g'); } catch (e) {}
+    } catch (e) { console.log('[RJ Dyn] endpoint scan failed:', e.message); try { logStatus('⚠ Endpoint scan failed: ' + e.message, 'y'); } catch (e2) {} }
 }
 
 // intercept the site's OWN requests to learn the live payment-method-id + fixed headers
