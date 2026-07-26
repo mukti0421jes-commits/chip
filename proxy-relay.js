@@ -39,19 +39,11 @@ const busy = new Map();       // proxyKey -> Promise chain (একটা context
 
 function proxyKey(p) { return p ? `${p.scheme}://${p.host}:${p.port}:${p.user || ''}` : 'direct'; }
 
-// Headful (visible) Chromium — Cloudflare detects/blocks HEADLESS automation regardless of
-// proxy IP, so a real visible window passes far more often. Set RELAY_HEADLESS=1 to force headless.
-const HEADLESS = process.env.RELAY_HEADLESS === '1';
 async function getBrowser() {
   if (browser) return browser;
   browser = await chromium.launch({
-    headless: HEADLESS,
-    args: [
-      '--no-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--start-minimized'
-    ]
+    headless: true,
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
   });
   return browser;
 }
@@ -75,18 +67,10 @@ async function getPage(proxy) {
     };
   }
   const context = await b.newContext(ctxOpts);
-  // light stealth — hide the most common headless/automation tells Cloudflare checks
-  await context.addInitScript(() => {
-    try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
-    try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (e) {}
-    try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (e) {}
-    try { window.chrome = window.chrome || { runtime: {} }; } catch (e) {}
-  });
   const page = await context.newPage();
-  // origin-এ বসাই যাতে fetch একই সাইট থেকে যায় (userscript যেভাবে করে)।
-  // networkidle → Cloudflare challenge (jodi thake) settle howar somoy dei.
-  try { await page.goto(ORIGIN_URL, { waitUntil: 'networkidle', timeout: 60000 }); }
-  catch (e) { try { await page.goto(ORIGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e2) { /* fetch cheshta korbo */ } }
+  // origin-এ বসাই যাতে fetch একই সাইট থেকে যায় (userscript যেভাবে করে)
+  try { await page.goto(ORIGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }); }
+  catch (e) { /* origin না লোড হলেও fetch চেষ্টা করব */ }
   const entry = { context, page, ready: true };
   pages.set(key, entry);
   return entry;
@@ -102,53 +86,20 @@ function serialize(key, fn) {
 
 async function doRequest(proxy, url, method, headers, body) {
   const key = proxyKey(proxy);
-  const args = { url, method: String(method || 'GET').toUpperCase(), headers: headers || {}, body: (body != null ? String(body) : null) };
-  const evalFetch = async (page) => page.evaluate(async (a) => {
-    try {
-      const init = { method: a.method, headers: a.headers || {}, credentials: 'omit' };
-      if (a.body != null && a.method !== 'GET' && a.method !== 'HEAD') init.body = a.body;
-      const r = await fetch(a.url, init);
-      const text = await r.text();
-      return { status: r.status, statusText: r.statusText, body: text };
-    } catch (e) {
-      return { status: 0, statusText: 'fetch-error', body: String(e && e.message || e) };
-    }
-  }, args);
   return serialize(key, async () => {
-    let entry = await getPage(proxy);
-    let out;
-    try {
-      out = await evalFetch(entry.page);
-    } catch (e) {
-      // Cloudflare/proxy often navigates the page → "Execution context was destroyed".
-      // Rebuild a fresh page for this proxy and retry ONCE.
-      const msg = String(e && e.message || e);
-      try { const p = pages.get(key); if (p) { await p.context.close().catch(() => {}); pages.delete(key); } } catch (_) {}
-      try { entry = await getPage(proxy); out = await evalFetch(entry.page); }
-      catch (e2) { out = { status: 0, statusText: 'relay-error', body: 'relay: ' + msg }; }
-    }
-    // status 0 = the in-page fetch threw (CORS-masked Cloudflare block OR connection fail),
-    // and browser fetch hides the real reason. Ask Playwright's own HTTP client (through the
-    // SAME proxy context) for the REAL status so we can tell 403 (Cloudflare) from a proxy error.
-    if (out && out.status === 0) {
+    const { page } = await getPage(proxy);
+    const result = await page.evaluate(async (args) => {
       try {
-        const rr = await entry.context.request.fetch(url, {
-          method: args.method, headers: args.headers,
-          data: (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') ? args.body : undefined,
-          timeout: 45000, ignoreHTTPSErrors: true, failOnStatusCode: false
-        });
-        const realStatus = rr.status();
-        const realBody = await rr.text().catch(() => '');
-        const snippet = (realBody || '').replace(/\s+/g, ' ').slice(0, 160);
-        const src = /cloudflare|cf-ray|just a moment|attention required|challenge-platform/i.test(realBody) ? 'CLOUDFLARE' : 'IVAC-app(or other)';
-        console.log(`[diag] ${proxy.host}:${proxy.port} REAL status=${realStatus} [${src}]  body: ${snippet}`);
-        out = { status: realStatus, statusText: rr.statusText ? rr.statusText() : '', body: realBody, _via: 'context.request' };
-      } catch (e3) {
-        console.log(`[diag] ${proxy.host}:${proxy.port} browser-fetch=0, context.request FAILED: ${String(e3 && e3.message || e3)}`);
-        out = { status: 0, statusText: 'proxy-connect-error', body: String(e3 && e3.message || e3) };
+        const init = { method: args.method, headers: args.headers || {}, credentials: 'omit' };
+        if (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') init.body = args.body;
+        const r = await fetch(args.url, init);
+        const text = await r.text();
+        return { status: r.status, statusText: r.statusText, body: text };
+      } catch (e) {
+        return { status: 0, statusText: 'fetch-error', body: String(e && e.message || e) };
       }
-    }
-    return out;
+    }, { url, method: String(method || 'GET').toUpperCase(), headers: headers || {}, body: (body != null ? String(body) : null) });
+    return result;
   });
 }
 

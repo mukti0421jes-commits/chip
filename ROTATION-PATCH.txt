@@ -1,0 +1,95 @@
+============================================================
+  RJ SLOT — IP ROTATION প্যাচ  (আপনার 10.1.0-final কোডে বসান)
+  ৩টে জায়গা বদলাবেন। বাকি কিছুই ছোঁবেন না।
+  প্রতিটা পরিবর্তন additive — আপনার কোড অপরিবর্তিত থাকে।
+============================================================
+
+
+────────────────────────────────────────────────────────────
+【 প্যাচ ১ 】 gmFetch — proxy সিলেক্টর  (মাত্র ১ লাইন বদল)
+────────────────────────────────────────────────────────────
+
+খুঁজুন এই লাইনটা (H2 অবজেক্টের ভিতরে, "route through the local relay" কমেন্টের নিচে):
+
+            const _proxy = (typeof window !== 'undefined') ? window._rjActiveProxy : null;
+
+সেটাকে বদলে দিন এই লাইন দিয়ে:
+
+            const _proxy = rjPickProxyForRequest(isConnectionCheck);
+
+
+────────────────────────────────────────────────────────────
+【 প্যাচ ২ 】 runStepSmart — success/fail ফিডব্যাক  (১ লাইন যোগ)
+────────────────────────────────────────────────────────────
+
+খুঁজুন এই দুটো লাইন (runStepSmart ফাংশনের ভিতরে):
+
+            const result = await runStepOnce(stepName, fnFactory);
+            if (result.win) { setStepStatus(stepName, 'success'); return result; }
+
+মাঝখানে ১ লাইন ঢুকিয়ে এমন করুন:
+
+            const result = await runStepOnce(stepName, fnFactory);
+            try { rjRotationFeedback(result.win); } catch(e) {}
+            if (result.win) { setStepStatus(stepName, 'success'); return result; }
+
+
+────────────────────────────────────────────────────────────
+【 প্যাচ ৩ 】 Rotation module  (পুরো ব্লক যোগ)
+────────────────────────────────────────────────────────────
+
+খুঁজুন এই লাইনটা:
+
+    // ==================== UPLOAD TAB ====================
+
+ঠিক তার আগে নিচের পুরো ব্লকটা পেস্ট করুন:
+
+    // ==================== PROXY ROTATION (additive — বাকি কিছু বদলায় না) ====================
+    // rotation toggle (Fetch tab-এর "Proxy") ON থাকলে: saved proxy list = pool.
+    // success হলে current IP ধরে রাখে (sticky), error হলে এইমাত্র fail করা IP বাদ দিয়ে নতুন random তোলে।
+    const rjRot = { current: null, lastFailedId: null };
+    function rjRotationEnabled() {
+        return !!document.getElementById('ivac-parallel-proxy-rotation-toggle')?.classList.contains('on');
+    }
+    function rjRotationPool() {
+        try { return (typeof loadProxies === 'function') ? loadProxies() : []; } catch(e) { return []; }
+    }
+    function rjPickRandomProxy() {
+        const pool = rjRotationPool();
+        if (!pool.length) return null;
+        let choices = pool;
+        if (pool.length > 1 && rjRot.lastFailedId) {
+            const filtered = pool.filter(p => p.id !== rjRot.lastFailedId);
+            if (filtered.length) choices = filtered;   // এইমাত্র fail করা IP বাদ
+        }
+        return choices[Math.floor(Math.random() * choices.length)];
+    }
+    // gmFetch এটা দিয়েই ঠিক করে কোন proxy দিয়ে যাবে
+    function rjPickProxyForRequest(isConnectionCheck) {
+        if (isConnectionCheck) return null;                 // keep-alive HEAD সবসময় direct
+        if (rjRotationEnabled()) {
+            const pool = rjRotationPool();
+            if (!pool.length) return (typeof window !== 'undefined') ? (window._rjActiveProxy || null) : null; // pool খালি → পুরোনো আচরণ
+            if (!rjRot.current) {
+                rjRot.current = rjPickRandomProxy();
+                if (rjRot.current) logStatus(`🔀 Proxy → ${rjRot.current.label}`, 'y');
+            }
+            return rjRot.current || null;
+        }
+        return (typeof window !== 'undefined') ? (window._rjActiveProxy || null) : null;
+    }
+    // runStepSmart প্রতি চেষ্টার পর এটা ডাকে: success=ধরে রাখো, fail=ঘোরাও
+    function rjRotationFeedback(win) {
+        if (!rjRotationEnabled()) return;
+        if (win) { rjRot.lastFailedId = null; }             // sticky: current যেমন আছে থাকুক
+        else { if (rjRot.current) rjRot.lastFailedId = rjRot.current.id; rjRot.current = null; } // পরের বার নতুন random
+    }
+
+
+============================================================
+  ব্যবহার:
+   1) node proxy-relay.js  (বা startrelay.bat) চালু রাখুন
+   2) Proxy tab → ১৫টা proxy paste → Merge
+   3) Fetch tab → "Proxy" toggle ON
+   4) Signin → Network Log-এ  🔀 Proxy → ...  দেখবেন
+============================================================

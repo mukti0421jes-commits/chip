@@ -201,70 +201,14 @@ function roleScores(pos){const w=src.slice(Math.max(0,pos-1400),pos+1400);
   return {sig:sM.length, res:rM.length, sigEv:[...new Set(sM.map(x=>x.toLowerCase()))], resEv:[...new Set(rM.map(x=>x.toLowerCase()))]};}
 
 /* ================= find configs, match algorithms, emit ================= */
-// Newer bundles wrap startAt/length/version in obfuscated calls (Number("1"), c[f(1486)](_,"27"))
-// and reference local string vars in the secret (r(1538,n) with n="Y$pG"). Parse robustly.
-function splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
-function cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
-function braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
-const found=[];
-{let idx=0;const NEEDLE="secret:";
- while((idx=src.indexOf(NEEDLE,idx))!==-1){
-   const b=src.lastIndexOf("{",idx); if(b<0){idx+=NEEDLE.length;continue;}
-   const e=braceObj(src,b); if(e<0){idx+=NEEDLE.length;continue;}
-   const objStart=b, objStr=src.slice(b+1,e); idx=e+1;
-   const fields=splitTopComma(objStr);const map={};
-   for(const f of fields){const ci=f.indexOf(":");if(ci<0)continue;map[f.slice(0,ci).trim()]=f.slice(ci+1).trim();}
-   if(!("secret"in map)||!("startAt"in map)||!("length"in map)||!("version"in map))continue;
-   const skip=cfgNum(map.startAt),len=cfgNum(map.length),version=cfgNum(map.version);
-   if(isNaN(skip)||isNaN(len)||isNaN(version))continue;
-   let secretExpr=map.secret;
-   // Member-access secret (secret: n[o(191)] or n.prop): the key lives in a property of object n.
-   // Decode each concatenation-valued property; the captcha KEY is the spaceless one (messages have spaces).
-   {const t0=secretExpr.trim();
-    const mm=/^([A-Za-z_$][\w$]*)\s*[\.\[]/.exec(t0);
-    if(mm){
-      const objName=mm[1];
-      const before=src.slice(0,objStart);
-      const re=new RegExp("[^\\w$]"+objName.replace(/[$]/g,"\\$")+"\\s*=\\s*\\{","g");
-      let om=null,mmm; while((mmm=re.exec(before)))om=mmm;
-      if(om){
-        const ob=before.indexOf("{",om.index), oe=braceObj(src,ob);
-        if(oe>ob){
-          const ofields=splitTopComma(src.slice(ob+1,oe));
-          let best=null,bestLen=-1;
-          for(const of of ofields){
-            const ci=of.indexOf(":"); if(ci<0)continue;
-            const val=of.slice(ci+1).trim();
-            if(/^function\b/.test(val)) continue;
-            if(!/[A-Za-z_$][\w$]*\(/.test(val)) continue;    // must use a decoder call
-            let dec=null; try{ dec=resolveExpr(val,objStart); }catch(e){}
-            if(dec && !/\s/.test(dec) && dec.length>=10 && dec.length>bestLen){ best=val; bestLen=dec.length; }
-          }
-          if(best) secretExpr=best;
-        }
-      }
-    }
-   }
-   {const region=src.slice(Math.max(0,objStart-6000),objStart);
-    const ids=[...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g)||[]))];
-    for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
-      if(new RegExp("\\b"+esc+"\\s*\\(").test(secretExpr))continue;
-      const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
-      let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
-      if(best!==null)secretExpr=secretExpr.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}}
-   const secret=resolveExpr(secretExpr,objStart);
-   if(!secret){console.log("[warn] config version",version,"secret decode FAILED @",objStart,"| secret:",map.secret.slice(0,60));continue;}
-   const sc=roleScores(objStart);
-   found.push({secret,skip,len,version,sig:sc.sig,res:sc.res,sigEv:sc.sigEv,resEv:sc.resEv});
- }
-}
+const cfgRe=/\{secret:([^{}]*?),startAt:(-?\d+),length:(-?\d+),version:(\d+)\}/g;
+const found=[];let cm;
+while(cm=cfgRe.exec(src)){const secret=resolveExpr(cm[1],cm.index);if(!secret){console.log("[warn] config version",cm[4],"secret decode FAILED @",cm.index);continue;}const sc=roleScores(cm.index);found.push({secret,skip:+cm[2],len:+cm[3],version:+cm[4],sig:sc.sig,res:sc.res,sigEv:sc.sigEv,resEv:sc.resEv});}
 const uniq=[];const seen=new Map();
 for(const c of found){const k=c.version+"|"+c.secret;if(seen.has(k)){const e=seen.get(k);e.sig+=c.sig;e.res+=c.res;e.sigEv=[...new Set([...e.sigEv,...c.sigEv])];e.resEv=[...new Set([...e.resEv,...c.resEv])];continue;}const e={...c};seen.set(k,e);uniq.push(e);}
 let roleUncertain=false;
 for(const c of uniq){ if(c.sig>c.res)c.role="Signin"; else if(c.res>c.sig)c.role="Reserve"; else {c.role=null;roleUncertain=true;} }
 if(uniq.length===2){const known=uniq.filter(c=>c.role), unknown=uniq.filter(c=>!c.role);if(known.length===1&&unknown.length===1){unknown[0].role=known[0].role==="Signin"?"Reserve":"Signin";unknown[0]._inferred=true;roleUncertain=false;}}
-// Single cipher key in the bundle → signin AND reserve both use it. Emit under both roles.
-if(uniq.length===1){uniq[0].role="Signin";uniq.push({...uniq[0],role:"Reserve",_inferred:true});roleUncertain=false;}
 
 function rnd(n){let s="";for(let i=0;i<n;i++)s+=CH[Math.floor(Math.random()*64)];return s;}
 for(const c of uniq){
