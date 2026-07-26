@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RJ SLOT (Normal, no-dynamic)
 // @namespace    http://tampermonkey.net/
-// @version      10.4.6
+// @version      10.4.7
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -4007,10 +4007,23 @@ async function stepReserve(signal) {
     const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
+    // CLAIM: pull THIS token out of the shared queue right before sending, so a parallel/retry
+    // reserve can't grab the same one (single-use -> 2nd use = 400). Requeued below on transient fail.
+    const _claimIdx = tokenQueue.findIndex(t => t.token === captchaToken);
+    const _claimed = _claimIdx !== -1 ? tokenQueue.splice(_claimIdx, 1)[0] : { token: captchaToken, source: 'capmonster', createdAt: Date.now() };
     try {
         const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache', 'x-v-request-meta': 'windos.s' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
         let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body, r.status);
-        const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        const burn = shouldBurnToken(r.status, body);
+        if (burn) tokenQueueInvalidate(captchaToken);
+        else {
+            unregisterTokenInFlight(captchaToken, localAc);
+            // transient (5xx/429 — token was NOT consumed server-side) AND not a success -> return it to the queue
+            if (!reserved && (Date.now() - _claimed.createdAt) < TOKEN_TTL_MS && !tokenQueue.some(t => t.token === captchaToken)) {
+                tokenQueue.push(_claimed);
+                if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
+            }
+        }
         netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||body?.data?.status||'?'} • ${body?.appointmentDate||body?.data?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
         if (reserved) {
             raceCoord.declareWin('reserve', { win: true, data: body });
@@ -4023,7 +4036,7 @@ async function stepReserve(signal) {
             logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g');
             showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
         } return { win: reserved, data: body };
-    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); if ((Date.now() - _claimed.createdAt) < TOKEN_TTL_MS && !tokenQueue.some(t => t.token === captchaToken)) { tokenQueue.push(_claimed); if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift(); } } return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
 }
 
 // ==================== ✅ FIXED BOOK STEP WITH SMART SKIP ====================
