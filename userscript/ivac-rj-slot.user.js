@@ -1888,19 +1888,12 @@ const h2html = `
 <div class="enc-cfg-actions"><button class="b5 bh" id="enc-initiate-save">💾 Save</button><button class="b2 bh" id="enc-initiate-activate">⚡ Activate</button><span class="enc-status" id="enc-initiate-status">Inactive</span></div>
 </div>
 
-<div class="enc-section" style="margin-top:8px">
-<div class="enc-title">🔁 Dynamic Sync (multi-browser) — credentials-free</div>
-<div style="font-size:.54rem;color:#8888aa;font-weight:600;margin-bottom:4px;line-height:1.3">এক browser এ Export → বাকি browser এ Import। শুধু endpoint/header/record যায় — number/password/token যায় না।</div>
-<textarea id="dyn-sync-box" placeholder="Export করলে এখানে JSON আসবে; অন্য browser এ paste করে Import করুন" style="height:64px"></textarea>
-<div class="enc-cfg-actions"><button class="b5 bh" id="dyn-sync-export">📤 Export</button><button class="b2 bh" id="dyn-sync-import">📥 Import</button><span class="enc-status" id="dyn-sync-status"></span></div>
-</div>
-
 </div>
 </div>
 </div>
 
 <div class="ft">
-<div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
+<div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free">Ex</button><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload">Im</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
 <span>RJ SLOT PRO-H2</span>
 </div>
 
@@ -1992,36 +1985,42 @@ document.getElementById('enc-initiate-activate')?.addEventListener('click', () =
 // technical config (rj_dyn_captured = endpoint/slot/pay/fixed-headers, rj_req_records = per-endpoint
 // success record of header + body-field-NAMES). NEVER profiles/number/password/token/session.
 (function initDynSync() {
-    const box = document.getElementById('dyn-sync-box');
-    const st  = document.getElementById('dyn-sync-status');
-    const setSt = (m, c) => { if (st) { st.textContent = m; st.style.color = c === 'r' ? '#fca5a5' : c === 'y' ? '#fcd34d' : '#4ade80'; } };
-    document.getElementById('dyn-sync-export')?.addEventListener('click', () => {
+    const applyImport = (raw) => {
+        raw = (raw || '').trim();
+        if (!raw) { logStatus('❌ Import: clipboard empty — copy the Export JSON first', 'r'); return; }
+        let p; try { p = JSON.parse(raw); } catch (e) { logStatus('❌ Import: invalid JSON', 'r'); return; }
+        if (!p || p._t !== 'rj_dyn_sync') { logStatus('❌ Import: not a dyn-sync export', 'r'); return; }
+        // ONLY these two keys — never touch profiles/number/password/token/session
+        if (p.rj_dyn_captured) localStorage.setItem('rj_dyn_captured', JSON.stringify(p.rj_dyn_captured));
+        if (p.rj_req_records)  localStorage.setItem('rj_req_records',  JSON.stringify(p.rj_req_records));
+        logStatus('📥 Dynamic config imported — reloading to apply', 'g');
+        setTimeout(() => location.reload(), 700);
+    };
+    document.getElementById('dyn-sync-export')?.addEventListener('click', function () {
         try {
-            const payload = {
+            const json = JSON.stringify({
                 _t: 'rj_dyn_sync', v: 1, at: Date.now(),
                 rj_dyn_captured: JSON.parse(localStorage.getItem('rj_dyn_captured') || 'null'),
                 rj_req_records:  JSON.parse(localStorage.getItem('rj_req_records')  || 'null')
-            };
-            const json = JSON.stringify(payload);
-            if (box) box.value = json;
-            try { navigator.clipboard.writeText(json); } catch (e) {}
-            setSt('✅ Exported → copied', 'g');
-            logStatus('📤 Dynamic config exported (credentials-free) — paste into other browsers', 'g');
-        } catch (e) { setSt('❌ ' + e.message, 'r'); }
+            });
+            navigator.clipboard.writeText(json).then(() => {
+                logStatus('📤 Dynamic config copied to clipboard (credentials-free) — paste in other browsers', 'g');
+            }).catch(() => {
+                // clipboard blocked → show it so the user can copy manually
+                prompt('Copy this dynamic-config JSON:', json);
+            });
+            try { flashButton(this, '✓', 'g'); } catch (e) {}
+        } catch (e) { logStatus('❌ Export error: ' + e.message, 'r'); }
     });
-    document.getElementById('dyn-sync-import')?.addEventListener('click', () => {
+    document.getElementById('dyn-sync-import')?.addEventListener('click', function () {
+        // read clipboard (needs the click gesture); fallback to a paste prompt if blocked
         try {
-            const raw = (box?.value || '').trim();
-            if (!raw) { setSt('❌ Paste JSON first', 'r'); return; }
-            const p = JSON.parse(raw);
-            if (!p || p._t !== 'rj_dyn_sync') { setSt('❌ Not a dyn-sync JSON', 'r'); return; }
-            // ONLY these two keys — never touch profiles/session/credentials
-            if (p.rj_dyn_captured) localStorage.setItem('rj_dyn_captured', JSON.stringify(p.rj_dyn_captured));
-            if (p.rj_req_records)  localStorage.setItem('rj_req_records',  JSON.stringify(p.rj_req_records));
-            setSt('✅ Imported — reloading…', 'g');
-            logStatus('📥 Dynamic config imported — reloading to apply', 'g');
-            setTimeout(() => location.reload(), 700);
-        } catch (e) { setSt('❌ Invalid JSON: ' + e.message, 'r'); }
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then(applyImport).catch(() => {
+                    const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t);
+                });
+            } else { const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t); }
+        } catch (e) { const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t); }
     });
 })();
 // Per-endpoint token-mode checkboxes (signin/reserve = raw when checked; initiate = encrypt when checked)
