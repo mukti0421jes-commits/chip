@@ -1893,8 +1893,8 @@ const h2html = `
 </div>
 
 <div class="ft">
-<div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free">Ex</button><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload">Im</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
-<span>RJ SLOT PRO-H2</span>
+<div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
+<div style="display:flex;align-items:center;justify-content:center;gap:8px"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Export</button><span>RJ SLOT PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Import</button></div>
 </div>
 
 <div class="cdbar" id="cdbar">
