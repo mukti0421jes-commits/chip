@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RJ SLOT (Normal, no-dynamic)
 // @namespace    http://tampermonkey.net/
-// @version      10.4.7
+// @version      10.4.8
 // @description  RJ SLOT v7.5 engine + Manual Panel clone. Fixed Appointment ID save & Smart Skip
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
@@ -3992,38 +3992,86 @@ async function loadReserveDates() {
     try { const start = () => { setInterval(tick, 1500); tick(); }; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start(); } catch (e) {}
 })();
 
+// ── RESERVE TOKEN: atomic serialized claim (each concurrent reserve gets a DISTINCT token) ──
+// getCaptchaTokenSmart() hands the SAME queued token to concurrent callers (it does NOT remove
+// it), so parallel/retry reserve fires sent an identical `c` -> 1st 200, the rest 400 (single-use).
+// claimReserveToken() serialises claims and REMOVES the token from the queue AT ACQUISITION, so no
+// two in-flight reserves can ever hold the same token. Empty queue -> solve/wait a fresh one.
+const _reserveInUse = new Set();
+let _reserveClaimChain = Promise.resolve();
+function claimReserveToken() {
+    const p = _reserveClaimChain.then(() => _doClaimReserveToken());
+    _reserveClaimChain = p.catch(() => {});
+    return p;
+}
+async function _doClaimReserveToken() {
+    tokenQueueCleanExpired();
+    // 1) take a queued token no other in-flight reserve is holding (and REMOVE it from the queue)
+    for (let i = 0; i < tokenQueue.length; i++) {
+        const e = tokenQueue[i];
+        if (_reserveInUse.has(e.token)) continue;
+        tokenQueue.splice(i, 1);
+        _reserveInUse.add(e.token);
+        return e;
+    }
+    // 2) queue empty -> solve a fresh one (API) or wait for the widget (manual)
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (useApi) {
+        const provider = getSelectedCaptchaProvider();
+        const src = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+        for (let tries = 0; tries < 3; tries++) {
+            markSolveStart(src);
+            let token; try { token = await solveCaptchaByProvider(provider); } finally { markSolveEnd(); }
+            if (token && !_reserveInUse.has(token)) { _reserveInUse.add(token); return { token, source: src, createdAt: Date.now() }; }
+        }
+        throw new Error('could not solve a reserve token');
+    }
+    if (typeof showManualCaptcha === 'function') showManualCaptcha();
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        tokenQueueCleanExpired();
+        for (let j = 0; j < tokenQueue.length; j++) { const e = tokenQueue[j]; if (_reserveInUse.has(e.token)) continue; tokenQueue.splice(j, 1); _reserveInUse.add(e.token); return e; }
+        if (cfToken && !_reserveInUse.has(cfToken)) { const tk = cfToken; _reserveInUse.add(tk); return { token: tk, source: 'turnstile', createdAt: Date.now() }; }
+    }
+    throw new Error('no reserve captcha within 60s');
+}
+// Free a claimed token. requeue=true (transient/unused) -> return it to the queue; else it's spent.
+function releaseReserveToken(entry, requeue) {
+    if (!entry || !entry.token) return;
+    _reserveInUse.delete(entry.token);
+    if (requeue) {
+        tokenQueueCleanExpired();
+        if ((Date.now() - entry.createdAt) < TOKEN_TTL_MS && !tokenQueue.some(t => t.token === entry.token)) {
+            tokenQueue.push(entry);
+            if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
+        }
+    }
+}
+
 async function stepReserve(signal) {
     if (!_forceStep && isStepAlreadyDone('reserve')) { logStatus(`⏭ Reserve already done`, 'g'); return { win: true, skipped: true }; }
     if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
-    let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
-    if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
+    // ATOMIC CLAIM: take a DISTINCT token out of the queue now (serialized) so two parallel/retry
+    // reserve fires can NEVER hold the same token (single-use -> 2nd use = 400).
+    let _claimed; try { _claimed = await claimReserveToken(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
+    const captchaToken = _claimed.token;
+    if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); releaseReserveToken(_claimed, true); return { win: false, cancelled: true }; }
     const encryptedCaptchaToken = encTokenForCall(captchaToken, 'reserve');
     // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
     const slotId = getReserveSlotId();
-    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (54ea9f13-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (54ea9f13-…)', 'r'); releaseReserveToken(_claimed, true); return { win: false }; }
     let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
     if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
-    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); releaseReserveToken(_claimed, true); return { win: false }; }
     const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
-    // CLAIM: pull THIS token out of the shared queue right before sending, so a parallel/retry
-    // reserve can't grab the same one (single-use -> 2nd use = 400). Requeued below on transient fail.
-    const _claimIdx = tokenQueue.findIndex(t => t.token === captchaToken);
-    const _claimed = _claimIdx !== -1 ? tokenQueue.splice(_claimIdx, 1)[0] : { token: captchaToken, source: 'capmonster', createdAt: Date.now() };
     try {
         const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache', 'x-v-request-meta': 'windos.s' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
         let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body, r.status);
         const burn = shouldBurnToken(r.status, body);
-        if (burn) tokenQueueInvalidate(captchaToken);
-        else {
-            unregisterTokenInFlight(captchaToken, localAc);
-            // transient (5xx/429 — token was NOT consumed server-side) AND not a success -> return it to the queue
-            if (!reserved && (Date.now() - _claimed.createdAt) < TOKEN_TTL_MS && !tokenQueue.some(t => t.token === captchaToken)) {
-                tokenQueue.push(_claimed);
-                if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
-            }
-        }
+        if (burn) { tokenQueueInvalidate(captchaToken); releaseReserveToken(_claimed, false); }   // 200/400 -> token spent
+        else { unregisterTokenInFlight(captchaToken, localAc); releaseReserveToken(_claimed, !reserved); }   // transient & not success -> requeue
         netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||body?.data?.status||'?'} • ${body?.appointmentDate||body?.data?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
         if (reserved) {
             raceCoord.declareWin('reserve', { win: true, data: body });
@@ -4036,7 +4084,7 @@ async function stepReserve(signal) {
             logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g');
             showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
         } return { win: reserved, data: body };
-    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); if ((Date.now() - _claimed.createdAt) < TOKEN_TTL_MS && !tokenQueue.some(t => t.token === captchaToken)) { tokenQueue.push(_claimed); if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift(); } } return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); releaseReserveToken(_claimed, true); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
 }
 
 // ==================== ✅ FIXED BOOK STEP WITH SMART SKIP ====================
