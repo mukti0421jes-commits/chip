@@ -1888,6 +1888,13 @@ const h2html = `
 <div class="enc-cfg-actions"><button class="b5 bh" id="enc-initiate-save">💾 Save</button><button class="b2 bh" id="enc-initiate-activate">⚡ Activate</button><span class="enc-status" id="enc-initiate-status">Inactive</span></div>
 </div>
 
+<div class="enc-section" style="margin-top:8px">
+<div class="enc-title">🔁 Dynamic Sync (multi-browser) — credentials-free</div>
+<div style="font-size:.54rem;color:#8888aa;font-weight:600;margin-bottom:4px;line-height:1.3">এক browser এ Export → বাকি browser এ Import। শুধু endpoint/header/record যায় — number/password/token যায় না।</div>
+<textarea id="dyn-sync-box" placeholder="Export করলে এখানে JSON আসবে; অন্য browser এ paste করে Import করুন" style="height:64px"></textarea>
+<div class="enc-cfg-actions"><button class="b5 bh" id="dyn-sync-export">📤 Export</button><button class="b2 bh" id="dyn-sync-import">📥 Import</button><span class="enc-status" id="dyn-sync-status"></span></div>
+</div>
+
 </div>
 </div>
 </div>
@@ -1981,6 +1988,42 @@ document.getElementById('enc-initiate-activate')?.addEventListener('click', () =
     encConfigApplyToUI('initiate');
     logStatus(cfg.active ? `⚡ Initiate encryption ACTIVATED (v${cfg.version})` : '🔓 Initiate encryption deactivated', cfg.active ? 'g' : 'y');
 });
+// Dynamic Sync: export/import the learned dynamic config across browsers. ONLY carries the
+// technical config (rj_dyn_captured = endpoint/slot/pay/fixed-headers, rj_req_records = per-endpoint
+// success record of header + body-field-NAMES). NEVER profiles/number/password/token/session.
+(function initDynSync() {
+    const box = document.getElementById('dyn-sync-box');
+    const st  = document.getElementById('dyn-sync-status');
+    const setSt = (m, c) => { if (st) { st.textContent = m; st.style.color = c === 'r' ? '#fca5a5' : c === 'y' ? '#fcd34d' : '#4ade80'; } };
+    document.getElementById('dyn-sync-export')?.addEventListener('click', () => {
+        try {
+            const payload = {
+                _t: 'rj_dyn_sync', v: 1, at: Date.now(),
+                rj_dyn_captured: JSON.parse(localStorage.getItem('rj_dyn_captured') || 'null'),
+                rj_req_records:  JSON.parse(localStorage.getItem('rj_req_records')  || 'null')
+            };
+            const json = JSON.stringify(payload);
+            if (box) box.value = json;
+            try { navigator.clipboard.writeText(json); } catch (e) {}
+            setSt('✅ Exported → copied', 'g');
+            logStatus('📤 Dynamic config exported (credentials-free) — paste into other browsers', 'g');
+        } catch (e) { setSt('❌ ' + e.message, 'r'); }
+    });
+    document.getElementById('dyn-sync-import')?.addEventListener('click', () => {
+        try {
+            const raw = (box?.value || '').trim();
+            if (!raw) { setSt('❌ Paste JSON first', 'r'); return; }
+            const p = JSON.parse(raw);
+            if (!p || p._t !== 'rj_dyn_sync') { setSt('❌ Not a dyn-sync JSON', 'r'); return; }
+            // ONLY these two keys — never touch profiles/session/credentials
+            if (p.rj_dyn_captured) localStorage.setItem('rj_dyn_captured', JSON.stringify(p.rj_dyn_captured));
+            if (p.rj_req_records)  localStorage.setItem('rj_req_records',  JSON.stringify(p.rj_req_records));
+            setSt('✅ Imported — reloading…', 'g');
+            logStatus('📥 Dynamic config imported — reloading to apply', 'g');
+            setTimeout(() => location.reload(), 700);
+        } catch (e) { setSt('❌ Invalid JSON: ' + e.message, 'r'); }
+    });
+})();
 // Per-endpoint token-mode checkboxes (signin/reserve = raw when checked; initiate = encrypt when checked)
 (function initTokenModeChecks() {
     [['chk-signin-raw', 'rj_chk_signin_raw'], ['chk-reserve-raw', 'rj_chk_reserve_raw'], ['chk-initiate-enc', 'rj_chk_initiate_enc']].forEach(([id, key]) => {
