@@ -447,13 +447,16 @@ function rjRecordSuccess(url, method, headers, body, status, respText) {
         if (!rjIsSuccessBody(status, respText)) return;
         const hdr = rjHeadersToLowerObj(headers);
         const learned = [];
-        for (const k in hdr) { if (RJ_HDR_SKIP.includes(k)) continue; if (RJ_DYN.headers[k] !== hdr[k]) { RJ_DYN.headers[k] = hdr[k]; learned.push(k); } }
+        // safeHdr = the record we STORE/EXPORT — never keep per-call secrets (Bearer authorization,
+        // x-token captcha, content-type boundary, cookie…). Those live only in the live request.
+        const safeHdr = {};
+        for (const k in hdr) { if (RJ_HDR_SKIP.includes(k)) continue; safeHdr[k] = hdr[k]; if (RJ_DYN.headers[k] !== hdr[k]) { RJ_DYN.headers[k] = hdr[k]; learned.push(k); } }
         let bodyKeys = null; try { const bo = (body && typeof body === 'string') ? JSON.parse(body) : (body && typeof body === 'object' ? body : null); if (bo && typeof bo === 'object' && !Array.isArray(bo)) bodyKeys = Object.keys(bo); } catch (e) {}
         let respShape = null; try { const rb = JSON.parse(respText); respShape = { keys: Object.keys(rb || {}), dataKeys: (rb && rb.data && typeof rb.data === 'object') ? Object.keys(rb.data) : null }; } catch (e) {}
-        const next = { url: '' + url, method: (method || 'GET').toUpperCase(), headers: hdr, bodyKeys: bodyKeys, respShape: respShape };
+        const next = { url: '' + url, method: (method || 'GET').toUpperCase(), headers: safeHdr, bodyKeys: bodyKeys, respShape: respShape };
         // skip if nothing meaningful changed since last record (avoids log/write spam on polling)
         const prev = RJ_REC[fam];
-        const sameHdr = prev && JSON.stringify(prev.headers) === JSON.stringify(hdr) && (prev.method || '') === next.method && JSON.stringify(prev.bodyKeys) === JSON.stringify(bodyKeys);
+        const sameHdr = prev && JSON.stringify(prev.headers) === JSON.stringify(safeHdr) && (prev.method || '') === next.method && JSON.stringify(prev.bodyKeys) === JSON.stringify(bodyKeys);
         if (sameHdr && !learned.length) { RJ_REC[fam].at = Date.now(); return; }
         next.at = Date.now(); RJ_REC[fam] = next;
         rjPersistDyn(); rjPersistRec();
@@ -1996,12 +1999,20 @@ document.getElementById('enc-initiate-activate')?.addEventListener('click', () =
         logStatus('📥 Dynamic config imported — reloading to apply', 'g');
         setTimeout(() => location.reload(), 700);
     };
+    // scrub any per-call secret that an OLD record may still hold, so export is always safe
+    const SECRET_HDRS = ['authorization', 'x-token', 'content-type', 'content-length', 'cookie', 'host'];
+    const scrubRecords = (rec) => {
+        try { if (rec && typeof rec === 'object') { for (const fam in rec) { const h = rec[fam] && rec[fam].headers; if (h) for (const k of Object.keys(h)) { if (SECRET_HDRS.includes(('' + k).toLowerCase())) delete h[k]; } } } } catch (e) {}
+        return rec;
+    };
     document.getElementById('dyn-sync-export')?.addEventListener('click', function () {
         try {
+            const dyn = JSON.parse(localStorage.getItem('rj_dyn_captured') || 'null');
+            try { if (dyn && dyn.headers) for (const k of Object.keys(dyn.headers)) { if (SECRET_HDRS.includes(('' + k).toLowerCase())) delete dyn.headers[k]; } } catch (e) {}
             const json = JSON.stringify({
                 _t: 'rj_dyn_sync', v: 1, at: Date.now(),
-                rj_dyn_captured: JSON.parse(localStorage.getItem('rj_dyn_captured') || 'null'),
-                rj_req_records:  JSON.parse(localStorage.getItem('rj_req_records')  || 'null')
+                rj_dyn_captured: dyn,
+                rj_req_records:  scrubRecords(JSON.parse(localStorage.getItem('rj_req_records') || 'null'))
             });
             navigator.clipboard.writeText(json).then(() => {
                 logStatus('📤 Dynamic config copied to clipboard (credentials-free) — paste in other browsers', 'g');
