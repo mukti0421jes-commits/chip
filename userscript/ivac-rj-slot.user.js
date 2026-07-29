@@ -3003,7 +3003,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         ['main-profile-select', 'pm-profile-select'].forEach(id => { const sel = document.getElementById(id); if (sel) sel.addEventListener('change', () => setTimeout(loadForProfile, 200)); });
     })();
 
-    const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, jashore: { mission: 'Jashore', ivacCenter: 'IVAC, Jashore' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
+    const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, jashore: { mission: 'Dhaka', ivacCenter: 'IVAC, Jashore' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
 
     document.getElementById('ivac-btn-appointment-booking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
