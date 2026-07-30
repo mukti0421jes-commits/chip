@@ -325,7 +325,7 @@ function getTagFromUrl(url) {
 H2.preWarm();
 
 // ==================== API CONFIG ====================
-const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v23-sign-in";
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v2-sign-in";
 const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
 const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
@@ -337,7 +337,7 @@ const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOt
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
 const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
-const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot-status";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot_status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 
@@ -392,15 +392,15 @@ function rjApplyDynHeaders(url, init) {
 }
 
 const RJ_EP_FAMILIES = [
-    { code: '/auth/v23-sign-in',                        re: /\/auth\/v\d+-sign-in/ },
-    { code: '/file/upload_file_v23',                    re: /\/file\/upload_file(?:_v\d+)?/ },
+    { code: '/auth/v2-sign-in',                         re: /\/auth\/v\d+-sign-in/ },
+    { code: '/file/upload_file_v2',                     re: /\/file\/upload_file(?:_v\d+)?/ },
     { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp/ },
     { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp/ },
     { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp/ },
     { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config/ },
     { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config/ },
-    { code: '/file/over-views',                         re: /\/file\/over-views?/ },
-    { code: '/file/file-confirmation_and_slot-status',  re: /\/file\/file-confirmation[_a-z-]*slot-status/i },
+    { code: '/file/over-view',                          re: /\/file\/over-views?/ },
+    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file-confirmation[_a-z-]*slot[_-]status/i },
     { code: '/file/payment-amount',                     re: /\/file\/payment-amount/ }
 ];
 
@@ -2940,7 +2940,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const fileInput = document.getElementById(fileInputId);
         const file = (fileInput?.files?.length > 0) ? fileInput.files[0] : (rjSavedUploads[fileInputId] || null);
         if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return; }   // never upload an empty part
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23", tag: 'upload', state: 'pending', note: `${label}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
             let uploadEntry;
@@ -2950,7 +2950,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
                 const r = await sendMultipartUpload(
-                    "https://api.ivacbd.com/iams/api/v1/file/upload_file_v23",
+                    "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2",
                     { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
                     file, { isPrimary: String(isPrimary) }
                 );
@@ -3034,9 +3034,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         logStatus('📋 Checking file overview…', 'y');
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-views", tag: 'upload', state: 'pending' });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view", tag: 'upload', state: 'pending' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-views", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             const ok = r.ok && body && (body.successFlag === true || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `fileStatus=${body.data?.fileUploadStatus||'?'}` : (body?.message || `HTTP ${r.status}`) });
@@ -3916,7 +3916,7 @@ function getReserveAppointmentId() {
 }
 
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
-const RESERVE_SLOT_ID_FIXED = '54ea9f13-f1e2-4cea-9e08-f525e8242ccf';   // fixed reserve slot id
+const RESERVE_SLOT_ID_FIXED = '54ea9f13-f1e2-4cea-9e18-f525e8242ccf';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
     const inp = document.getElementById('ivac-reserve-slot-id');
