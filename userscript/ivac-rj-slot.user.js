@@ -331,8 +331,8 @@ const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
 function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ed-b57c-60416e01617e';
-const API_INITIATE  = `https://api.ivacbd.com/iams/api/v1/payment/${PAYMENT_METHOD_ID}/dg-epay/initiate`;
+const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ed-b57c-60416e01617e';   // fixed fallback (not in bundle; runtime-only)
+const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
@@ -445,6 +445,16 @@ function rjRecordSuccess(url, method, headers, body, status, respText) {
     try {
         const fam = rjEndpointFamily(url); if (!fam) return;
         if (!rjIsSuccessBody(status, respText)) return;
+        // AUTO-CAPTURE dg-epay payment-method-id from the site's REAL initiate URL (not in bundle → runtime only)
+        try {
+            const pm = ('' + url).match(/\/payment\/([0-9a-fA-F-]{36})\/dg-epay\/initiate/);
+            if (pm && pm[1] && RJ_DYN.payId !== pm[1]) {
+                RJ_DYN.payId = pm[1]; rjPersistDyn();
+                try { savePaymentMethodId(pm[1]); const box = document.getElementById('ivac-payment-method-id'); if (box) box.value = pm[1]; } catch (e) {}
+                try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay ID captured: ' + pm[1].slice(0,8) + '…', 'g'); } catch (e) {}
+                console.log('%c[RJ Dyn] dg-epay payment-method-id captured: ' + pm[1], 'color:#4ade80;font-weight:800');
+            }
+        } catch (e) {}
         const hdr = rjHeadersToLowerObj(headers);
         const learned = [];
         // safeHdr = the record we STORE/EXPORT — never keep per-call secrets (Bearer authorization,
@@ -1746,6 +1756,7 @@ const h2html = `
 <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = native fetch (DevTools Network Fetch/XHR e DEKHABE, kintu CORS lagbe). Unchecked = GM (CORS-immune, kintu Network e lukano)."><input type="checkbox" id="chk-initiate-net" checked style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate Net</label>
 </div>
 <div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (54ea9f13-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
+<div class="fr" style="gap:4px"><input type="text" id="ivac-payment-method-id" placeholder="dg-epay Payment ID (dcd59a95-… — auto-captured)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="dg-epay payment-method UUID for the initiate call. Auto-fills after one real initiate; or paste manually."></div>
 <div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700" title="Auto-pick date: ON = Latest (last), OFF = Earliest (first)">📆</label><div class="tg on" id="date-target-toggle" title="Auto-pick date: ON = Latest (last date), OFF = Earliest (first date)"><div class="tg-dot"></div></div><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
 <div class="fr"><button class="b8" style="width:100%" id="bst">Stop All</button></div>
 <div class="tr">
@@ -3927,6 +3938,18 @@ function saveReserveSlotId(v) {
     v = _cleanUuid(v); if (!v) return;
     try { localStorage.setItem(RESERVE_SLOT_ID_KEY, v); } catch(e) {}   // persistence only; not tied to profile
 }
+// dg-epay payment-method-id: editable manual field (paste) + auto-capture from real traffic.
+// Priority: manual input > auto-captured (RJ_DYN.payId) > fixed fallback.
+function getPaymentMethodId() {
+    const inp = document.getElementById('ivac-payment-method-id');
+    const v = _cleanUuid(inp?.value);
+    return v || RJ_DYN.payId || PAYMENT_METHOD_ID;
+}
+function savePaymentMethodId(v) {
+    v = _cleanUuid(v); if (!v) return;
+    try { localStorage.setItem(PAYMENT_METHOD_ID_KEY, v); } catch(e) {}
+}
+function getInitiateUrl() { return `https://api.ivacbd.com/iams/api/v1/payment/${getPaymentMethodId()}/dg-epay/initiate`; }
 
 // dd-mm-yyyy display, YYYY-MM-DD value (API format)
 function _fmtDateDisplay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : iso; }
@@ -4180,14 +4203,15 @@ async function stepInitiate(signal) {
     if (raceCoord.hasWon('initiate')) { logStatus(`⏭ Initiate race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
     logStatus(`💳 Initiate: ${appointmentId.slice(0,8)}…`, 'y');
     let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
-    const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
+    const initiateUrl = getInitiateUrl();
+    const logId = netLogAdd({ method: 'POST', url: initiateUrl, tag: 'initiate', state: 'pending' });
     try {
         const initiateXToken = initiateToken;
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
         const initHeaders = useNative
             ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateXToken }
             : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateXToken };
-        const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const r = await H2.fetchH2Critical(initiateUrl, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
         const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
@@ -4224,6 +4248,11 @@ document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => 
     const inp = document.getElementById('ivac-reserve-slot-id'); if (!inp) return;
     try { inp.value = _cleanUuid(localStorage.getItem(RESERVE_SLOT_ID_KEY) || '') || RESERVE_SLOT_ID_FIXED; } catch(e) { inp.value = RESERVE_SLOT_ID_FIXED; }
     inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { saveReserveSlotId(v); logStatus(`🆔 Reserve Slot ID saved: ${v.slice(0,8)}…`, 'g'); } });
+})();
+(function initPaymentMethodIdBox() {
+    const inp = document.getElementById('ivac-payment-method-id'); if (!inp) return;
+    try { inp.value = _cleanUuid(localStorage.getItem(PAYMENT_METHOD_ID_KEY) || '') || RJ_DYN.payId || PAYMENT_METHOD_ID; } catch(e) { inp.value = PAYMENT_METHOD_ID; }
+    inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { savePaymentMethodId(v); logStatus(`🆔 dg-epay Payment ID saved: ${v.slice(0,8)}…`, 'g'); } });
 })();
 document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
 
