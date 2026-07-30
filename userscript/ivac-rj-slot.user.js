@@ -391,17 +391,21 @@ function rjApplyDynHeaders(url, init) {
     } catch (e) { return init; }
 }
 
+// stem + greedy-tail: each regex locks onto the STABLE stem and captures the FULL current
+// literal (any version/suffix), stopping at the next '/' or quote. So a server rename like
+// over-view → over-view-v3 → over-view-v4, or upload_file_v2 → _v3, is caught automatically
+// by BOTH the bundle scan (fam) and the live-traffic capture (epMap) — no hardcode/regex edit.
 const RJ_EP_FAMILIES = [
-    { code: '/auth/v2-sign-in',                         re: /\/auth\/v\d+-sign-in/ },
-    { code: '/file/upload_file_v2',                     re: /\/file\/upload_file(?:_v\d+)?/ },
-    { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp/ },
-    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp/ },
-    { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp/ },
-    { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config/ },
-    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config/ },
-    { code: '/file/over-view-v3',                       re: /\/file\/over-view(?:-v\d+|s)?/ },
-    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file-confirmation[_a-z-]*slot[_-]status/i },
-    { code: '/file/payment-amount',                     re: /\/file\/payment-amount/ }
+    { code: '/auth/v2-sign-in',                         re: /\/auth\/[a-z0-9-]*sign-?in[a-z0-9-]*/i },
+    { code: '/file/upload_file_v2',                     re: /\/file\/upload_file[a-z0-9_-]*/i },
+    { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp[a-z0-9_-]*/i },
+    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp[a-z0-9_-]*/i },
+    { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp[a-z0-9_-]*/i },
+    { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config[a-z0-9_-]*/i },
+    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config[a-z0-9_-]*/i },
+    { code: '/file/over-view-v3',                       re: /\/file\/over-view[a-z0-9_-]*/i },
+    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file-confirmation[a-z0-9_-]*/i },
+    { code: '/file/payment-amount',                     re: /\/file\/payment-amount[a-z0-9_-]*/i }
 ];
 
 const RJ_REC_KEY = 'rj_req_records';
