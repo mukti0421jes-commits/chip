@@ -331,7 +331,7 @@ const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
 function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ed-b57c-60416e01617e';   // fixed fallback (not in bundle; runtime-only)
+const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ad-b57c-60416e01617e';   // fixed fallback (verified from real initiate traffic; not in bundle)
 const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
