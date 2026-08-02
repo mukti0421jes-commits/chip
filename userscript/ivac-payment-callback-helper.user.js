@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Payment Callback Helper (RJ)
 // @namespace    rj-ivac-payment-helper
-// @version      2.3.0
+// @version      2.4.0
 // @description  dg-epay callback (tran_id) DYNAMICALLY detect kore — gateway (checkout.dgepay.net) e return-er muhurte capture kore cross-page bridge die ivacbd te pathay. Detect hole same-tab same-origin fetch die protite 1s por por retry. 302 = success -> navigate. Kono external server nei.
 // @author       RJ
 // @match        https://api.ivacbd.com/*payment*callback*
