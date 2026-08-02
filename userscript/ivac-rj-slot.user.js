@@ -481,6 +481,60 @@ function rjRecordSuccess(url, method, headers, body, status, respText) {
     } catch (e) {}
 }
 
+// Extract the dg-epay payment-method-id from the bundle. The id is NOT a plain literal — the
+// initiate URL is assembled by concatenating obfuscated decoder-calls + inline fragments
+// (…+"c-60416e01"+…). Locate the initiate call site via a LINEAR string scan (no regex → no
+// ReDoS), trace the URL variable's assignment, then resolve its concat/ternary-branch with the
+// SAFE single-array resolver (hang-proof). Byte-verified: pulls the exact per-bundle id.
+function rjExtractPayId(text, R) {
+    try {
+        if (!R || typeof R.resolveExprFast !== 'function') return null;
+        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const validate = v => /dg-?epay\/initiate|payment\/[0-9a-f-]{20,}\/dg-?epay/i.test(v);
+        let idx = 0, sites = 0;
+        while ((idx = text.indexOf('{appointmentId:', idx)) !== -1 && sites < 8) {
+            const at = idx; idx += 15;
+            if (text.slice(at, at + 220).indexOf('x-token') === -1) continue;   // initiate signature
+            sites++;
+            let j = at - 1;
+            while (j > 0 && /\s/.test(text[j])) j--;
+            if (text[j] !== ',') continue; j--;
+            while (j > 0 && /\s/.test(text[j])) j--;
+            const end = j + 1;
+            while (j >= 0 && /[\w$]/.test(text[j])) j--;
+            const v = text.slice(j + 1, end);
+            if (!v || v.length > 4 || !/^[A-Za-z_$]/.test(v)) continue;
+            const winStart = Math.max(0, at - 2000);
+            const region = text.slice(winStart, at);
+            const asnRe = new RegExp('[^\\w$.]' + v.replace(/[$]/g, '\\$') + '=(?!=)', 'g');
+            let am, last = null; while ((am = asnRe.exec(region))) last = am;
+            if (!last) continue;
+            const rhsStart = winStart + last.index + 1 + v.length + 1;
+            const rhs = text.slice(rhsStart, at).replace(/[;\n][\s\S]*$/, '');
+            const cands = [];
+            const qi = rhs.indexOf('?');
+            if (qi >= 0) {
+                let d = 0, q = null, ci = -1;
+                for (let i = qi + 1; i < rhs.length; i++) {
+                    const c = rhs[i];
+                    if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
+                    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+                    if (c === '(' || c === '[') d++; else if (c === ')' || c === ']') d--;
+                    else if (c === ':' && d === 0) { ci = i; break; }
+                }
+                if (ci > 0) { cands.push(rhs.slice(qi + 1, ci)); cands.push(rhs.slice(ci + 1)); }
+            } else if (rhs.indexOf('+') !== -1 && rhs.length <= 400) cands.push(rhs);
+            for (const cand of cands) {
+                const ex = cand.trim();
+                if (!ex || ex.indexOf('+') === -1 || !/["'`]/.test(ex) || ex.length > 400) continue;
+                let out = null; try { out = R.resolveExprFast(ex, rhsStart, validate); } catch (e) {}
+                if (out) { const mu = out.match(uuidRe); if (mu) return mu[0]; }
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
 // scan the live bundle chunk(s) and build epMap for anything that changed
 async function rjResolveEndpointsLive() {
     try {
@@ -499,6 +553,17 @@ async function rjResolveEndpointsLive() {
         // reserve slot-id → store the bundle's current slot-id (rewrite target)
         const sm = text.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
         if (sm && sm[1]) RJ_DYN.slotId = sm[1];
+        // dg-epay payment-method-id → resolve from the bundle's concatenated initiate URL (hang-proof)
+        try {
+            const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(text) : null;
+            const pid = R ? rjExtractPayId(text, R) : null;
+            if (pid && /^[0-9a-fA-F-]{36}$/.test(pid) && RJ_DYN.payId !== pid) {
+                RJ_DYN.payId = pid;
+                console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
+                try { const box = document.getElementById('ivac-payment-method-id'); if (box && !box.value) { box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } } catch (e) {}
+                try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay id from bundle: ' + pid.slice(0,8) + '…', 'g'); } catch (e) {}
+            }
+        } catch (e) {}
         rjPersistDyn();
         RJ_DYN.resolvedAt = Date.now();
         console.log('%c[RJ Dyn] endpoints resolved from bundle', 'color:#4ade80;font-weight:800', { fam: RJ_DYN.fam, slotId: RJ_DYN.slotId });
@@ -978,7 +1043,31 @@ function buildBundleResolver(src) {
         }
         return null;
     }
-    return { resolveExpr };
+    // SAFE single-array-only resolver (O(N), never the O(N^2) 2-array path) for hot paths like
+    // the dg-epay URL concat. Validator-driven + rotation-cached + global budget → can never hang.
+    const __rotCache = {}; let __rotBudget = 20000;
+    function resolveExprFast(expr, pos, validate) {
+        const calls = x => [...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g) || []).map(t => t.slice(0, -1)))];
+        const need = { base: {}, wrap: {} }; const arrset = new Set(); const stack = calls(expr);
+        while (stack.length) { const n = stack.pop(); if (need.base[n] || need.wrap[n]) continue;
+            const w = nearest(wrapDefs, n, pos), b = nearest(baseDefs, n, pos);
+            if (w && (!b || Math.abs(w.idx - pos) < Math.abs(b.idx - pos))) { need.wrap[n] = w; for (const x of calls(w.inner)) stack.push(x); stack.push(w.base); }
+            else if (b) { need.base[n] = b; if (b.arrfn) arrset.add(b.arrfn); } }
+        const arr = [...arrset];
+        if (arr.length !== 1) return null;                       // never multi-array → no O(N^2)
+        const a = arr[0]; const A = getArr(a); if (!A) return null;
+        const rot = (x, r) => x.slice(r).concat(x.slice(0, r));
+        let decl = "";
+        for (const [n, d] of Object.entries(need.base)) decl += "const " + n + "=(e,t)=>{const r=__arrs[" + JSON.stringify(d.arrfn) + "][e-" + d.offset + "];return r===undefined?null:(" + (d.rc4 ? "__rc4(r,t)" : "__b64(r)") + ");};";
+        for (const [n, w] of Object.entries(need.wrap)) decl += "function " + n + "(e,t){return " + w.base + "(" + w.inner + ")}";
+        let fnFull; try { fnFull = new Function("__arrs", "__rc4", "__b64", decl + "return (" + expr + ")"); } catch (e) { return null; }
+        const tryRot = r => { try { const v = fnFull({ [a]: rot(A, r) }, rc4, b64); return (typeof v === "string" && validate(v)) ? v : null; } catch (e) { return null; } };
+        if (a in __rotCache) { const v = tryRot(__rotCache[a]); if (v) return v; }
+        const cap = Math.min(A.length, 6000);
+        for (let r = 0; r < cap; r++) { if (__rotBudget <= 0) return null; __rotBudget--; const v = tryRot(r); if (v) { __rotCache[a] = r; return v; } }
+        return null;
+    }
+    return { resolveExpr, resolveExprFast };
 }
 
 // role scoring (signin vs reserve vs initiate) by keyword proximity — mirrors extract_ciphers.js
