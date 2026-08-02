@@ -12,7 +12,10 @@
 // @match        https://checkout.dgepay.net/*
 // @match        https://*.dgepay.net/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      api.ivacbd.com
+// @connect      ivacbd.com
+// @connect      appointment.ivacbd.com
 // ==/UserScript==
 
 (function () {
@@ -29,49 +32,79 @@
   function absUrl(u) { try { return new URL(u, location.href).href; } catch (e) { return u; } }
 
   // ======================================================================
-  // PART A — GATEWAY SIDE (checkout.dgepay.net): return-redirect ta ekhanei
-  // toiri hoy. ivacbd page eta (cross-origin redirect-hop) dhorte pare na,
-  // tai ekhanei capture kore bridge (localStorage) die pathai.
+  // PART A — GATEWAY SIDE (checkout.dgepay.net): the return callback URL (tran_id)
+  // is BUILT here, just before the redirect. ivacbd page can't see that redirect-hop,
+  // so we capture it at the SOURCE (every client-side nav vector, document-start,
+  // MutationObserver + fast scan), bridge it, AND immediately fire the callback API
+  // call cross-origin via GM (retrying 403 "spellbound" until it succeeds), then
+  // navigate the tab to the result. Works ONLY if the callback is generated
+  // client-side (form/JS/meta). A pure server-side 302 leaves nothing to capture.
   // ======================================================================
   if (/(^|\.)dgepay\.net$/i.test(location.hostname)) {
-    var stash = function (u) {
+    var GMx = (typeof GM_xmlhttpRequest !== 'undefined') ? GM_xmlhttpRequest
+            : (typeof GM !== 'undefined' && GM.xmlHttpRequest) ? GM.xmlHttpRequest : null;
+    var _cap = null, _firing = false, _tries = 0, _done = false;
+    function fireCallback(u) {
+      if (_done) return;
+      if (!GMx) { console.warn('[RJ Pay] GM_xmlhttpRequest unavailable — cannot auto-fire; URL bridged only'); return; }
+      _tries++;
+      GMx({
+        method: 'GET', url: u, timeout: 15000, redirect: 'manual',
+        headers: { 'Upgrade-Insecure-Requests': '1', 'Accept': 'text/html,application/json,*/*' },
+        onload: function (r) {
+          if (_done) return;
+          var s = r.status;
+          console.log('%c[RJ Pay #' + _tries + '] callback -> ' + s, 'color:' + (s >= 200 && s < 400 ? '#4ade80' : '#fca5a5') + ';font-weight:700');
+          if (s >= 200 && s < 400) { _done = true; try { top.location.href = u; } catch (e) { location.href = u; } return; }
+          if (_tries < 90) setTimeout(function () { fireCallback(u); }, 1000);   // 403 spellbound → retry
+        },
+        onerror: function () { if (!_done && _tries < 90) setTimeout(function () { fireCallback(u); }, 1000); },
+        ontimeout: function () { if (!_done && _tries < 90) setTimeout(function () { fireCallback(u); }, 1000); }
+      });
+    }
+    function onCapture(u) {
       try { u = absUrl(u); } catch (e) { return; }
-      if (!isCallbackUrl(u)) return;
-      try { localStorage.setItem(BRIDGE_KEY, u); } catch (e) {}
-      console.log('%c[RJ Pay] callback captured on gateway -> bridged: ' + u, 'color:#4ade80;font-weight:800');
-    };
-    // 1) location.assign / replace wrap
+      if (!isCallbackUrl(u) || _cap === u) return;
+      _cap = u;
+      try { localStorage.setItem(BRIDGE_KEY, u); } catch (e) {}   // bridge to ivacbd tab too
+      var tid = (u.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || '(?)';
+      console.log('%c[RJ Pay] callback CAPTURED on gateway (tran_id=' + tid + ')\n' + u, 'color:#4ade80;font-weight:800');
+      if (!_firing) { _firing = true; fireCallback(u); }   // auto-fire the API call from here
+    }
+    // (1) location.assign / replace
     try {
       var _assign = window.location.assign.bind(window.location);
-      window.location.assign = function (u) { stash(u); return _assign(u); };
+      window.location.assign = function (u) { onCapture(u); return _assign(u); };
       var _replace = window.location.replace.bind(window.location);
-      window.location.replace = function (u) { stash(u); return _replace(u); };
+      window.location.replace = function (u) { onCapture(u); return _replace(u); };
     } catch (e) {}
-    // 2) form submit + anchor click (gateway onek somoy form/link die ferot pathay)
-    document.addEventListener('submit', function (ev) { try { if (ev.target && ev.target.action) stash(ev.target.action); } catch (e) {} }, true);
-    document.addEventListener('click', function (ev) { try { var a = ev.target.closest && ev.target.closest('a[href]'); if (a) stash(a.href); } catch (e) {} }, true);
-    // 3) fetch / XHR (kono client-side probe callback URL chuye gele)
-    try {
-      var _f = window.fetch;
-      if (_f) window.fetch = function (input) { try { stash((input && input.url) ? input.url : input); } catch (e) {} return _f.apply(this, arguments); };
-    } catch (e) {}
-    try {
-      var _o = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (m, url) { try { stash(url); } catch (e) {} return _o.apply(this, arguments); };
-    } catch (e) {}
-    // 4) DOM/script scan (meta-refresh / inline JS te callback URL thakle)
+    // (2) window.open
+    try { var _open = window.open; window.open = function (u) { onCapture(u); return _open.apply(this, arguments); }; } catch (e) {}
+    // (3) form submit (capture phase, before it navigates) + anchor clicks
+    document.addEventListener('submit', function (ev) { try { var f = ev.target; if (f && f.action) onCapture(f.action); } catch (e) {} }, true);
+    document.addEventListener('click', function (ev) { try { var a = ev.target.closest && ev.target.closest('a[href]'); if (a) onCapture(a.href); } catch (e) {} }, true);
+    // (4) fetch / XHR
+    try { var _f = window.fetch; if (_f) window.fetch = function (input) { try { onCapture((input && input.url) ? input.url : input); } catch (e) {} return _f.apply(this, arguments); }; } catch (e) {}
+    try { var _o = XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open = function (m, url) { try { onCapture(url); } catch (e) {} return _o.apply(this, arguments); }; } catch (e) {}
+    // (5) DOM scan: inline JS, form action, anchor href, meta-refresh — the URL as text
     var scan = function () {
       try {
         var html = document.documentElement.innerHTML;
         var m = html.match(/https?:\/\/[^"'\s<>]*callback[^"'\s<>]*tran_id=[^"'\s<>]+/i);
-        if (m) stash(m[0]);
+        if (m) onCapture(m[0]);
+        var mr = document.querySelector('meta[http-equiv="refresh" i]');
+        if (mr) { var cc = mr.getAttribute('content') || ''; var um = cc.match(/url\s*=\s*(.+)$/i); if (um) onCapture(um[1].trim().replace(/^['"]|['"]$/g, '')); }
+        var fm = document.querySelector('form[action*="callback"], form[action*="tran_id"]');
+        if (fm && fm.action) onCapture(fm.action);
       } catch (e) {}
     };
+    // (6) fire scans early & often until captured (catch the redirect before it fires)
     scan();
+    try { new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true, attributes: true }); } catch (e) {}
+    var _fast = setInterval(function () { if (_cap) { clearInterval(_fast); return; } scan(); }, 120);
     document.addEventListener('DOMContentLoaded', scan);
     window.addEventListener('load', scan);
-    setInterval(scan, 800);
-    return;   // gateway te UI/loop lage na — capture-i jothesto
+    return;   // gateway page: capture + auto-fire only, no UI
   }
 
   // ======================================================================
