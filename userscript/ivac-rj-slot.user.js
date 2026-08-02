@@ -481,6 +481,50 @@ function rjRecordSuccess(url, method, headers, body, status, respText) {
     } catch (e) {}
 }
 
+// Extract the dg-epay payment-method-id from the bundle. It is NOT a plain literal —
+// the initiate URL is built by concatenating obfuscated decoder-calls + inline string
+// fragments (e.g. …+"c-60416e01"+…). We locate the initiate call site (…(<url>,{appointmentId:…),
+// trace its URL variable's assignment, then resolve each concat/ternary-branch via the
+// bundle resolver until one yields …/payment/<uuid>/dg-epay/initiate. Byte-verified: pulls
+// the exact per-bundle id (41ad on current bundles, 41ed on older ones).
+function rjExtractPayId(text, R) {
+    try {
+        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const callRe = /\(yield\s+[\w$]+(?:\.post|\[(?:[^\][]|"[^"]*"|'[^']*')*\])\(\s*([A-Za-z0-9_$]{1,4})\s*,\s*\{\s*appointmentId\s*:/g;
+        let cm;
+        while ((cm = callRe.exec(text))) {
+            const v = cm[1], callPos = cm.index;
+            const winStart = Math.max(0, callPos - 2000);
+            const region = text.slice(winStart, callPos);
+            const asnRe = new RegExp('[^\\w$.]' + v.replace(/[$]/g, '\\$') + '=(?!=)', 'g');
+            let am, last = null; while ((am = asnRe.exec(region))) last = am;
+            if (!last) continue;
+            const rhsStart = winStart + last.index + 1 + v.length + 1;
+            const rhs = text.slice(rhsStart, callPos).replace(/[;\n][\s\S]*$/, '');
+            const cands = [rhs];
+            const qi = rhs.indexOf('?');
+            if (qi >= 0) {
+                let d = 0, q = null, ci = -1;
+                for (let i = qi + 1; i < rhs.length; i++) {
+                    const c = rhs[i];
+                    if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
+                    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+                    if (c === '(' || c === '[') d++;
+                    else if (c === ')' || c === ']') d--;
+                    else if (c === ':' && d === 0) { ci = i; break; }
+                }
+                if (ci > 0) { cands.push(rhs.slice(qi + 1, ci)); cands.push(rhs.slice(ci + 1)); }
+            }
+            for (const cand of cands) {
+                const ex = cand.trim(); if (!ex || ex.indexOf('+') === -1) continue;
+                let out = null; try { out = R.resolveExpr(ex, rhsStart); } catch (e) {}
+                if (out && /dg-?epay|\/payment\//i.test(out)) { const mu = out.match(uuidRe); if (mu) return mu[0]; }
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
 // scan the live bundle chunk(s) and build epMap for anything that changed
 async function rjResolveEndpointsLive() {
     try {
@@ -499,6 +543,15 @@ async function rjResolveEndpointsLive() {
         // reserve slot-id → store the bundle's current slot-id (rewrite target)
         const sm = text.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
         if (sm && sm[1]) RJ_DYN.slotId = sm[1];
+        // dg-epay payment-method-id → resolve from the bundle's concatenated initiate URL
+        try {
+            const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(text) : null;
+            const pid = R ? rjExtractPayId(text, R) : null;
+            if (pid && /^[0-9a-fA-F-]{36}$/.test(pid)) {
+                if (RJ_DYN.payId !== pid) { RJ_DYN.payId = pid; console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800'); }
+                try { const box = document.getElementById('ivac-payment-method-id'); if (box && !box.value) { box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } } catch (e) {}
+            }
+        } catch (e) {}
         rjPersistDyn();
         RJ_DYN.resolvedAt = Date.now();
         console.log('%c[RJ Dyn] endpoints resolved from bundle', 'color:#4ade80;font-weight:800', { fam: RJ_DYN.fam, slotId: RJ_DYN.slotId });
