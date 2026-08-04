@@ -481,55 +481,48 @@ function rjRecordSuccess(url, method, headers, body, status, respText) {
     } catch (e) {}
 }
 
+// Expand the full +concat chain that contains [litStart,litEnd) — handles concats stored as
+// object-property values (2-array/property-based bundles), not just inline URL-variable ones.
+function rjChainAround(s, litStart, litEnd) {
+    function termLeft(j){ while(j>=0&&/\s/.test(s[j]))j--; const c=s[j];
+        if(c==='"'||c==="'"||c==='`'){let k=j-1;while(k>=0){if(s[k]===c&&s[k-1]!=='\\')return k-1;k--;}return -1;}
+        if(c===')'||c===']'){const close=c,open=c===')'?'(':'[';let d=0,q=null,k=j;for(;k>=0;k--){const ch=s[k];if(q){if(ch===q&&s[k-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===close)d++;else if(ch===open){d--;if(d===0)break;}}k--;while(k>=0&&/[\w$.]/.test(s[k]))k--;return k;}
+        while(j>=0&&/[\w$.]/.test(s[j]))j--;return j; }
+    function termRight(j){ while(j<s.length&&/\s/.test(s[j]))j++; const c=s[j];
+        if(c==='"'||c==="'"||c==='`'){let k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}
+        while(j<s.length&&/[\w$.]/.test(s[j]))j++;
+        while(j<s.length&&(s[j]==='('||s[j]==='[')){const open=s[j],close=open==='('?')':']';let d=0,q=null;for(;j<s.length;j++){const ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}
+        return j; }
+    let start=litStart;
+    while(true){let k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;let e=termLeft(k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}
+    let end=litEnd;
+    while(true){let k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;let e=termRight(k+1);end=e;}
+    return s.slice(start,end).trim();
+}
 // Extract the dg-epay payment-method-id from the bundle. The id is NOT a plain literal — the
 // initiate URL is assembled by concatenating obfuscated decoder-calls + inline fragments
-// (…+"c-60416e01"+…). Locate the initiate call site via a LINEAR string scan (no regex → no
-// ReDoS), trace the URL variable's assignment, then resolve its concat/ternary-branch with the
-// SAFE single-array resolver (hang-proof). Byte-verified: pulls the exact per-bundle id.
+// (…+"dg-epay/in"+… or …+"c-60416e01"+…), sometimes stored in an object property. We anchor on
+// those literal fragments, rebuild the full concat, and resolve it with the budget-capped
+// resolver (handles single- AND 2-array; the budget caps the O(N^2) path so it can never hang).
 function rjExtractPayId(text, R) {
     try {
-        if (!R || typeof R.resolveExprFast !== 'function') return null;
+        if (!R || typeof R.resolveExpr !== 'function') return null;
         const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-        const validate = v => /dg-?epay\/initiate|payment\/[0-9a-f-]{20,}\/dg-?epay/i.test(v);
-        let idx = 0, sites = 0;
-        while ((idx = text.indexOf('{appointmentId:', idx)) !== -1 && sites < 8) {
-            const at = idx; idx += 15;
-            if (text.slice(at, at + 220).indexOf('x-token') === -1) continue;   // initiate signature
-            sites++;
-            let j = at - 1;
-            while (j > 0 && /\s/.test(text[j])) j--;
-            if (text[j] !== ',') continue; j--;
-            while (j > 0 && /\s/.test(text[j])) j--;
-            const end = j + 1;
-            while (j >= 0 && /[\w$]/.test(text[j])) j--;
-            const v = text.slice(j + 1, end);
-            if (!v || v.length > 4 || !/^[A-Za-z_$]/.test(v)) continue;
-            const winStart = Math.max(0, at - 2000);
-            const region = text.slice(winStart, at);
-            const asnRe = new RegExp('[^\\w$.]' + v.replace(/[$]/g, '\\$') + '=(?!=)', 'g');
-            let am, last = null; while ((am = asnRe.exec(region))) last = am;
-            if (!last) continue;
-            const rhsStart = winStart + last.index + 1 + v.length + 1;
-            const rhs = text.slice(rhsStart, at).replace(/[;\n][\s\S]*$/, '');
-            const cands = [];
-            const qi = rhs.indexOf('?');
-            if (qi >= 0) {
-                let d = 0, q = null, ci = -1;
-                for (let i = qi + 1; i < rhs.length; i++) {
-                    const c = rhs[i];
-                    if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
-                    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
-                    if (c === '(' || c === '[') d++; else if (c === ')' || c === ']') d--;
-                    else if (c === ':' && d === 0) { ci = i; break; }
-                }
-                if (ci > 0) { cands.push(rhs.slice(qi + 1, ci)); cands.push(rhs.slice(ci + 1)); }
-            } else if (rhs.indexOf('+') !== -1 && rhs.length <= 400) cands.push(rhs);
-            for (const cand of cands) {
-                const ex = cand.trim();
-                if (!ex || ex.indexOf('+') === -1 || !/["'`]/.test(ex) || ex.length > 400) continue;
-                let out = null; try { out = R.resolveExprFast(ex, rhsStart, validate); } catch (e) {}
-                if (out) { const mu = out.match(uuidRe); if (mu) return mu[0]; }
-            }
+        const validate = v => /payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/in/i.test(v);
+        const epay = [], hex = []; const anchorRe = /"([^"\\]{0,40})"/g; let m;
+        while ((m = anchorRe.exec(text))) {
+            const t = m[1];
+            if (/epay|-ep/i.test(t)) epay.push(m.index);
+            else if (/[0-9a-f]{6,}-|-[0-9a-f]{6,}/i.test(t)) hex.push(m.index);
+        }
+        const seen = new Set(); let tried = 0;
+        for (const pos of epay.concat(hex)) {
+            if (tried > 8) break;
+            let ch = null; try { ch = rjChainAround(text, pos, text.indexOf('"', pos + 1) + 1); } catch (e) {}
+            if (!ch || ch.indexOf('+') === -1 || ch.length > 400 || ch.split('+').length > 28 || seen.has(ch)) continue;
+            seen.add(ch); tried++;
+            let out = null; try { out = R.resolveExpr(ch, pos); } catch (e) {}
+            if (out && validate(out)) { const u = out.match(uuidRe); if (u) return u[0]; }
         }
     } catch (e) {}
     return null;
@@ -978,7 +971,8 @@ function buildBundleResolver(src) {
     function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
     function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
     function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
-    function resolveExpr(expr,pos){
+    const __gb={n:40000};   // per-call fnFull-eval budget (caps the 2-array O(N^2) path → no hang; cipher single-array uses <10k)
+    function resolveExpr(expr,pos){__gb.n=40000;
         const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
         const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
         while(stack.length){const n=stack.pop();if(need.base[n]||need.wrap[n])continue;
@@ -1004,7 +998,7 @@ function buildBundleResolver(src) {
             for(const a of arr){
                 const idxs=groups[a];if(!idxs.length){feasible=false;break;}
                 const good=[];
-                for(let r=0;r<baseArr[a].length;r++){
+                for(let r=0;r<baseArr[a].length;r++){if(--__gb.n<=0){feasible=false;break;}
                     const arrs={};arr.forEach(x=>arrs[x]=x===a?rot(baseArr[a],r):baseArr[x]);
                     let allok=true;try{const vals=fnTerms(arrs,rc4,b64);for(const i of idxs){const v=vals[i];if(typeof v!=="string"||!/^[\x20-\x7e]*$/.test(v)){allok=false;break;}}}catch(e){allok=false;}
                     if(allok)good.push(r);
@@ -1016,11 +1010,11 @@ function buildBundleResolver(src) {
             if(feasible){
                 const keys=arr, lists=keys.map(a=>passRot[a]);
                 const combos=(function prod(i){if(i===lists.length)return [[]];const rest=prod(i+1);const out=[];for(const r of lists[i])for(const t of rest)out.push([r,...t]);return out;})(0);
-                for(const combo of combos){const arrs={};keys.forEach((a,i)=>arrs[a]=rot(baseArr[a],combo[i]));try{const v=fnFull(arrs,rc4,b64);if(ok(v))return v;}catch(e){}}
+                for(const combo of combos){if(--__gb.n<=0)break;const arrs={};keys.forEach((a,i)=>arrs[a]=rot(baseArr[a],combo[i]));try{const v=fnFull(arrs,rc4,b64);if(ok(v))return v;}catch(e){}}
             }
         }catch(e){}
         // METHOD B: full brute-force fallback (1-2 arrays)
-        if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
+        if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){if(--__gb.n<=0)return null;try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
         if(arr.length===2){
             const a0=arr[0],a1=arr[1],A=baseArr[a0],B=baseArr[a1];
             const terms2=splitTopPlus(expr);
@@ -1031,15 +1025,15 @@ function buildBundleResolver(src) {
                 const isPrint=v=>typeof v==="string"&&/^[\x20-\x7e]*$/.test(v);
                 let baseVals=null;try{baseVals=fnTermsB({[a0]:A,[a1]:B},rc4,b64);}catch(e){}
                 if(baseVals){
-                    const rec0=[],good0=[];for(let r0=0;r0<A.length;r0++){let vals;try{vals=fnTermsB({[a0]:rot(A,r0),[a1]:B},rc4,b64);}catch(e){rec0.push(null);continue;}const m={};let okp=true;for(const i of idx0){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec0.push(m);if(okp)good0.push(r0);}
-                    const rec1=[],good1=[];for(let r1=0;r1<B.length;r1++){let vals;try{vals=fnTermsB({[a0]:A,[a1]:rot(B,r1)},rc4,b64);}catch(e){rec1.push(null);continue;}const m={};let okp=true;for(const i of idx1){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec1.push(m);if(okp)good1.push(r1);}
+                    const rec0=[],good0=[];for(let r0=0;r0<A.length;r0++){if(--__gb.n<=0)break;let vals;try{vals=fnTermsB({[a0]:rot(A,r0),[a1]:B},rc4,b64);}catch(e){rec0.push(null);continue;}const m={};let okp=true;for(const i of idx0){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec0.push(m);if(okp)good0.push(r0);}
+                    const rec1=[],good1=[];for(let r1=0;r1<B.length;r1++){if(--__gb.n<=0)break;let vals;try{vals=fnTermsB({[a0]:A,[a1]:rot(B,r1)},rc4,b64);}catch(e){rec1.push(null);continue;}const m={};let okp=true;for(const i of idx1){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec1.push(m);if(okp)good1.push(r1);}
                     const L0=good0.length?good0:[...Array(A.length).keys()];
                     const L1=good1.length?good1:[...Array(B.length).keys()];
                     for(const r0 of L0){const m0=rec0[r0];if(!m0)continue;for(const r1 of L1){const m1=rec1[r1];if(!m1)continue;let sec="";for(let i=0;i<terms2.length;i++)sec+=(i in m0?m0[i]:(i in m1?m1[i]:baseVals[i]));if(ok(sec))return sec;}}
                     return null;
                 }
             }
-            const A2=baseArr[arr[0]],B2=baseArr[arr[1]];for(let r0=0;r0<A2.length;r0++){const A0=rot(A2,r0);for(let r1=0;r1<B2.length;r1++){try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B2,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;
+            const A2=baseArr[arr[0]],B2=baseArr[arr[1]];for(let r0=0;r0<A2.length;r0++){if(__gb.n<=0)break;const A0=rot(A2,r0);for(let r1=0;r1<B2.length;r1++){if(--__gb.n<=0)break;try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B2,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;
         }
         return null;
     }
