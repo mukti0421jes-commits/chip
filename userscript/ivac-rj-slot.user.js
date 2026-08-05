@@ -2009,7 +2009,7 @@ const h2html = `
 
 <div class="ft">
 <div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
-<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="padding:3px 9px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Exp</button><span style="font-size:.62rem;color:#7777aa;font-weight:700">RJ SLOT PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="padding:3px 9px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Imp</button></div>
+<div style="display:flex;align-items:stretch;gap:5px;width:100%"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Exp</button><span style="flex:1.6;display:flex;align-items:center;justify-content:center;font-size:.6rem;color:#7777aa;font-weight:700;white-space:nowrap">RJ SLOT PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Imp</button></div>
 </div>
 
 <div class="cdbar" id="cdbar">
@@ -4481,7 +4481,7 @@ async function runFullAuto() {
         const b = document.createElement('button');
         b.id = 'rj-full-auto'; b.textContent = '⚡AUTO';
         b.title = 'FULL AUTO — run the whole flow. Press A_E first (encryption). Stop All to halt.';
-        b.style.cssText = 'padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer';
+        b.style.cssText = 'flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer';
         b.addEventListener('click', () => { if (FA.running) { faLog('already running — use Stop All to halt', 'y'); return; } runFullAuto(); });
         footer.appendChild(b);
     } catch (e) {}
