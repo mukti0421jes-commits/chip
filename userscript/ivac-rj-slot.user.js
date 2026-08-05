@@ -2009,7 +2009,7 @@ const h2html = `
 
 <div class="ft">
 <div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
-<div style="display:flex;align-items:center;justify-content:center;gap:8px"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Export</button><span>RJ SLOT PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Import</button></div>
+<div style="display:flex;align-items:center;justify-content:center;gap:5px"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="padding:2px 7px!important;font-size:.56rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Exp</button><span style="font-size:.55rem;color:#7777aa;font-weight:700">PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="padding:2px 7px!important;font-size:.56rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Imp</button></div>
 </div>
 
 <div class="cdbar" id="cdbar">
@@ -4473,17 +4473,17 @@ async function runFullAuto() {
     } catch (e) { faLog('Full Auto error: ' + e.message, 'r'); }
     finally { FA.running = false; }
 }
-// inject a FULL AUTO button into the footer (beside RJ SLOT PRO-H2), start on click
+// inject the FULL AUTO button into the SAME footer row (short label so all fit on one line)
 (function injectFullAutoBtn() {
     try {
-        const host = document.getElementById('dyn-sync-export')?.parentNode;
-        if (!host || document.getElementById('rj-full-auto')) return;
+        const footer = document.getElementById('dyn-sync-import')?.parentNode;
+        if (!footer || document.getElementById('rj-full-auto')) return;
         const b = document.createElement('button');
-        b.id = 'rj-full-auto'; b.textContent = '⚡FULL AUTO';
-        b.title = 'Run the whole flow automatically. Press A_E first (encryption). Stop All to halt.';
-        b.style.cssText = 'padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer;margin-left:6px';
+        b.id = 'rj-full-auto'; b.textContent = '⚡AUTO';
+        b.title = 'FULL AUTO — run the whole flow. Press A_E first (encryption). Stop All to halt.';
+        b.style.cssText = 'padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer';
         b.addEventListener('click', () => { if (FA.running) { faLog('already running — use Stop All to halt', 'y'); return; } runFullAuto(); });
-        host.appendChild(b);
+        footer.appendChild(b);
     } catch (e) {}
 })();
 
