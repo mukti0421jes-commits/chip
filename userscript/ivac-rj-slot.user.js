@@ -556,13 +556,16 @@ async function rjResolveEndpointsLive() {
                 if (t.indexOf('{appointmentId:') === -1 && !/epay|-ep/i.test(t)) continue;   // quick skip: no initiate here
                 try { const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(t) : null; const p = R ? rjExtractPayId(t, R) : null; if (p) { pid = p; break; } } catch (e) {}
             }
-            if (pid && /^[0-9a-fA-F-]{36}$/.test(pid) && RJ_DYN.payId !== pid) {
+            if (pid && /^[0-9a-fA-F-]{36}$/.test(pid)) {
+                const changed = RJ_DYN.payId !== pid;
                 RJ_DYN.payId = pid;
-                console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
-                // bundle is the source of truth → overwrite the box (and persisted value) whenever the
-                // freshly-scanned id differs, so a server-side UUID change auto-applies on the next A_E/scan
-                try { const box = document.getElementById('ivac-payment-method-id'); if (box) box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } catch (e) {}
-                try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay id from bundle: ' + pid.slice(0,8) + '…', 'g'); } catch (e) {}
+                // bundle is the source of truth → ALWAYS reflect the scanned id in the box + persisted value,
+                // even if RJ_DYN.payId already matched (box may have been cleared while payId persisted).
+                try { const box = document.getElementById('ivac-payment-method-id'); if (box && box.value !== pid) box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } catch (e) {}
+                if (changed) {
+                    console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
+                    try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay id from bundle: ' + pid.slice(0,8) + '…', 'g'); } catch (e) {}
+                }
             }
         } catch (e) {}
         rjPersistDyn();
