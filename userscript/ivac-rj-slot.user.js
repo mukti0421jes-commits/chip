@@ -964,6 +964,9 @@ async function findBundleUrls() {
             let m; while ((m = BUNDLE_RE_G.exec(html)) !== null) add(new URL(m[0], location.origin).href);
         }
     } catch(e) {}
+    // 3) all loaded JS from performance entries — catches dynamically-imported chunks (e.g. the
+    // payment lazy-chunk where the dg-epay concat lives) that aren't <script src> or in index.html
+    try { performance.getEntriesByType('resource').forEach(e => { if (/\.js(?:$|\?)/.test(e.name) && e.name.indexOf(location.origin) === 0) add(e.name); }); } catch (e) {}
     return urls;
 }
 
