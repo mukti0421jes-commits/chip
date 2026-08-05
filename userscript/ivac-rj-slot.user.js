@@ -537,8 +537,11 @@ async function rjResolveEndpointsLive() {
             try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
             return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
         };
+        // fetch ALL chunks (the dg-epay concat may live in a different chunk than sign-in)
         let text = '';
-        for (const u of urls) { const t = await grab(u); if (t) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; } }
+        const chunkTexts = [];
+        for (const u of urls) { if (chunkTexts.length >= 25) break; const t = await grab(u); if (t) chunkTexts.push(t); }
+        for (const t of chunkTexts) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; }   // endpoint-scan text = up to first core chunk
         if (!text) { try { logStatus('⚠ Endpoint scan: bundle fetch empty', 'y'); } catch (e) {} return; }
         // endpoint families → store the bundle's CURRENT literal per family (used to rewrite any version)
         RJ_DYN.fam = RJ_DYN.fam || {};
@@ -546,10 +549,13 @@ async function rjResolveEndpointsLive() {
         // reserve slot-id → store the bundle's current slot-id (rewrite target)
         const sm = text.match(/\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/);
         if (sm && sm[1]) RJ_DYN.slotId = sm[1];
-        // dg-epay payment-method-id → resolve from the bundle's concatenated initiate URL (hang-proof)
+        // dg-epay payment-method-id → resolve per-chunk (each chunk self-contains its own decoder arrays)
         try {
-            const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(text) : null;
-            const pid = R ? rjExtractPayId(text, R) : null;
+            let pid = null;
+            for (const t of chunkTexts) {
+                if (t.indexOf('{appointmentId:') === -1 && !/epay|-ep/i.test(t)) continue;   // quick skip: no initiate here
+                try { const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(t) : null; const p = R ? rjExtractPayId(t, R) : null; if (p) { pid = p; break; } } catch (e) {}
+            }
             if (pid && /^[0-9a-fA-F-]{36}$/.test(pid) && RJ_DYN.payId !== pid) {
                 RJ_DYN.payId = pid;
                 console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
