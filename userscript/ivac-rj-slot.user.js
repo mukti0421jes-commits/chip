@@ -4397,7 +4397,95 @@ async function startPipelineFrom(startStep) {
     }
 })();
 
-(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; _autoReserveKicked = false; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
+(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; FA.stop = true; pipelineRunning = false; pipelineConcurrentCount = 0; _autoReserveKicked = false; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
+
+// ==================== FULL AUTO PIPELINE (A_E → signin → otp/verify → captcha → upload flow → confirm → book → reserve → initiate) ====================
+const FA = { running: false, stop: false };
+function faLog(m, c) { try { logStatus('🤖 ' + m, c || 'y'); } catch (e) {} }
+function faSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function faHalted() { return FA.stop || stopFlag.value; }
+function faClick(id) { try { const el = document.getElementById(id); if (el) { el.click(); return true; } } catch (e) {} return false; }
+function faTab(t) { try { const el = document.querySelector('.tb .t[data-t="' + t + '"]'); if (el) { el.click(); return true; } } catch (e) {} return false; }
+function faCaptchaOn() { try { const t = document.getElementById('captcha-toggle'); if (t && !t.classList.contains('on')) t.click(); return !!(t && t.classList.contains('on')); } catch (e) { return false; } }
+// poll a condition until true or timeout
+async function faWaitFor(cond, timeoutMs, pollMs) { const t0 = Date.now(); while (Date.now() - t0 < timeoutMs) { if (faHalted()) return false; try { if (cond()) return true; } catch (e) {} await faSleep(pollMs || 400); } return false; }
+// watch the status log for a success pattern (logStatus overwrites #ll/#ls/#lu/#lf)
+function faWaitLog(re, timeoutMs) {
+    return new Promise(res => {
+        const ids = ['ll', 'ls', 'lu', 'lf']; let done = false; const obs = [];
+        const finish = v => { if (done) return; done = true; obs.forEach(o => { try { o.disconnect(); } catch (e) {} }); clearTimeout(tm); clearInterval(iv); res(v); };
+        const check = () => { if (faHalted()) return finish(false); for (const id of ids) { const el = document.getElementById(id); if (el && re.test(el.textContent || '')) return finish(true); } };
+        ids.forEach(id => { const el = document.getElementById(id); if (!el) return; const o = new MutationObserver(check); try { o.observe(el, { childList: true, subtree: true, characterData: true }); } catch (e) {} obs.push(o); });
+        const tm = setTimeout(() => finish(false), timeoutMs); const iv = setInterval(check, 600); check();
+    });
+}
+// generic step: run `action`, then wait until `success()` (or success-log) — retry until ok or stopped
+async function faStep(name, action, success, opts) {
+    opts = opts || {}; const timeout = opts.timeout || 90000, retries = opts.retries || 9999, delay = opts.delay || 2500, optional = !!opts.optional;
+    for (let a = 1; a <= retries && !faHalted(); a++) {
+        faLog(name + (a > 1 ? ' (try ' + a + ')' : '') + '…');
+        try { await action(); } catch (e) {}
+        let ok = false; try { ok = await success(); } catch (e) {}   // success() may return a bool or a Promise<bool>
+        if (ok) { faLog('✓ ' + name, 'g'); return true; }
+        if (faHalted()) return false;
+        if (optional) { faLog('⤼ ' + name + ' skipped (optional)', 'y'); return true; }
+        faLog('✗ ' + name + ' — retry in ' + (delay / 1000) + 's', 'r');
+        await faSleep(delay);
+    }
+    return false;
+}
+async function runFullAuto() {
+    if (FA.running) { faLog('Full Auto already running', 'y'); return; }
+    FA.running = true; FA.stop = false; stopFlag.value = false;
+    try {
+        faLog('🚀 FULL AUTO started — encryption must be ready (press A_E first)', 'g');
+        // 2) Signin (reuse existing retry-engine)
+        if (!await faStep('Signin', () => runStepSmart('signin', stepSignin), () => !!sessionState.accessToken, { timeout: 150000 })) return faLog('⏹ stopped at Signin', 'r');
+        // 3) OTP send + Verify (stepVerify waits for the OTP itself; SMS fetcher auto-fills it)
+        if (!await faStep('OTP + Verify', async () => { if (!sessionState.isVerified) { faClick('botp'); await faSleep(1500); await runStepSmart('verify', stepVerify); } }, () => !!sessionState.isVerified, { timeout: 150000 })) return faLog('⏹ stopped at Verify', 'r');
+        // 4) Captcha toggle ON
+        await faStep('Captcha ON', () => faCaptchaOn(), () => { const t = document.getElementById('captcha-toggle'); return !!(t && t.classList.contains('on')); }, { timeout: 4000, retries: 3, optional: true });
+        // 5) Upload tab → File Upload Checking → Appointment
+        faTab('u'); await faSleep(600);
+        await faStep('File Upload Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|available|✅/i, 12000), { timeout: 15000, retries: 4, optional: true });
+        if (!await faStep('Appointment', () => faClick('ivac-btn-appointment'), () => !!sessionState.appointmentId, { timeout: 30000, retries: 6 })) return faLog('⏹ stopped at Appointment', 'r');
+        // 6) Uploads: Patient + Attendant 1/2/3 (skip a slot with no file selected)
+        const uploads = [['ivac-btn-file-upload', 'ivac-file-upload', 'Patient File'], ['ivac-btn-file-upload-2', 'ivac-file-upload-2', 'Attendant 1'], ['ivac-btn-file-upload-3', 'ivac-file-upload-3', 'Attendant 2'], ['ivac-btn-file-upload-4', 'ivac-file-upload-4', 'Attendant 3']];
+        for (const [btn, inp, label] of uploads) {
+            if (faHalted()) return;
+            const hasFile = (() => { try { return document.getElementById(inp)?.files?.length > 0; } catch (e) { return false; } })();
+            if (!hasFile) { faLog('⤼ ' + label + ' — no file, skipped', 'y'); continue; }
+            await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: 6 });
+        }
+        // 7) Confirm Mission & Center
+        await faStep('Confirm Center', () => faClick('ivac-btn-appointment-booking'), () => faWaitLog(/confirm|booking|✅|appointment/i, 15000), { timeout: 18000, retries: 4, optional: true });
+        // 8) File checking again
+        await faStep('File Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|✅/i, 12000), { timeout: 14000, retries: 3, optional: true });
+        // 9) Login tab
+        faTab('l'); await faSleep(600);
+        // 10) Book
+        if (!await faStep('Book', () => runStepSmart('book', stepBook), () => !!sessionState.appointmentId, { timeout: 90000 })) return faLog('⏹ stopped at Book', 'r');
+        // 11) Reserve
+        if (!await faStep('Reserve', () => runStepSmart('reserve', stepReserve), () => !!sessionState.reservationId, { timeout: 120000 })) return faLog('⏹ stopped at Reserve', 'r');
+        // 12) Initiate
+        await faStep('Initiate', () => runStepSmart('initiate', stepInitiate), () => faWaitLog(/initiat|payment|webview|✅/i, 30000), { timeout: 90000, retries: 6 });
+        faLog('🎉 FULL AUTO finished', 'g');
+    } catch (e) { faLog('Full Auto error: ' + e.message, 'r'); }
+    finally { FA.running = false; }
+}
+// inject a FULL AUTO button into the footer (beside RJ SLOT PRO-H2), start on click
+(function injectFullAutoBtn() {
+    try {
+        const host = document.getElementById('dyn-sync-export')?.parentNode;
+        if (!host || document.getElementById('rj-full-auto')) return;
+        const b = document.createElement('button');
+        b.id = 'rj-full-auto'; b.textContent = '⚡FULL AUTO';
+        b.title = 'Run the whole flow automatically. Press A_E first (encryption). Stop All to halt.';
+        b.style.cssText = 'padding:2px 8px!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer;margin-left:6px';
+        b.addEventListener('click', () => { if (FA.running) { faLog('already running — use Stop All to halt', 'y'); return; } runFullAuto(); });
+        host.appendChild(b);
+    } catch (e) {}
+})();
 
 (() => { ['btn-single', 'btn-auto'].forEach(id => { const old = document.getElementById(id); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', function() { if (this.classList.contains('b8')) { this.classList.remove('b8'); this.classList.add('b5'); } else { this.classList.remove('b5'); this.classList.add('b8'); } }); }); })();
 
