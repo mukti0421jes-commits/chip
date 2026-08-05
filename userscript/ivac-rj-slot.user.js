@@ -553,7 +553,9 @@ async function rjResolveEndpointsLive() {
             if (pid && /^[0-9a-fA-F-]{36}$/.test(pid) && RJ_DYN.payId !== pid) {
                 RJ_DYN.payId = pid;
                 console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
-                try { const box = document.getElementById('ivac-payment-method-id'); if (box && !box.value) { box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } } catch (e) {}
+                // bundle is the source of truth → overwrite the box (and persisted value) whenever the
+                // freshly-scanned id differs, so a server-side UUID change auto-applies on the next A_E/scan
+                try { const box = document.getElementById('ivac-payment-method-id'); if (box) box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } catch (e) {}
                 try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay id from bundle: ' + pid.slice(0,8) + '…', 'g'); } catch (e) {}
             }
         } catch (e) {}
