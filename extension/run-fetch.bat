@@ -1,43 +1,42 @@
 @echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
-title IVAC extract_fetch
+REM ====================================================================
+REM  run-fetch.bat
+REM  Auto-detects the daily web bundle (largest .js in this folder,
+REM  excluding the known helper/output files) and runs
+REM  extract_fetch.js on it. No need to edit anything when the
+REM  bundle's name changes.
+REM
+REM  Keep this file in the autocheck folder (next to extract_fetch.js).
+REM ====================================================================
+
+cd /d "%USERPROFILE%\Desktop\autocheck"
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [X] Node.js pawa jay ni. https://nodejs.org theke LTS install korun.
-  echo.
-  pause
-  exit /b 1
+    echo [ERROR] Node.js is not installed or not in PATH.
+    echo Install it from https://nodejs.org and try again.
+    pause
+    exit /b 1
 )
 
-REM auto-detect bundle = biggest .js that is NOT a tool/output script
+REM List .js files biggest-first, skip known helper/output files; first hit = the bundle.
 set "BUNDLE="
-set "MAXSIZE=0"
-for %%F in (*.js) do (
-  set "SKIP="
-  for %%T in (extract_fetch.js extract_ciphers.js cipher.js cipher-server.js fetch-api.js watcher.js run-extract.js auto-extract.js) do (
-    if /I "%%~nxF"=="%%T" set "SKIP=1"
-  )
-  if not defined SKIP (
-    if %%~zF GTR !MAXSIZE! (
-      set "MAXSIZE=%%~zF"
-      set "BUNDLE=%%~nxF"
-    )
-  )
+for /f "delims=" %%F in ('dir /b /a-d /o-s *.js 2^>nul ^| findstr /v /i /b /c:"extract_fetch.js" /c:"extract_ciphers.js" /c:"cipher.js" /c:"cipher-server.js" /c:"start-cipher-hidden.js" /c:"fetch-api.js" /c:"watcher.js"') do (
+    if not defined BUNDLE set "BUNDLE=%%F"
 )
 
 if not defined BUNDLE (
-  echo [X] Ei folder e kono bundle .js pawa jay ni. IVAC index.js ekhane rakhun.
-  echo.
-  pause
-  exit /b 1
+    echo [ERROR] No bundle .js found in this folder.
+    echo Put the daily web bundle .js here and try again.
+    pause
+    exit /b 1
 )
 
-echo ============================================================
-echo  Bundle : !BUNDLE!  ^(!MAXSIZE! bytes^)
-echo ============================================================
+echo Detected bundle: %BUNDLE%
+echo Running extract_fetch...
 echo.
-node extract_fetch.js "!BUNDLE!"
+node extract_fetch.js "%BUNDLE%"
+
 echo.
+echo [DONE] fetch-api.js has been regenerated (dg-epay + slot + endpoints).
 pause
