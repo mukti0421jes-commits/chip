@@ -528,6 +528,43 @@ function rjExtractPayId(text, R) {
     return null;
 }
 
+// EXECUTION-BASED dg-epay extractor (bundle → UUID). The UUID is NOT a plain literal — it is
+// built by an obfuscated decoder concat with local string consts, e.g.
+//   wIiPt: a(0,594)+s(89)+…+f(e,247)+…  (e="…",t="…")  →  "payment/<uuid>/dg-epay/initiate"
+// We anchor on the "dg-epay" object, run the bundle's own decoder cluster (reusing the cipher's
+// _encRunDecoderCluster), inject the local consts, evaluate each concat property, and pull the UUID.
+function rjExtractPayIdExec(src) {
+    try {
+        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const valid = v => /payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
+        const enclosingBrace = (s, idx) => { let d = 0; for (let k = idx; k >= 0; k--) { const c = s[k]; if (c === "}") d++; else if (c === "{") { if (d === 0) return k; d--; } } return -1; };
+        const braceEnd = (s, ob) => { let d = 0, q = null; for (let j = ob; j < s.length; j++) { const c = s[j]; if (q) { if (c === "\\") { j++; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; continue; } if (c === "{") d++; else if (c === "}") { d--; if (d === 0) return j; } } return -1; };
+        const splitProps = (body) => { const parts = []; let d = 0, q = null, cur = ""; for (let i = 0; i < body.length; i++) { const c = body[i]; if (q) { cur += c; if (c === "\\") { cur += body[++i] || ""; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; cur += c; continue; } if (c === "(" || c === "[" || c === "{") { d++; cur += c; continue; } if (c === ")" || c === "]" || c === "}") { d--; cur += c; continue; } if (c === "," && d === 0) { parts.push(cur); cur = ""; continue; } cur += c; } if (cur.trim()) parts.push(cur); return parts; };
+        const locals = (s, P) => { const win = s.slice(Math.max(0, P - 4000), P), out = {}; for (const m of win.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*(["'`])((?:\\.|(?!\2).)*)\2/g)) out[m[1]] = m[3]; return out; };
+        let idx = src.indexOf("dg-epay"), guard = 0;
+        while (idx >= 0 && guard < 12) {
+            guard++;
+            const ob = enclosingBrace(src, idx - 1), oe = ob >= 0 ? braceEnd(src, ob) : -1;
+            if (oe > ob) {
+                const allLocals = locals(src, ob), decoders = _encRunDecoderCluster(src, ob), wrappers = _encLocalWrappers(src, ob);
+                for (const seg of splitProps(src.slice(ob + 1, oe))) {
+                    const ci = seg.indexOf(":"); if (ci < 0) continue; const val = seg.slice(ci + 1).trim();
+                    if (val.indexOf("+") === -1 || !/[A-Za-z_$][\w$]*\(/.test(val)) continue;
+                    const need = new Set(), scan = s => { for (const m of s.matchAll(/([A-Za-z_$][\w$]*)\(/g)) need.add(m[1]); };
+                    scan(val); let ch = true; while (ch) { ch = false; const b = need.size; for (const n of [...need]) { if (wrappers[n]) scan(wrappers[n].text); } if (need.size > b) ch = true; }
+                    const bare = {}; for (const kk in allLocals) { if (need.has(kk)) continue; const re = new RegExp("\\b" + kk.replace(/\$/g, "\\$") + "\\b(?!\\s*\\()"); if (re.test(val)) bare[kk] = allLocals[kk]; }
+                    const args = [], vals = []; for (const nn of need) { if (decoders[nn] && !wrappers[nn]) { args.push(nn); vals.push(decoders[nn]); } }
+                    let decl = ""; for (const bk in bare) decl += "const " + bk + "=" + JSON.stringify(bare[bk]) + ";\n"; for (const wn of need) { if (wrappers[wn]) decl += wrappers[wn].text + "\n"; }
+                    let out; try { out = new Function("const [" + args.join(",") + "]=arguments[0];\n" + decl + "\nreturn (" + val + ");")(vals); } catch (e) { continue; }
+                    if (typeof out === "string" && valid(out)) { const u = out.match(uuidRe); if (u) return u[0].toLowerCase(); }
+                }
+            }
+            idx = src.indexOf("dg-epay", idx + 1);
+        }
+    } catch (e) {}
+    return null;
+}
+
 // scan the live bundle chunk(s) and build epMap for anything that changed
 async function rjResolveEndpointsLive() {
     try {
@@ -553,7 +590,10 @@ async function rjResolveEndpointsLive() {
         try {
             let pid = null;
             for (const t of chunkTexts) {
-                if (t.indexOf('{appointmentId:') === -1 && !/epay|-ep/i.test(t)) continue;   // quick skip: no initiate here
+                if (t.indexOf('dg-epay') === -1 && t.indexOf('{appointmentId:') === -1 && !/epay|-ep/i.test(t)) continue;   // quick skip
+                // PRIMARY: execution-based decode (UUID is an obfuscated concat in the bundle)
+                try { const pe = rjExtractPayIdExec(t); if (pe && /^[0-9a-fA-F-]{36}$/.test(pe)) { pid = pe; break; } } catch (e) {}
+                // FALLBACK: static concat resolver
                 try { const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(t) : null; const p = R ? rjExtractPayId(t, R) : null; if (p) { pid = p; break; } } catch (e) {}
             }
             if (pid && /^[0-9a-fA-F-]{36}$/.test(pid)) {
