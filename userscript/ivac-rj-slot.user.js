@@ -4560,7 +4560,8 @@ async function runFullAuto() {
         // 5) Upload tab → File Upload Checking → Appointment
         faTab('u'); await faSleep(600);
         await faStep('File Upload Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|available|✅/i, 12000), { timeout: 15000, retries: 4, optional: true });
-        if (!await faStep('Appointment', () => faClick('ivac-btn-appointment'), () => !!sessionState.appointmentId, { timeout: 30000, retries: 6 })) return faLog('⏹ stopped at Appointment', 'r');
+        // click once, then POLL for the async POST result (don't re-click every retry → no duplicate appointments)
+        if (!await faStep('Appointment', () => faClick('ivac-btn-appointment'), () => faWaitFor(() => !!(sessionState.appointmentId || ((profiles[activeProfileName] && profiles[activeProfileName].appointmentId || '').trim())), 25000), { timeout: 30000, retries: 3 })) return faLog('⏹ stopped at Appointment', 'r');
         // 6) Uploads: Patient + Attendant 1/2/3 (skip a slot with no file selected)
         const uploads = [['ivac-btn-file-upload', 'ivac-file-upload', 'Patient File'], ['ivac-btn-file-upload-2', 'ivac-file-upload-2', 'Attendant 1'], ['ivac-btn-file-upload-3', 'ivac-file-upload-3', 'Attendant 2'], ['ivac-btn-file-upload-4', 'ivac-file-upload-4', 'Attendant 3']];
         for (const [btn, inp, label] of uploads) {
