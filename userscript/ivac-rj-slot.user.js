@@ -904,6 +904,7 @@ function encConfigReadFromUI(purpose) {
     if (skipInp) cfg.skip    = parseInt(skipInp.value);
     if (lenInp)  cfg.length  = parseInt(lenInp.value);
     if (verSel)  cfg.version = parseInt(verSel.value) || 1;
+    cfg.manual = true;   // user-entered → LOCK: A_E auto-resolve must not overwrite this working config
 }
 
 function encryptTokenByPurpose(rawToken, purpose) {
@@ -1268,17 +1269,25 @@ async function encConfigAutoFetch(forceReload) {
             return { signin: false, reserve: false };
         }
 
+        // manual-lock: never overwrite a config the user entered by hand (marked manual) that is active+keyed
+        const isLocked = (p) => encConfig[p] && encConfig[p].manual && encConfig[p].active && encConfig[p].key;
         if (signin) {
-            encConfig.signin = { active: true, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
-            encConfigSave('signin');
-            logStatus('✅ Signin: v' + signin.version + ' skip=' + signin.skip + ' len=' + signin.length + ' key[' + signin.key.length + ']', 'g');
+            if (isLocked('signin')) { logStatus('🔒 Signin: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.signin = { active: true, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
+                encConfigSave('signin');
+                logStatus('✅ Signin: v' + signin.version + ' skip=' + signin.skip + ' len=' + signin.length + ' key[' + signin.key.length + ']', 'g');
+            }
         } else {
             logStatus('⚠ Signin not resolved — keeping current config', 'y');
         }
         if (reserve) {
-            encConfig.reserve = { active: true, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
-            encConfigSave('reserve');
-            logStatus('✅ Reserve: v' + reserve.version + ' skip=' + reserve.skip + ' len=' + reserve.length + ' key[' + reserve.key.length + ']', 'g');
+            if (isLocked('reserve')) { logStatus('🔒 Reserve: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.reserve = { active: true, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
+                encConfigSave('reserve');
+                logStatus('✅ Reserve: v' + reserve.version + ' skip=' + reserve.skip + ' len=' + reserve.length + ' key[' + reserve.key.length + ']', 'g');
+            }
         } else {
             logStatus('⚠ Reserve not resolved — keeping current config', 'y');
         }
@@ -1287,9 +1296,12 @@ async function encConfigAutoFetch(forceReload) {
         const initOwn  = !!initiate;
         const initCfg  = initiate || signin || reserve;
         if (initCfg) {
-            encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
-            encConfigSave('initiate');
-            logStatus('✅ Initiate' + (initOwn ? '' : ' (mirrored)') + ': v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
+            if (isLocked('initiate')) { logStatus('🔒 Initiate: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
+                encConfigSave('initiate');
+                logStatus('✅ Initiate' + (initOwn ? '' : ' (mirrored)') + ': v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
+            }
         }
 
         localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
