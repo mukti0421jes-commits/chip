@@ -1118,6 +1118,61 @@ function _cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt
 // brace-match an object literal starting at `{` (respect quotes)
 function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
 
+// ===== EXECUTION-BASED cipher fallback (for heavy-obfuscation bundles the static resolver can't map) =====
+// Runs the bundle's OWN decoder cluster around the secret so every string-array shuffles into place
+// exactly as the browser does, exposes the base wrapper fns, then evaluates the secret concat with its
+// local wrappers. Used only when buildBundleResolver().resolveExpr() returns null. This is what makes
+// A_E auto-fill the cipher config on bundles like 94e60cd7 (deep wrapper chains + 2 interleaved arrays).
+function _encRunDecoderCluster(src, P) {
+    try {
+        const decRe = /function [\w$]+\((?:e,t|e)\)\{e-=\d+/g, arrRe = /function [\w$]+\(\)\{(?:const|var) e=\[/g;
+        let starts = [];
+        for (const m of src.matchAll(decRe)) starts.push(m.index);
+        for (const m of src.matchAll(arrRe)) starts.push(m.index);
+        starts = starts.filter(x => x < P).sort((a, b) => a - b);
+        if (!starts.length) return {};
+        let start = starts[starts.length - 1];
+        for (let i = starts.length - 1; i > 0; i--) { if (starts[i] - starts[i - 1] < 12000) start = starts[i - 1]; else break; }
+        const shs = [...src.matchAll(/for\(;;\)try\{if\(/g)].map(m => m.index).filter(x => x > start && x < P + 14000);
+        const lastSh = shs.length ? shs[shs.length - 1] : P;
+        let b = 0, q = null, endIdx = -1;
+        for (let k = start; k < src.length; k++) { const c = src[k]; if (q) { if (c === "\\") { k++; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; continue; } if (c === "{") b++; else if (c === "}") b--; if (k >= lastSh && b === 0) { endIdx = k + 1; break; } }
+        if (endIdx < 0) endIdx = Math.min(src.length, lastSh + 4000);
+        const region = src.slice(start, endIdx);
+        const names = new Set();
+        for (const m of region.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{(?:return [\w$]+\(|e-=)/g)) names.add(m[1]);
+        const store = {};
+        let exposer = "";
+        for (const n of names) exposer += "try{__DEC['" + n + "']=" + n + "}catch(e){}\n";
+        try { new Function("__DEC", "'use strict';\n" + region + "\n" + exposer)(store); } catch (e) {}
+        return store;
+    } catch (e) { return {}; }
+}
+function _encLocalWrappers(src, P) {
+    const win = src.slice(Math.max(0, P - 6000), P + 3000), base = Math.max(0, P - 6000), defs = {};
+    for (const m of win.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g)) {
+        const nm = m[1], ix = base + m.index;
+        if (!defs[nm] || Math.abs(ix - P) < Math.abs(defs[nm].idx - P)) defs[nm] = { idx: ix, text: m[0] };
+    }
+    return defs;
+}
+function _encDecodeSecretExec(src, secretExpr, P) {
+    try {
+        const decoders = _encRunDecoderCluster(src, P), wrappers = _encLocalWrappers(src, P);
+        const need = new Set(), scan = s => { for (const m of s.matchAll(/([A-Za-z_$][\w$]*)\(/g)) need.add(m[1]); };
+        scan(secretExpr);
+        let changed = true;
+        while (changed) { changed = false; const before = need.size; for (const n of [...need]) { if (wrappers[n]) scan(wrappers[n].text); } if (need.size > before) changed = true; }
+        const args = [], vals = [];
+        for (const n of need) { if (decoders[n] && !wrappers[n]) { args.push(n); vals.push(decoders[n]); } }
+        let decl = "";
+        for (const n of need) { if (wrappers[n]) decl += wrappers[n].text + "\n"; }
+        const code = "const [" + args.join(",") + "]=arguments[0];\n" + decl + "\nreturn (" + secretExpr + ");";
+        const v = new Function(code)(vals);
+        return (typeof v === "string" && /^[\x20-\x7e]+$/.test(v) && v.length >= 3) ? v : null;
+    } catch (e) { return null; }
+}
+
 function resolveBundleConfigs(text) {
     const R = buildBundleResolver(text);
     const subLocalStr = (expr, objStart) => {
@@ -1186,7 +1241,12 @@ function resolveBundleConfigs(text) {
                 if (best !== null) secretExpr = secretExpr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
             }
         } catch (e2) {}
-        const secret = R.resolveExpr(secretExpr, objStart);
+        let secret = R.resolveExpr(secretExpr, objStart);
+        if (!secret) {
+            // static resolver failed → try execution-based decode (heavy-obfuscation bundles)
+            secret = _encDecodeSecretExec(text, secretExpr, objStart);
+            if (secret) console.log('%c[RJ EncAuto] v' + version + ' secret decoded via EXECUTION fallback @ ' + objStart, 'color:#4ade80;font-weight:800');
+        }
         if (!secret) { console.warn('[RJ EncAuto] config v' + version + ' secret decode FAILED @', objStart); continue; }
         const sc = encRoleScores(text, objStart);
         found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res, ini: sc.ini });
