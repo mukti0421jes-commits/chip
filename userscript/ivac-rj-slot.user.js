@@ -970,6 +970,21 @@ async function findBundleUrls() {
     // 3) all loaded JS from performance entries — catches dynamically-imported chunks (e.g. the
     // payment lazy-chunk where the dg-epay concat lives) that aren't <script src> or in index.html
     try { performance.getEntriesByType('resource').forEach(e => { if (/\.js(?:$|\?)/.test(e.name) && e.name.indexOf(location.origin) === 0) add(e.name); }); } catch (e) {}
+    // 4) TRANSITIVE: open each discovered JS bundle and pull the lazy-chunk filenames referenced
+    // *inside* it (Vite/webpack write the full chunk filename as a string literal in the entry
+    // bundle's chunk-manifest). This finds the payment lazy-chunk WITHOUT waiting for it to load,
+    // so dg-epay can be resolved from the appointment page. One transitive level is enough.
+    try {
+        const grab = async (u) => {
+            try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
+            return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
+        };
+        const seedList = urls.slice(0, 8);   // scan the entry/main chunks only (cap fetches)
+        for (const u of seedList) {
+            const t = await grab(u); if (!t) continue;
+            let m; while ((m = BUNDLE_RE_G.exec(t)) !== null) add(new URL(m[0], location.origin).href);
+        }
+    } catch (e) {}
     return urls;
 }
 
