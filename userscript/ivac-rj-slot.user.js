@@ -4577,9 +4577,11 @@ async function runFullAuto() {
             if (faHalted()) return;
             if (!hasSavedFile(inp)) { faLog('⤼ ' + label + ' — no saved file, skipped', 'y'); continue; }
             savedCount++;
-            const ok = await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: 6 });
+            // Patient is mandatory & must go first → keep retrying until it succeeds (only Stop All breaks it).
+            // Attendants → a bounded number of tries, then warn and continue.
+            const ok = await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: isPatient ? 100000 : 6 });
             if (ok) uploadedOk++;
-            else if (isPatient) return faLog('⏹ Patient file upload failed — stopping (Patient must upload first)', 'r');
+            else if (isPatient) { if (faHalted()) return; faLog('⚠ Patient upload not confirmed — continuing', 'y'); }   // reached only via Stop All
             else faLog('⚠ ' + label + ' upload failed — continuing', 'y');
         }
         // 7) VERIFY before confirming: run File Checking / overview, then require that ALL of the
