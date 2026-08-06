@@ -4562,18 +4562,34 @@ async function runFullAuto() {
         await faStep('File Upload Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|available|✅/i, 12000), { timeout: 15000, retries: 4, optional: true });
         // click once, then POLL for the async POST result (don't re-click every retry → no duplicate appointments)
         if (!await faStep('Appointment', () => faClick('ivac-btn-appointment'), () => faWaitFor(() => !!(sessionState.appointmentId || ((profiles[activeProfileName] && profiles[activeProfileName].appointmentId || '').trim())), 25000), { timeout: 30000, retries: 3 })) return faLog('⏹ stopped at Appointment', 'r');
-        // 6) Uploads: Patient + Attendant 1/2/3 (skip a slot with no file selected)
-        const uploads = [['ivac-btn-file-upload', 'ivac-file-upload', 'Patient File'], ['ivac-btn-file-upload-2', 'ivac-file-upload-2', 'Attendant 1'], ['ivac-btn-file-upload-3', 'ivac-file-upload-3', 'Attendant 2'], ['ivac-btn-file-upload-4', 'ivac-file-upload-4', 'Attendant 3']];
-        for (const [btn, inp, label] of uploads) {
+        // 6) Uploads IN ORDER: Patient (mandatory, first) → Attendant 1 → 2 → 3.
+        //    A slot "has a file" if it's selected in the input OR saved (rjSavedUploads — survives reload).
+        //    We only upload the user's OWN saved/selected files, and count how many succeed.
+        const uploads = [
+            ['ivac-btn-file-upload',   'ivac-file-upload',   'Patient File', true],
+            ['ivac-btn-file-upload-2', 'ivac-file-upload-2', 'Attendant 1',  false],
+            ['ivac-btn-file-upload-3', 'ivac-file-upload-3', 'Attendant 2',  false],
+            ['ivac-btn-file-upload-4', 'ivac-file-upload-4', 'Attendant 3',  false]
+        ];
+        const hasSavedFile = (inp) => { try { if (document.getElementById(inp)?.files?.length > 0) return true; } catch (e) {} try { return !!(typeof rjSavedUploads !== 'undefined' && rjSavedUploads[inp]); } catch (e) { return false; } };
+        let savedCount = 0, uploadedOk = 0;
+        for (const [btn, inp, label, isPatient] of uploads) {
             if (faHalted()) return;
-            const hasFile = (() => { try { return document.getElementById(inp)?.files?.length > 0; } catch (e) { return false; } })();
-            if (!hasFile) { faLog('⤼ ' + label + ' — no file, skipped', 'y'); continue; }
-            await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: 6 });
+            if (!hasSavedFile(inp)) { faLog('⤼ ' + label + ' — no saved file, skipped', 'y'); continue; }
+            savedCount++;
+            const ok = await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: 6 });
+            if (ok) uploadedOk++;
+            else if (isPatient) return faLog('⏹ Patient file upload failed — stopping (Patient must upload first)', 'r');
+            else faLog('⚠ ' + label + ' upload failed — continuing', 'y');
         }
-        // 7) Confirm Mission & Center
-        await faStep('Confirm Center', () => faClick('ivac-btn-appointment-booking'), () => faWaitLog(/confirm|booking|✅|appointment/i, 15000), { timeout: 18000, retries: 4, optional: true });
-        // 8) File checking again
-        await faStep('File Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|✅/i, 12000), { timeout: 14000, retries: 3, optional: true });
+        // 7) VERIFY before confirming: run File Checking / overview, then require that ALL of the
+        //    user's saved files uploaded (uploadedOk === savedCount). Only then confirm center.
+        await faStep('File Check (verify uploads)', () => faClick('ivac-btn-file-checking'), () => faWaitLog(/file check|over-?view|fileuploadstatus|status|✅/i, 12000), { timeout: 14000, retries: 3, optional: true });
+        if (savedCount === 0) return faLog('⏹ No saved files to upload — Confirm Center skipped', 'r');
+        if (uploadedOk !== savedCount) return faLog('⏹ Only ' + uploadedOk + '/' + savedCount + ' saved files uploaded — Confirm Center SKIPPED (verify failed)', 'r');
+        faLog('✅ All ' + uploadedOk + '/' + savedCount + ' saved files uploaded & checked → confirming center', 'g');
+        // 8) Confirm Mission & Center — ONLY reached when every saved file uploaded
+        if (!await faStep('Confirm Center', () => faClick('ivac-btn-appointment-booking'), () => faWaitLog(/confirm|booking|✅|appointment/i, 15000), { timeout: 18000, retries: 4 })) return faLog('⏹ stopped at Confirm Center', 'r');
         // 9) Login tab
         faTab('l'); await faSleep(600);
         // 10) Book
