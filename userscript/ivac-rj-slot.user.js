@@ -979,10 +979,19 @@ async function findBundleUrls() {
             try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
             return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
         };
+        // base dir of the /assets/ folder (to resolve BARE chunk basenames that Vite writes without a path)
+        let assetBase = location.origin + '/assets/';
+        for (const u of urls) { const mm = /^(.*\/assets\/)/.exec(u); if (mm) { assetBase = mm[1]; break; } }
+        // Vite/webpack reference lazy-chunks two ways: (a) full "/assets/xxx.js" path, or (b) BARE
+        // basename "name-HASH.js" (path prepended at runtime). Match BOTH so the payment chunk is found.
+        const PATH_RE = /(?:\/|\b)assets\/[\w.-]+\.js/g;                    // .../assets/foo-HASH.js
+        const BARE_RE = /["'`]([\w.-]+-[A-Za-z0-9_]{8,})\.js["'`]/g;        // "foo-HASH.js"
         const seedList = urls.slice(0, 8);   // scan the entry/main chunks only (cap fetches)
         for (const u of seedList) {
             const t = await grab(u); if (!t) continue;
-            let m; while ((m = BUNDLE_RE_G.exec(t)) !== null) add(new URL(m[0], location.origin).href);
+            let m;
+            PATH_RE.lastIndex = 0; while ((m = PATH_RE.exec(t)) !== null) { try { add(new URL('/' + m[0].replace(/^\//, ''), location.origin).href); } catch (e) {} }
+            BARE_RE.lastIndex = 0; while ((m = BARE_RE.exec(t)) !== null) { try { add(new URL(m[1] + '.js', assetBase).href); } catch (e) {} }
         }
     } catch (e) {}
     return urls;
