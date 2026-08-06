@@ -1116,31 +1116,7 @@ function buildBundleResolver(src) {
         }
         return null;
     }
-    // SAFE single-array-only resolver (O(N), never the O(N^2) 2-array path) for hot paths like
-    // the dg-epay URL concat. Validator-driven + rotation-cached + global budget → can never hang.
-    const __rotCache = {}; let __rotBudget = 20000;
-    function resolveExprFast(expr, pos, validate) {
-        const calls = x => [...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g) || []).map(t => t.slice(0, -1)))];
-        const need = { base: {}, wrap: {} }; const arrset = new Set(); const stack = calls(expr);
-        while (stack.length) { const n = stack.pop(); if (need.base[n] || need.wrap[n]) continue;
-            const w = nearest(wrapDefs, n, pos), b = nearest(baseDefs, n, pos);
-            if (w && (!b || Math.abs(w.idx - pos) < Math.abs(b.idx - pos))) { need.wrap[n] = w; for (const x of calls(w.inner)) stack.push(x); stack.push(w.base); }
-            else if (b) { need.base[n] = b; if (b.arrfn) arrset.add(b.arrfn); } }
-        const arr = [...arrset];
-        if (arr.length !== 1) return null;                       // never multi-array → no O(N^2)
-        const a = arr[0]; const A = getArr(a); if (!A) return null;
-        const rot = (x, r) => x.slice(r).concat(x.slice(0, r));
-        let decl = "";
-        for (const [n, d] of Object.entries(need.base)) decl += "const " + n + "=(e,t)=>{const r=__arrs[" + JSON.stringify(d.arrfn) + "][e-" + d.offset + "];return r===undefined?null:(" + (d.rc4 ? "__rc4(r,t)" : "__b64(r)") + ");};";
-        for (const [n, w] of Object.entries(need.wrap)) decl += "function " + n + "(e,t){return " + w.base + "(" + w.inner + ")}";
-        let fnFull; try { fnFull = new Function("__arrs", "__rc4", "__b64", decl + "return (" + expr + ")"); } catch (e) { return null; }
-        const tryRot = r => { try { const v = fnFull({ [a]: rot(A, r) }, rc4, b64); return (typeof v === "string" && validate(v)) ? v : null; } catch (e) { return null; } };
-        if (a in __rotCache) { const v = tryRot(__rotCache[a]); if (v) return v; }
-        const cap = Math.min(A.length, 6000);
-        for (let r = 0; r < cap; r++) { if (__rotBudget <= 0) return null; __rotBudget--; const v = tryRot(r); if (v) { __rotCache[a] = r; return v; } }
-        return null;
-    }
-    return { resolveExpr, resolveExprFast };
+    return { resolveExpr };
 }
 
 // role scoring (signin vs reserve vs initiate) by keyword proximity — mirrors extract_ciphers.js
