@@ -1746,6 +1746,7 @@ if (!document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]'
 }
 
 let _renderInFlight = false;
+let _cfRecoverPending = false;   // guards captcha error auto-recovery so it can't tight-loop
 let _lastRenderAt   = 0;
 const RENDER_COOLDOWN = 10 * 1000;
 
@@ -1802,8 +1803,23 @@ function renderCaptcha() {
                     }
                 }, 2000);
             },
-            'error-callback': () => {
-                logStatus('✗ Captcha error', 'r');
+            'error-callback': (code) => {
+                cfToken = null;
+                logStatus('✗ Captcha error' + (code ? ' (' + code + ')' : '') + ' — auto-recovering…', 'y');
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (isApiMode) return true;   // API mode: ignore widget errors
+                // gentle recovery: reset the SAME widget after a backoff (avoids iframe churn);
+                // only if reset throws, do one full re-render as a last resort.
+                if (!_cfRecoverPending) {
+                    _cfRecoverPending = true;
+                    setTimeout(() => {
+                        _cfRecoverPending = false;
+                        try { if (document.getElementById('captcha-toggle')?.classList.contains('on')) return; } catch(e) {}
+                        try { if (cfWidgetId !== null && typeof turnstile !== 'undefined') { turnstile.reset(cfWidgetId); cfToken = null; } else { _lastRenderAt = 0; renderCaptcha(); } }
+                        catch(e) { try { hideManualCaptcha(); _lastRenderAt = 0; renderCaptcha(); } catch(e2) {} }
+                    }, 3500);
+                }
+                return true;
             },
             'expired-callback': () => {
                 cfToken = null;
@@ -1814,7 +1830,10 @@ function renderCaptcha() {
                 }
             },
             'timeout-callback': () => {
-                logStatus('⚠ Captcha timeout', 'y');
+                cfToken = null;
+                logStatus('⚠ Captcha timeout — resetting…', 'y');
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (!isApiMode && cfWidgetId !== null) { try { turnstile.reset(cfWidgetId); } catch(e) {} }
             }
         });
     } finally {
