@@ -529,40 +529,67 @@ function rjExtractPayId(text, R) {
 }
 
 // EXECUTION-BASED dg-epay extractor (bundle → UUID). The UUID is NOT a plain literal — it is
-// built by an obfuscated decoder concat with local string consts, e.g.
-//   wIiPt: a(0,594)+s(89)+…+f(e,247)+…  (e="…",t="…")  →  "payment/<uuid>/dg-epay/initiate"
-// We anchor on the "dg-epay" object, run the bundle's own decoder cluster (reusing the cipher's
-// _encRunDecoderCluster), inject the local consts, evaluate each concat property, and pull the UUID.
+// assembled by an obfuscated decoder concat, and its exact shape varies per bundle:
+//   • object property:  oUBHm:"dg-epay", wIiPt:a(0,594)+…+f(e,247)+…
+//   • ternary branch:   const l = r===…"ay" ? d(227,"DJwt")+…+"e-41a"+… : a[ssl]
+// So we anchor on BOTH the "dg-epay" literal and the initiate signature ({appointmentId:…"x-token"}),
+// expand every +concat chain near the anchor, run the bundle's own decoder cluster (arrays shuffled
+// into place — anchored on the concat AND on each base-decoder's own definition, since the base
+// decoders may live far from the concat), inject local string consts, evaluate, and keep whatever
+// resolves to a valid payment/<uuid>/dg-epay URL. No hardcode, no localStorage.
 function rjExtractPayIdExec(src) {
-    try {
-        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-        const valid = v => /payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
-        const enclosingBrace = (s, idx) => { let d = 0; for (let k = idx; k >= 0; k--) { const c = s[k]; if (c === "}") d++; else if (c === "{") { if (d === 0) return k; d--; } } return -1; };
-        const braceEnd = (s, ob) => { let d = 0, q = null; for (let j = ob; j < s.length; j++) { const c = s[j]; if (q) { if (c === "\\") { j++; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; continue; } if (c === "{") d++; else if (c === "}") { d--; if (d === 0) return j; } } return -1; };
-        const splitProps = (body) => { const parts = []; let d = 0, q = null, cur = ""; for (let i = 0; i < body.length; i++) { const c = body[i]; if (q) { cur += c; if (c === "\\") { cur += body[++i] || ""; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; cur += c; continue; } if (c === "(" || c === "[" || c === "{") { d++; cur += c; continue; } if (c === ")" || c === "]" || c === "}") { d--; cur += c; continue; } if (c === "," && d === 0) { parts.push(cur); cur = ""; continue; } cur += c; } if (cur.trim()) parts.push(cur); return parts; };
-        const locals = (s, P) => { const win = s.slice(Math.max(0, P - 4000), P), out = {}; for (const m of win.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*(["'`])((?:\\.|(?!\2).)*)\2/g)) out[m[1]] = m[3]; return out; };
-        let idx = src.indexOf("dg-epay"), guard = 0;
-        while (idx >= 0 && guard < 12) {
-            guard++;
-            const ob = enclosingBrace(src, idx - 1), oe = ob >= 0 ? braceEnd(src, ob) : -1;
-            if (oe > ob) {
-                const allLocals = locals(src, ob), decoders = _encRunDecoderCluster(src, ob), wrappers = _encLocalWrappers(src, ob);
-                for (const seg of splitProps(src.slice(ob + 1, oe))) {
-                    const ci = seg.indexOf(":"); if (ci < 0) continue; const val = seg.slice(ci + 1).trim();
-                    if (val.indexOf("+") === -1 || !/[A-Za-z_$][\w$]*\(/.test(val)) continue;
-                    const need = new Set(), scan = s => { for (const m of s.matchAll(/([A-Za-z_$][\w$]*)\(/g)) need.add(m[1]); };
-                    scan(val); let ch = true; while (ch) { ch = false; const b = need.size; for (const n of [...need]) { if (wrappers[n]) scan(wrappers[n].text); } if (need.size > b) ch = true; }
-                    const bare = {}; for (const kk in allLocals) { if (need.has(kk)) continue; const re = new RegExp("\\b" + kk.replace(/\$/g, "\\$") + "\\b(?!\\s*\\()"); if (re.test(val)) bare[kk] = allLocals[kk]; }
-                    const args = [], vals = []; for (const nn of need) { if (decoders[nn] && !wrappers[nn]) { args.push(nn); vals.push(decoders[nn]); } }
-                    let decl = ""; for (const bk in bare) decl += "const " + bk + "=" + JSON.stringify(bare[bk]) + ";\n"; for (const wn of need) { if (wrappers[wn]) decl += wrappers[wn].text + "\n"; }
-                    let out; try { out = new Function("const [" + args.join(",") + "]=arguments[0];\n" + decl + "\nreturn (" + val + ");")(vals); } catch (e) { continue; }
-                    if (typeof out === "string" && valid(out)) { const u = out.match(uuidRe); if (u) return u[0].toLowerCase(); }
-                }
-            }
-            idx = src.indexOf("dg-epay", idx + 1);
+  try {
+    function _cluster(src,P){var decRe=/function [\w$]+\((?:e,t|e)\)\{e-=\d+/g,arrRe=/function [\w$]+\(\)\{(?:const|var) e=\[/g;var starts=[],m;while(m=decRe.exec(src))starts.push(m.index);while(m=arrRe.exec(src))starts.push(m.index);starts=starts.filter(x=>x<P).sort((a,b)=>a-b);if(!starts.length)return{};var start=starts[starts.length-1];for(var i=starts.length-1;i>0;i--){if(starts[i]-starts[i-1]<12000)start=starts[i-1];else break;}var shRe=/for\(;;\)try\{if\(/g,shs=[];while(m=shRe.exec(src)){if(m.index>start&&m.index<P+14000)shs.push(m.index);}var lastSh=shs.length?shs[shs.length-1]:P;var b=0,q=null,endIdx=-1;for(var k=start;k<src.length;k++){var c=src[k];if(q){if(c==="\\"){k++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")b++;else if(c==="}")b--;if(k>=lastSh&&b===0){endIdx=k+1;break;}}if(endIdx<0)endIdx=Math.min(src.length,lastSh+4000);var region=src.slice(start,endIdx);var names={},nm=/function ([\w$]+)\((?:e,t|e)\)\{(?:return [\w$]+\(|e-=)/g;while(m=nm.exec(region))names[m[1]]=1;var store={},exposer="";for(var n in names)exposer+="try{__DEC['"+n+"']="+n+"}catch(e){}\n";try{new Function("__DEC","'use strict';\n"+region+"\n"+exposer)(store);}catch(e){}return store;}
+    function _wrappers(src,P){var win=src.slice(Math.max(0,P-8000),P+3000),base=Math.max(0,P-8000),defs={},re=/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g,m;while(m=re.exec(win)){var nm=m[1],ix=base+m.index;if(!defs[nm]||Math.abs(ix-P)<Math.abs(defs[nm].idx-P))defs[nm]={idx:ix,text:m[0]};}return defs;}
+    function _locals(src,P){var win=src.slice(Math.max(0,P-4000),P+400),out={},re=/\b([A-Za-z_$][\w$]*)\s*=\s*(["'`])((?:\\.|(?!\2).)*)\2/g,m;while(m=re.exec(win))out[m[1]]=m[3];return out;}
+    function baseDefPos(src,name){var i=src.indexOf("function "+name+"(e");return i;}
+    function termLeft(s,j){while(j>=0&&/\s/.test(s[j]))j--;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j-1;while(k>=0){if(s[k]===c&&s[k-1]!=='\\')return k-1;k--;}return -1;}if(c===')'||c===']'){var close=c,open=c===')'?'(':'[',d=0,q=null,k=j;for(;k>=0;k--){var ch=s[k];if(q){if(ch===q&&s[k-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===close)d++;else if(ch===open){d--;if(d===0)break;}}k--;while(k>=0&&/[\w$.]/.test(s[k]))k--;return k;}while(j>=0&&/[\w$.]/.test(s[j]))j--;return j;}
+    function termRight(s,j){while(j<s.length&&/\s/.test(s[j]))j++;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}while(j<s.length&&/[\w$.]/.test(s[j]))j++;while(j<s.length&&(s[j]==='('||s[j]==='[')){var open=s[j],close=open==='('?')':']',d=0,q=null;for(;j<s.length;j++){var ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}return j;}
+    function chainAround(s,litStart,litEnd){var start=litStart;while(true){var k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;var e=termLeft(s,k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}var end=litEnd;while(true){var k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;var e=termRight(s,k+1);end=e;}return s.slice(start,end).trim();}
+    function decodeExpr(src,expr,P,wrappers,allLocals){
+      var need={},cre=/([A-Za-z_$][\w$]*)\(/g,m;while(m=cre.exec(expr))need[m[1]]=1;
+      var chg=true;while(chg){chg=false;for(var n of Object.keys(need)){if(wrappers[n]){var c2=/([A-Za-z_$][\w$]*)\(/g,m2;while(m2=c2.exec(wrappers[n].text)){if(!need[m2[1]]){need[m2[1]]=1;chg=true;}}}}}
+      var baseNames=Object.keys(need).filter(n=>!wrappers[n]);
+      // candidate cluster anchors: near the concat (P) AND near each base-decoder definition
+      var anchors=[P]; for(var bn of baseNames){var p=baseDefPos(src,bn);if(p>=0)anchors.push(p+60);}
+      var bare={};for(var kk in allLocals){if(need[kk])continue;var re=new RegExp("\\b"+kk.replace(/\$/g,"\\$")+"\\b(?!\\s*\\()");if(re.test(expr))bare[kk]=allLocals[kk];}
+      var seenA={};
+      for(var ax=0;ax<anchors.length;ax++){
+        var A=anchors[ax]; if(seenA[A])continue; seenA[A]=1;
+        var decoders=_cluster(src,A);
+        var args=[],vals=[];for(var nn in need){if(decoders[nn]&&!wrappers[nn]){args.push(nn);vals.push(decoders[nn]);}}
+        if(args.length<baseNames.filter(b=>!/^(for|parseInt|push|shift|catch|function|charAt|slice|fromCharCode|charCodeAt|decodeURIComponent|Number|String|Math|e|n|t|r|o|i|a|c)$/.test(b)).length && args.length===0)continue;
+        var decl="";for(var bk in bare)decl+="const "+bk+"="+JSON.stringify(bare[bk])+";\n";for(var wn in need){if(wrappers[wn])decl+=wrappers[wn].text+"\n";}
+        var out;try{out=new Function("const ["+args.join(",")+"]=arguments[0];\n"+decl+"\nreturn ("+expr+");")(vals);}catch(e){continue;}
+        if(typeof out==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(out))return out;
+      }
+      return null;
+    }
+    function extractDg(src){
+      var uuidRe=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+      var valid=v=>typeof v==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
+      var anchors=[],i;
+      i=-1;while((i=src.indexOf("dg-epay",i+1))>=0)anchors.push(i);
+      i=-1;while((i=src.indexOf("{appointmentId:",i+1))>=0){if(src.slice(i,i+400).indexOf("x-token")>=0)anchors.push(i);}
+      var tried=0;
+      for(var ai=0;ai<anchors.length&&tried<40;ai++){
+        var P=anchors[ai], wrappers=_wrappers(src,P), allLocals=_locals(src,P);
+        var win=src.slice(Math.max(0,P-2500),P+2500);
+        var seen={}, litRe=/["'`]/g, m;
+        while((m=litRe.exec(win))){
+          var q=win[m.index],k=m.index+1;while(k<win.length){if(win[k]==='\\'){k+=2;continue;}if(win[k]===q){k++;break;}k++;}
+          var expr; try{expr=chainAround(win,m.index,k);}catch(e){litRe.lastIndex=k;continue;}
+          litRe.lastIndex=Math.max(litRe.lastIndex,k);
+          if(!expr||expr.indexOf("+")===-1||expr.length>800||!/[A-Za-z_$][\w$]*\(/.test(expr)||seen[expr])continue;
+          seen[expr]=1;tried++;
+          var out=decodeExpr(src,expr,P,wrappers,allLocals);
+          if(valid(out)){var u=out.match(uuidRe);if(u)return u[0].toLowerCase();}
         }
-    } catch (e) {}
-    return null;
+      }
+      return null;
+    }
+    return extractDg(src);
+  } catch (e) { return null; }
 }
 
 // scan the live bundle chunk(s) and build epMap for anything that changed
@@ -1165,7 +1192,7 @@ function _encRunDecoderCluster(src, P) {
     } catch (e) { return {}; }
 }
 function _encLocalWrappers(src, P) {
-    const win = src.slice(Math.max(0, P - 6000), P + 3000), base = Math.max(0, P - 6000), defs = {};
+    const win = src.slice(Math.max(0, P - 8000), P + 3000), base = Math.max(0, P - 8000), defs = {};
     for (const m of win.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g)) {
         const nm = m[1], ix = base + m.index;
         if (!defs[nm] || Math.abs(ix - P) < Math.abs(defs[nm].idx - P)) defs[nm] = { idx: ix, text: m[0] };
