@@ -546,6 +546,7 @@ function rjExtractPayIdExec(src) {
     function termLeft(s,j){while(j>=0&&/\s/.test(s[j]))j--;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j-1;while(k>=0){if(s[k]===c&&s[k-1]!=='\\')return k-1;k--;}return -1;}if(c===')'||c===']'){var close=c,open=c===')'?'(':'[',d=0,q=null,k=j;for(;k>=0;k--){var ch=s[k];if(q){if(ch===q&&s[k-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===close)d++;else if(ch===open){d--;if(d===0)break;}}k--;while(k>=0&&/[\w$.]/.test(s[k]))k--;return k;}while(j>=0&&/[\w$.]/.test(s[j]))j--;return j;}
     function termRight(s,j){while(j<s.length&&/\s/.test(s[j]))j++;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}while(j<s.length&&/[\w$.]/.test(s[j]))j++;while(j<s.length&&(s[j]==='('||s[j]==='[')){var open=s[j],close=open==='('?')':']',d=0,q=null;for(;j<s.length;j++){var ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}return j;}
     function chainAround(s,litStart,litEnd){var start=litStart;while(true){var k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;var e=termLeft(s,k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}var end=litEnd;while(true){var k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;var e=termRight(s,k+1);end=e;}return s.slice(start,end).trim();}
+    var CC={};
     function decodeExpr(src,expr,P,wrappers,allLocals){
       var need={},cre=/([A-Za-z_$][\w$]*)\(/g,m;while(m=cre.exec(expr))need[m[1]]=1;
       var chg=true;while(chg){chg=false;for(var n of Object.keys(need)){if(wrappers[n]){var c2=/([A-Za-z_$][\w$]*)\(/g,m2;while(m2=c2.exec(wrappers[n].text)){if(!need[m2[1]]){need[m2[1]]=1;chg=true;}}}}}
@@ -556,7 +557,7 @@ function rjExtractPayIdExec(src) {
       var seenA={};
       for(var ax=0;ax<anchors.length;ax++){
         var A=anchors[ax]; if(seenA[A])continue; seenA[A]=1;
-        var decoders=_cluster(src,A);
+        var decoders=(CC[A]||(CC[A]=_cluster(src,A)));
         var args=[],vals=[];for(var nn in need){if(decoders[nn]&&!wrappers[nn]){args.push(nn);vals.push(decoders[nn]);}}
         if(args.length<baseNames.filter(b=>!/^(for|parseInt|push|shift|catch|function|charAt|slice|fromCharCode|charCodeAt|decodeURIComponent|Number|String|Math|e|n|t|r|o|i|a|c)$/.test(b)).length && args.length===0)continue;
         var decl="";for(var bk in bare)decl+="const "+bk+"="+JSON.stringify(bare[bk])+";\n";for(var wn in need){if(wrappers[wn])decl+=wrappers[wn].text+"\n";}
@@ -568,18 +569,20 @@ function rjExtractPayIdExec(src) {
     function extractDg(src){
       var uuidRe=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
       var valid=v=>typeof v==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
+      CC={};
       var anchors=[],i;
-      i=-1;while((i=src.indexOf("dg-epay",i+1))>=0)anchors.push(i);
       i=-1;while((i=src.indexOf("{appointmentId:",i+1))>=0){if(src.slice(i,i+400).indexOf("x-token")>=0)anchors.push(i);}
+      i=-1;while((i=src.indexOf("dg-epay",i+1))>=0)anchors.push(i);
       var tried=0;
-      for(var ai=0;ai<anchors.length&&tried<40;ai++){
+      for(var ai=0;ai<anchors.length&&tried<150;ai++){
         var P=anchors[ai], wrappers=_wrappers(src,P), allLocals=_locals(src,P);
         var win=src.slice(Math.max(0,P-2500),P+2500);
-        var seen={}, litRe=/["'`]/g, m;
-        while((m=litRe.exec(win))){
-          var q=win[m.index],k=m.index+1;while(k<win.length){if(win[k]==='\\'){k+=2;continue;}if(win[k]===q){k++;break;}k++;}
-          var expr; try{expr=chainAround(win,m.index,k);}catch(e){litRe.lastIndex=k;continue;}
-          litRe.lastIndex=Math.max(litRe.lastIndex,k);
+        // iterate + signs (not quotes): a window can start mid-string and desync quote-pairing,
+        // but termLeft/termRight scan safely from a known + position. Expand each + to its full chain.
+        var seen={};
+        for(var pp=win.indexOf("+");pp>=0&&tried<150;pp=win.indexOf("+",pp+1)){
+          var rt; try{rt=termRight(win,pp+1);}catch(e){continue;}
+          var expr; try{expr=chainAround(win,pp+1,rt);}catch(e){continue;}
           if(!expr||expr.indexOf("+")===-1||expr.length>800||!/[A-Za-z_$][\w$]*\(/.test(expr)||seen[expr])continue;
           seen[expr]=1;tried++;
           var out=decodeExpr(src,expr,P,wrappers,allLocals);
