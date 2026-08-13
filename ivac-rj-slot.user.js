@@ -300,7 +300,7 @@
         if (!url) return 'network';
         if (url.includes('sign-in') || url.includes('signin')) return 'signin';
         if (url.includes('verifyOtp') || url.includes('verify')) return 'verify';
-        if (url.includes('reserveSlot')) return 'reserve';
+        if (url.includes('reserveSlot') || url.includes('reserve-slot')) return 'reserve';
         if (url.includes('appointment-booking-config') || url.includes('appointment')) return 'book';
         if (url.includes('initiate')) return 'initiate';
         if (url.includes('signup')) return 'signup';
@@ -347,20 +347,26 @@
     (function armSecStateCapture() {
         try {
             const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+            const SEC = { 'x-sec-runtime-state': 'rj_sec_runtime_state', 'x-v-request-meta': 'rj_v_request_meta' };
             const of = W.fetch; if (of && !of.__rjSec) {
                 const nf = function (a, b) {
-                    try { const h = b && b.headers; if (h) { const v = (typeof h.get === 'function') ? h.get('x-sec-runtime-state') : (h['x-sec-runtime-state'] || h['X-Sec-Runtime-State']); if (v) localStorage.setItem('rj_sec_runtime_state', v); } } catch (e) {}
+                    try { const h = b && b.headers; if (h) { for (const hn in SEC) { const v = (typeof h.get === 'function') ? h.get(hn) : (h[hn] || h[hn.replace(/(^|-)([a-z])/g, (m,p,c)=>p+c.toUpperCase())]); if (v) localStorage.setItem(SEC[hn], v); } } } catch (e) {}
                     return of.apply(this, arguments);
                 }; nf.__rjSec = 1; W.fetch = nf;
             }
             const sx = W.XMLHttpRequest && W.XMLHttpRequest.prototype.setRequestHeader; if (sx && !sx.__rjSec) {
-                const ns = function (k, v) { try { if (('' + k).toLowerCase() === 'x-sec-runtime-state' && v) localStorage.setItem('rj_sec_runtime_state', v); } catch (e) {} return sx.apply(this, arguments); }; ns.__rjSec = 1; W.XMLHttpRequest.prototype.setRequestHeader = ns;
+                const ns = function (k, v) { try { const kk = ('' + k).toLowerCase(); if (SEC[kk] && v) localStorage.setItem(SEC[kk], v); } catch (e) {} return sx.apply(this, arguments); }; ns.__rjSec = 1; W.XMLHttpRequest.prototype.setRequestHeader = ns;
             }
         } catch (e) {}
     })();
     const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
     const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
-    const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
+    // Reserve is now a PER-UUID path: slots/<slot-id>/reserve-slot (decoded from the live bundle
+    // 2026-08-13; the slot-id is center-specific). x-v-request-meta is a runtime-generated header
+    // learned from the site's own traffic (see armSecStateCapture) — cannot be hardcoded.
+    const RESERVE_SLOT_ID = "779fd4d2-77b9-4558-a529-368582e830be";
+    const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/" + RESERVE_SLOT_ID + "/reserve-slot";
+    function getReserveMeta() { try { return sessionStorage.getItem('rj_v_request_meta') || localStorage.getItem('rj_v_request_meta') || ''; } catch (e) { return ''; } }
     const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
     const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot-status";
     const API_REFERRER  = "https://appointment.ivacbd.com/";
@@ -2744,7 +2750,9 @@
         const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
         const logId = netLogAdd({ method: 'POST', url: API_RESERVE, tag: 'reserve', state: 'pending', note: 'reserveSlot (H/2)' });
         try {
-            const r = await H2.fetchH2(API_RESERVE, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'cache-control': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken }) });
+            const reserveHeaders = { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'cache-control': 'no-cache', 'x-device-id': getDeviceId() };
+            const vMeta = getReserveMeta(); if (vMeta) reserveHeaders['x-v-request-meta'] = vMeta;
+            const r = await H2.fetchH2(API_RESERVE, { method: 'POST', signal: localAc.signal, headers: reserveHeaders, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken }) });
             let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body);
             const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
             netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||'?'} • ${body?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
