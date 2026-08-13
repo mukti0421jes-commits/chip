@@ -331,7 +331,7 @@ const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 function _navState()     { return X_SEC_NAV_STATE; }
 function _runtimeState() { return X_SEC_RUNTIME_STATE; }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-const PAYMENT_METHOD_ID = 'dcd59a95-d55e-41ad-b57c-60416e01617e';   // fixed fallback (verified from real initiate traffic; not in bundle)
+const PAYMENT_METHOD_ID = '90218968-1116-4e28-861f-465ab28337e7';   // fixed fallback (decoded from current bundle 2026-08-13; auto-updates live via extractor)
 const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
 const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
@@ -547,7 +547,7 @@ function rjExtractPayIdExec(src) {
     function termRight(s,j){while(j<s.length&&/\s/.test(s[j]))j++;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}while(j<s.length&&/[\w$.]/.test(s[j]))j++;while(j<s.length&&(s[j]==='('||s[j]==='[')){var open=s[j],close=open==='('?')':']',d=0,q=null;for(;j<s.length;j++){var ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}return j;}
     function chainAround(s,litStart,litEnd){var start=litStart;while(true){var k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;var e=termLeft(s,k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}var end=litEnd;while(true){var k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;var e=termRight(s,k+1);end=e;}return s.slice(start,end).trim();}
     var CC={};
-    function decodeExpr(src,expr,P,wrappers,allLocals){
+    function decodeExpr(src,expr,P,wrappers,allLocals,accept){
       var need={},cre=/([A-Za-z_$][\w$]*)\(/g,m;while(m=cre.exec(expr))need[m[1]]=1;
       var chg=true;while(chg){chg=false;for(var n of Object.keys(need)){if(wrappers[n]){var c2=/([A-Za-z_$][\w$]*)\(/g,m2;while(m2=c2.exec(wrappers[n].text)){if(!need[m2[1]]){need[m2[1]]=1;chg=true;}}}}}
       var baseNames=Object.keys(need).filter(n=>!wrappers[n]);
@@ -562,33 +562,68 @@ function rjExtractPayIdExec(src) {
         if(args.length<baseNames.filter(b=>!/^(for|parseInt|push|shift|catch|function|charAt|slice|fromCharCode|charCodeAt|decodeURIComponent|Number|String|Math|e|n|t|r|o|i|a|c)$/.test(b)).length && args.length===0)continue;
         var decl="";for(var bk in bare)decl+="const "+bk+"="+JSON.stringify(bare[bk])+";\n";for(var wn in need){if(wrappers[wn])decl+=wrappers[wn].text+"\n";}
         var out;try{out=new Function("const ["+args.join(",")+"]=arguments[0];\n"+decl+"\nreturn ("+expr+");")(vals);}catch(e){continue;}
-        if(typeof out==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(out))return out;
+        if(typeof out==="string"&&(accept?accept(out):/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(out)))return out;
       }
       return null;
     }
     function extractDg(src){
       var uuidRe=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+      var bareUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       var valid=v=>typeof v==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
+      var acceptUuid=function(o){return bareUuid.test((''+o).trim());};
       CC={};
-      var anchors=[],i;
-      i=-1;while((i=src.indexOf("{appointmentId:",i+1))>=0){if(src.slice(i,i+400).indexOf("x-token")>=0)anchors.push(i);}
-      i=-1;while((i=src.indexOf("dg-epay",i+1))>=0)anchors.push(i);
-      var tried=0;
-      for(var ai=0;ai<anchors.length&&tried<150;ai++){
-        var P=anchors[ai], wrappers=_wrappers(src,P), allLocals=_locals(src,P);
+      var budget={n:0};                         // total decode-evaluations across all passes
+      var seenExpr={};                          // dedupe concat expressions globally
+      // Evaluate every +-concat chain inside a window centred on P. Each candidate is actually
+      // RUN with the bundle's own decoders (decodeExpr) and its OUTPUT tested against the dg-epay
+      // path — so this never depends on decoder-name patterns, only on being near the concat.
+      function callCount(s){var n=0,re=/[A-Za-z_$][\w$]*\(/g;while(re.exec(s))n++;return n;}
+      function scanConcat(P,cap,minCalls){
+        var wrappers=_wrappers(src,P), allLocals=_locals(src,P);
         var win=src.slice(Math.max(0,P-2500),P+2500);
-        // iterate + signs (not quotes): a window can start mid-string and desync quote-pairing,
-        // but termLeft/termRight scan safely from a known + position. Expand each + to its full chain.
-        var seen={};
-        for(var pp=win.indexOf("+");pp>=0&&tried<150;pp=win.indexOf("+",pp+1)){
+        for(var pp=win.indexOf("+");pp>=0&&budget.n<cap;pp=win.indexOf("+",pp+1)){
           var rt; try{rt=termRight(win,pp+1);}catch(e){continue;}
           var expr; try{expr=chainAround(win,pp+1,rt);}catch(e){continue;}
-          if(!expr||expr.indexOf("+")===-1||expr.length>800||!/[A-Za-z_$][\w$]*\(/.test(expr)||seen[expr])continue;
-          seen[expr]=1;tried++;
+          if(!expr||expr.indexOf("+")===-1||expr.length>800||!/[A-Za-z_$][\w$]*\(/.test(expr)||seenExpr[expr])continue;
+          if(minCalls&&callCount(expr)<minCalls)continue;   // skip short junk chains (global pass only)
+          seenExpr[expr]=1;budget.n++;
           var out=decodeExpr(src,expr,P,wrappers,allLocals);
           if(valid(out)){var u=out.match(uuidRe);if(u)return u[0].toLowerCase();}
         }
+        return null;
       }
+      // Anchors: every stable literal that tends to sit near the URL builder. Several on purpose —
+      // if the obfuscator encodes "dg-epay" itself (as in the current bundle), the request-body /
+      // endpoint literals ({appointmentId:+x-token, initiate, payment/) still put us in range.
+      var anchors=[],seenA={},i;
+      function addAnchor(p){if(p>=0&&!seenA[p]){seenA[p]=1;anchors.push(p);}}
+      i=-1;while((i=src.indexOf("{appointmentId:",i+1))>=0){if(src.slice(i,i+400).indexOf("x-token")>=0)addAnchor(i);}
+      ["dg-epay","dg-Epay","/epay","initiate","payment/","x-token"].forEach(function(lit){
+        var j=-1;while((j=src.indexOf(lit,j+1))>=0)addAnchor(j);
+      });
+      // PASS 1: anchored concat scan (URL built as dec()+dec()+...).
+      for(var ai=0;ai<anchors.length&&budget.n<180;ai++){var id=scanConcat(anchors[ai],180);if(id)return id;}
+      // PASS 2: decoder-call sweep — URL NOT a +-chain (.join, separate var, template literal).
+      budget.n=0;
+      for(var ai=0;ai<anchors.length&&budget.n<250;ai++){
+        var P=anchors[ai], wrappers=_wrappers(src,P), allLocals=_locals(src,P);
+        var win=src.slice(Math.max(0,P-2500),P+2500);
+        var callRe=/[A-Za-z_$][\w$]*\([^()]{0,60}\)/g, m, seen2={};
+        while((m=callRe.exec(win))&&budget.n<250){
+          var call=m[0];if(seen2[call]||call.length>80)continue;seen2[call]=1;budget.n++;
+          var out;try{out=decodeExpr(src,call,P,wrappers,allLocals,acceptUuid);}catch(e){continue;}
+          if(out&&bareUuid.test((''+out).trim()))return (''+out).trim().toLowerCase();
+        }
+      }
+      // PASS 3: plaintext UUID literal next to an anchor (un-obfuscated inline builds).
+      for(var ai=0;ai<anchors.length;ai++){
+        var w2=src.slice(Math.max(0,anchors[ai]-400),anchors[ai]+400),u=w2.match(uuidRe);
+        if(u)return u[0].toLowerCase();
+      }
+      // PASS 4 (last resort): URL incl. "dg-epay" FULLY encoded → no literal anchor. Slide over the
+      // whole chunk and concat-scan; bounded budget, >=3 decoder calls per chain to skip junk.
+      budget.n=0;
+      for(var c=1500;c-2500<src.length&&budget.n<2500;c+=3500){var id=scanConcat(c,2500,3);if(id)return id;}
       return null;
     }
     return extractDg(src);
