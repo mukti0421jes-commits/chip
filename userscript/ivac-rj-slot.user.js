@@ -1945,6 +1945,57 @@ const cfCheck = setInterval(() => {
     } catch(e) {}
 }, 300);
 
+// ==================== SITE-SYNC TURNSTILE HARVEST ====================
+// Instead of relying only on our own widget (which faces managed-mode + duplicate-widget low
+// solve rate), capture the token the SITE's OWN Turnstile produces. The site widget runs in the
+// real page context, so Cloudflare passes it far more often. Harvested tokens flow into the SAME
+// tokenQueue (tagged 'sitesync') and are used by every step; our manual widget stays as fallback.
+(function armSiteTurnstileHarvest() {
+    const _siteWidgets = [];
+    let _lastHarvestReset = 0;
+    const _isOurs = (el) => { try { const id = (el && el.id) || (typeof el === 'string' ? el : ''); return ('' + id).indexOf('cfTurnstile') >= 0; } catch (e) { return false; } };
+    function wrapTurnstile(ts) {
+        if (!ts || ts.__rjHarvest) return false;
+        const origRender = ts.render;
+        if (typeof origRender !== 'function') return false;
+        ts.render = function (el, opts) {
+            try {
+                if (!_isOurs(el) && opts && typeof opts.callback === 'function') {
+                    const userCb = opts.callback;
+                    opts.callback = function (token) {
+                        try {
+                            if (token) { tokenQueueAddTagged(token, 'sitesync'); if (typeof logStatus === 'function') logStatus('✓ Captcha synced from real page → queue ' + tokenQueue.length + '/' + TOKEN_QUEUE_MAX, 'g'); }
+                        } catch (e) {}
+                        return userCb.apply(this, arguments);
+                    };
+                }
+            } catch (e) {}
+            const id = origRender.apply(this, arguments);
+            try { if (!_isOurs(el)) _siteWidgets.push(id); } catch (e) {}
+            return id;
+        };
+        ts.__rjHarvest = 1;
+        return true;
+    }
+    const _ts = () => { const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window; return W.turnstile || (typeof turnstile !== 'undefined' ? turnstile : null); };
+    // turnstile may load after us — poll until present, then wrap render once
+    const iv = setInterval(() => { const ts = _ts(); if (ts && wrapTurnstile(ts)) clearInterval(iv); }, 200);
+    setTimeout(() => { try { clearInterval(iv); } catch (e) {} }, 60000);
+    // keep the queue topped up: also read tokens directly, and when it runs dry gently reset the
+    // site's own widget to pull a fresh token (only while automating; harmless to the site UI).
+    setInterval(() => {
+        try {
+            const ts = _ts(); if (!ts || !_siteWidgets.length) return;
+            _siteWidgets.forEach(id => { try { const tok = ts.getResponse(id); if (tok) tokenQueueAddTagged(tok, 'sitesync'); } catch (e) {} });
+            if (typeof tokenQueueGet === 'function' && tokenQueueGet()) return;   // still have a usable token
+            if (typeof isAutoOn === 'function' && !isAutoOn()) return;            // only harvest-reset during auto
+            if (Date.now() - _lastHarvestReset < 8000) return;
+            _lastHarvestReset = Date.now();
+            _siteWidgets.forEach(id => { try { ts.reset(id); } catch (e) {} });
+        } catch (e) {}
+    }, 3000);
+})();
+
 // ==================== SIGN-IN API CALL (H2) ====================
 async function performSignin(phone, password, captchaToken) {
     const encryptedCaptcha = encTokenForCall(captchaToken, 'signin');
