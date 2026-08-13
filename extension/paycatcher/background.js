@@ -57,15 +57,18 @@ async function tick() {
   try {
     const r = await fetch(S.url, { method: 'GET', redirect: 'manual', cache: 'no-store', credentials: 'include', headers: { 'Upgrade-Insecure-Requests': '1' } });
     const tag = r.status + ' ' + r.type;
-    var ok = (r.type === 'opaqueredirect' || (r.status >= 200 && r.status < 400));
-    if (ok) { S.okCount = (S.okCount || 0) + 1; if (S.okCount === 1) notify('Callback OK', 'callback ' + tag + ' — still firing every ' + (S.intervalMs / 1000) + 's'); }
-    S.status = (ok ? '✓' : '🔁') + ' #' + S.tries + ' → ' + tag + (ok ? ' (ok x' + S.okCount + ') — firing every ' : ' — retry every ') + (S.intervalMs / 1000) + 's';
-    badge(ok ? '✓' : '·', ok ? '#10b981' : '#f59e0b'); save();
+    // SUCCESS = a redirect (302 → opaqueredirect / any 3xx) or 2xx. Stop firing on success.
+    if (r.type === 'opaqueredirect' || (r.status >= 200 && r.status < 400)) {
+      S.done = true; S.status = '✓ SUCCESS (' + tag + ') after #' + S.tries + ' — stopped'; save(); badge('✓', '#10b981');
+      notify('Payment confirmed', 'callback ' + tag + ' after ' + S.tries + ' tries');
+      running = false; return;
+    }
+    S.status = '🔁 #' + S.tries + ' → ' + tag + ' — retrying every ' + (S.intervalMs / 1000) + 's until 302'; badge('·', '#f59e0b'); save();
   } catch (e) {
-    S.status = '🔁 #' + S.tries + ' err (' + ((e && e.message) || '') + ') — retry every ' + (S.intervalMs / 1000) + 's'; save();
+    S.status = '🔁 #' + S.tries + ' err (' + ((e && e.message) || '') + ') — retrying every ' + (S.intervalMs / 1000) + 's'; save();
   }
-  // continuous: keep firing every intervalMs until the user hits Stop (never auto-stops)
-  if (!S.stopped && running) loopTimer = setTimeout(tick, S.intervalMs);
+  // keep firing every intervalMs until 302/2xx success (or user Stop)
+  if (!S.stopped && !S.done && running) loopTimer = setTimeout(tick, S.intervalMs);
   else running = false;
 }
 
