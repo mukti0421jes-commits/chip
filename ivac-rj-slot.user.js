@@ -313,7 +313,7 @@
     H2.preWarm();
 
     // ==================== API CONFIG ====================
-    const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/sign-in-v2";
+    const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v2677-sign-in"; // was /auth/sign-in-v2 (renamed in live bundle 2026-08-13)
     const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
     // dg-epay initiate is now a PER-UUID path: payment/<payment-method-id>/dg-epay/initiate
     // (decoded from the live bundle 2026-08-13). Fixed fallback below; auto-updates from the
@@ -359,6 +359,9 @@
             }
         } catch (e) {}
     })();
+    // NOTE: live bundle (2026-08-13) no longer ships /forgot-password/sendOtp — it now exposes
+    // /forgot-password/verify, /resend, /set-password. The "advance" (forgot-OTP) trick below may
+    // be broken until the new send-step endpoint is identified. Core booking flow is unaffected.
     const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
     const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
     // Reserve is now a PER-UUID path: slots/<slot-id>/reserve-slot (decoded from the live bundle
@@ -2216,9 +2219,9 @@
         if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
         let mobileVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); mobileVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE", c: mobileVerifyCaptcha }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE", c: mobileVerifyCaptcha }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
@@ -2249,9 +2252,9 @@
         if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
         let emailVerifyCaptcha; try { const t = await getCaptchaTokenSmart(); emailVerifyCaptcha = encManager.encryptToken(t, 'Signin'); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verifyOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL", c: emailVerifyCaptcha }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL", c: emailVerifyCaptcha }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             const verified = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
             netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
