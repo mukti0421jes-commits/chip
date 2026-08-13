@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Turnstile Token Farm (RJ) — 4 widgets
 // @namespace    rj-turnstile-farm
-// @version      0.2.0
+// @version      0.3.0
 // @description  Test panel: renders 4 Turnstile widgets on appointment.ivacbd.com, auto re-solves each after it passes, and pools the solved tokens (localStorage + BroadcastChannel 'rj_tokens') so the RJ SLOT code can consume them. Runs on the real domain so tokens are valid.
 // @match        https://appointment.ivacbd.com/*
 // @match        https://*.ivacbd.com/*
@@ -21,6 +21,8 @@
   var N = 4;                                   // number of widgets
   var TTL = 290000;                            // token ~300s; drop a bit early
   var RESOLVE_DELAY = 800;                     // ms after a solve before re-rendering that widget
+  var IDLE_MS = 12000;                         // if a widget sits unsolved this long (interactive checkbox
+                                               // left unclicked), auto-reset it to try for an invisible pass
   var SITEKEY = '';
   try { SITEKEY = localStorage.getItem('rj_farm_sitekey') || ''; } catch (e) {}
   if (!SITEKEY) SITEKEY = '0x4AAAAAACghKkJHL1t7UkuZ';   // RJ SLOT's known sitekey (editable in UI)
@@ -135,6 +137,12 @@
     if (listEl) listEl.innerHTML = pool.slice(-8).reverse().map(function (p) { return '• ' + p.token.slice(0, 26) + '… (' + Math.max(0, Math.round((TTL - (Date.now() - p.at)) / 1000)) + 's)'; }).join('<br>');
   }
 
+  function resetWidget(i) {
+    var w = widgets[i]; if (!w) return;
+    if (w.wid === null) { renderWidget(i); return; }
+    try { turnstile.reset(w.wid); w.pendingSince = Date.now(); setStatus(i, '↻ re-solving…', '#fcd34d'); }
+    catch (e) { renderWidget(i); }
+  }
   function renderWidget(i) {
     if (typeof turnstile === 'undefined') return;
     var w = widgets[i]; if (!w || !w.el) return;
@@ -144,13 +152,15 @@
         sitekey: SITEKEY, size: 'normal', theme: 'dark', appearance: 'always',
         callback: function (token) {
           addToken(token);
+          w.pendingSince = null;                       // solved
           setStatus(i, '✓ solved → pooled', '#4ade80');
-          setTimeout(function () { try { turnstile.reset(w.wid); setStatus(i, '↻ re-solving…', '#fcd34d'); } catch (e) { renderWidget(i); } }, RESOLVE_DELAY);
+          setTimeout(function () { resetWidget(i); }, RESOLVE_DELAY);
         },
-        'error-callback': function (c) { setStatus(i, '✗ error ' + (c || '') + ' (sitekey/domain?)', '#fca5a5'); return true; },
-        'expired-callback': function () { setStatus(i, '⚠ expired — reset', '#fbbf24'); try { turnstile.reset(w.wid); } catch (e) {} },
-        'timeout-callback': function () { setStatus(i, '⚠ timeout — reset', '#fbbf24'); try { turnstile.reset(w.wid); } catch (e) {} }
+        'error-callback': function (c) { setStatus(i, '✗ error ' + (c || '') + ' (sitekey/domain?)', '#fca5a5'); w.pendingSince = Date.now(); return true; },
+        'expired-callback': function () { setStatus(i, '⚠ expired — reset', '#fbbf24'); resetWidget(i); },
+        'timeout-callback': function () { setStatus(i, '⚠ timeout — reset', '#fbbf24'); resetWidget(i); }
       });
+      w.pendingSince = Date.now();                     // waiting for a solve since now
       setStatus(i, 'rendered — waiting…', '#8888aa');
     } catch (e) { setStatus(i, 'render err: ' + e.message, '#fca5a5'); }
   }
@@ -164,6 +174,12 @@
       for (var i = 0; i < N; i++) renderWidget(i);
     }, 200);
     setInterval(refresh, 1000);
+    // watchdog: a widget stuck unsolved (interactive checkbox left unclicked) past IDLE_MS gets
+    // auto-reset to churn for an invisible pass — so blank widgets never sit idle forever.
+    setInterval(function () {
+      var now = Date.now();
+      for (var i = 0; i < N; i++) { var w = widgets[i]; if (w && w.wid !== null && w.pendingSince && now - w.pendingSince > IDLE_MS) resetWidget(i); }
+    }, 2000);
   }
 
   if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
