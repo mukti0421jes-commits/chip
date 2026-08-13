@@ -315,7 +315,28 @@
     // ==================== API CONFIG ====================
     const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/sign-in-v2";
     const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
-    const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate";
+    // dg-epay initiate is now a PER-UUID path: payment/<payment-method-id>/dg-epay/initiate
+    // (decoded from the live bundle 2026-08-13). Fixed fallback below; auto-updates from the
+    // site's own initiate traffic via armPayIdCapture() so it survives daily bundle changes.
+    const PAYMENT_METHOD_ID_FALLBACK = "90218968-1116-4e28-861f-465ab28337e7";
+    function getPaymentMethodId() {
+        try { const v = localStorage.getItem('rj_payment_method_id'); if (v && /^[0-9a-fA-F-]{36}$/.test(v)) return v.toLowerCase(); } catch (e) {}
+        return PAYMENT_METHOD_ID_FALLBACK;
+    }
+    function buildInitiateUrl() { return "https://api.ivacbd.com/iams/api/v1/payment/" + getPaymentMethodId() + "/dg-epay/initiate"; }
+    const API_INITIATE  = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate"; // legacy (unused as URL; kept for reference/tags)
+    // Auto-capture the live payment-method-id from the site's OWN initiate request, so the fixed
+    // fallback above self-corrects across daily bundle changes without any code edit.
+    (function armPayIdCapture() {
+        try {
+            const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+            const RE = /\/payment\/([0-9a-fA-F-]{36})\/dg-?epay/;
+            const save = (u) => { try { const m = ('' + u).match(RE); if (m && m[1]) localStorage.setItem('rj_payment_method_id', m[1].toLowerCase()); } catch (e) {} };
+            const of = W.fetch; if (of && !of.__rjPay) { const nf = function (a) { try { save((a && a.url) ? a.url : a); } catch (e) {} return of.apply(this, arguments); }; nf.__rjPay = 1; W.fetch = nf; }
+            const oo = W.XMLHttpRequest && W.XMLHttpRequest.prototype.open; if (oo && !oo.__rjPay) { const no = function (m, u) { try { save(u); } catch (e) {} return oo.apply(this, arguments); }; no.__rjPay = 1; W.XMLHttpRequest.prototype.open = no; }
+            try { performance.getEntriesByType('resource').forEach(e => save(e.name)); } catch (e) {}
+        } catch (e) {}
+    })();
     const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
     const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
     const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
@@ -741,7 +762,7 @@
     // ==================== INITIATE API CALL (H2) ====================
     async function performInitiate(accessToken, appointmentId) {
         const body = JSON.stringify({ appointmentId });
-        const response = await H2.fetchH2Critical(API_INITIATE, {
+        const response = await H2.fetchH2Critical(buildInitiateUrl(), {
             method: "POST",
             headers: { "accept": "application/json, text/plain, */*", "authorization": `Bearer ${accessToken}`, "cache-control": "no-cache, no-store, must-revalidate", "content-type": "application/json", "pragma": "no-cache", "x-device-id": getDeviceId() },
             referrer: API_REFERRER, body: body
@@ -2755,9 +2776,9 @@
         if (!appointmentId) { logStatus('❌ No appointmentId', 'r'); return { win: false }; }
         if (raceCoord.hasWon('initiate')) { logStatus(`⏭ Initiate race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
         logStatus(`💳 Initiate: ${appointmentId.slice(0,8)}…`, 'y');
-        const logId = netLogAdd({ method: 'POST', url: API_INITIATE, tag: 'initiate', state: 'pending' });
+        const logId = netLogAdd({ method: 'POST', url: buildInitiateUrl(), tag: 'initiate', state: 'pending' });
         try {
-            const r = await H2.fetchH2Critical(API_INITIATE, { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'content-type':'application/json','x-device-id':getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+            const r = await H2.fetchH2Critical(buildInitiateUrl(), { method: 'POST', signal, headers: { 'accept':'application/json','authorization':`Bearer ${sessionState.accessToken}`,'content-type':'application/json','x-device-id':getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
             const ct = r.headers.get('content-type') || '';
             const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
             const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
