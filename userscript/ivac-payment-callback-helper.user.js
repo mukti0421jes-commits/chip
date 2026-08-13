@@ -80,8 +80,21 @@
     } catch (e) {}
     // (2) window.open
     try { var _open = window.open; window.open = function (u) { onCapture(u); return _open.apply(this, arguments); }; } catch (e) {}
-    // (3) form submit (capture phase, before it navigates) + anchor clicks
-    document.addEventListener('submit', function (ev) { try { var f = ev.target; if (f && f.action) onCapture(f.action); } catch (e) {} }, true);
+    // (3) form submit — dgepay GET-submits a form whose hidden fields carry tran_id + data. The
+    // action alone has neither, so we SERIALIZE the fields into the URL (that is the real callback).
+    function formUrl(f) {
+      try {
+        if (!f || f.tagName !== 'FORM') return null;
+        var a = absUrl(f.getAttribute('action') || f.action || location.href);
+        var meth = ('' + (f.getAttribute('method') || f.method || 'get')).toLowerCase();
+        var params = new URLSearchParams(new FormData(f)).toString();
+        if (!params) return a;
+        return (meth === 'get') ? a + (a.indexOf('?') >= 0 ? '&' : '?') + params : a;
+      } catch (e) { return (f && f.action) || null; }
+    }
+    document.addEventListener('submit', function (ev) { try { onCapture(formUrl(ev.target)); } catch (e) {} }, true);
+    // (3b) programmatic form.submit() does NOT fire the 'submit' event — wrap it so we still catch it
+    try { var _fsubmit = HTMLFormElement.prototype.submit; HTMLFormElement.prototype.submit = function () { try { onCapture(formUrl(this)); } catch (e) {} return _fsubmit.apply(this, arguments); }; } catch (e) {}
     document.addEventListener('click', function (ev) { try { var a = ev.target.closest && ev.target.closest('a[href]'); if (a) onCapture(a.href); } catch (e) {} }, true);
     // (4) fetch / XHR
     try { var _f = window.fetch; if (_f) window.fetch = function (input) { try { onCapture((input && input.url) ? input.url : input); } catch (e) {} return _f.apply(this, arguments); }; } catch (e) {}
@@ -94,8 +107,13 @@
         if (m) onCapture(m[0]);
         var mr = document.querySelector('meta[http-equiv="refresh" i]');
         if (mr) { var cc = mr.getAttribute('content') || ''; var um = cc.match(/url\s*=\s*(.+)$/i); if (um) onCapture(um[1].trim().replace(/^['"]|['"]$/g, '')); }
-        var fm = document.querySelector('form[action*="callback"], form[action*="tran_id"]');
-        if (fm && fm.action) onCapture(fm.action);
+        // any pre-rendered return form (dgepay renders <form action=callback> with hidden
+        // tran_id + data, then auto-submits) — serialize its fields so we capture the FULL URL
+        var forms = document.querySelectorAll('form');
+        for (var fi = 0; fi < forms.length; fi++) {
+          var ff = forms[fi];
+          if (/callback|tran_id/i.test(ff.getAttribute('action') || '') || ff.querySelector('input[name="tran_id" i], input[name="data" i]')) onCapture(formUrl(ff));
+        }
       } catch (e) {}
     };
     // (6) fire scans early & often until captured (catch the redirect before it fires)
