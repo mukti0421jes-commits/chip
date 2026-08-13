@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RJ IVAC Payment Callback Catcher",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Captures the dg-epay callback (tran_id + data) from the network layer (like DevTools) and re-fires it until success. No external server.",
   "permissions": [
     "webRequest",
