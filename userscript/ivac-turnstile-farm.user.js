@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Turnstile Token Farm (RJ) — 4 widgets
 // @namespace    rj-turnstile-farm
-// @version      0.3.0
+// @version      0.4.0
 // @description  Test panel: renders 4 Turnstile widgets on appointment.ivacbd.com, auto re-solves each after it passes, and pools the solved tokens (localStorage + BroadcastChannel 'rj_tokens') so the RJ SLOT code can consume them. Runs on the real domain so tokens are valid.
 // @match        https://appointment.ivacbd.com/*
 // @match        https://*.ivacbd.com/*
@@ -29,6 +29,7 @@
 
   var pool = [];                               // { token, at }
   var widgets = [];                            // { wid, el, statusEl }
+  var farmStopped = false;                     // Stop-all: pause solving/re-solving of every widget
   var bc = null; try { bc = new BroadcastChannel('rj_tokens'); } catch (e) {}
   // relay: pushes each solved token to the RJ SLOT browser (cross-browser). Edit in the UI box.
   var RELAY = '';
@@ -104,6 +105,7 @@
       '<div style="padding:10px 11px">' +
         '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
           '<div style="flex:1;font:800 .72rem Segoe UI">fresh tokens: <span id="rjfw-fresh" style="color:#4ade80">0</span></div>' +
+          '<button id="rjfw-stop" style="padding:5px 8px;border:0;border-radius:5px;background:linear-gradient(135deg,#ef4444,#b91c1c);color:#fff;font-weight:800;font-size:.6rem;cursor:pointer">⏹ Stop all</button>' +
           '<button id="rjfw-cpall" style="padding:5px 8px;border:0;border-radius:5px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;font-weight:800;font-size:.6rem;cursor:pointer">Copy all</button>' +
         '</div>' +
         '<div style="display:flex;gap:5px;align-items:center;margin-bottom:8px"><input id="rjfw-relayurl" value="' + RELAY + '" spellcheck="false" title="Relay URL — same PC: http://127.0.0.1:8787 ; other PC: http://LAN-IP:8787" style="flex:1;min-width:0;padding:5px 6px;border-radius:5px;border:1px solid #3a3a5e;background:#12122c;color:#7dd3fc;font:700 .56rem Consolas,monospace">' +
@@ -121,6 +123,16 @@
 
     document.getElementById('rjfw-min').onclick = function () { var b = panel.querySelector('div:nth-child(2)'); if (b) b.style.display = b.style.display === 'none' ? 'block' : 'none'; };
     document.getElementById('rjfw-cpall').onclick = function () { prune(); var all = pool.map(function (p) { return p.token; }).join('\n'); try { navigator.clipboard.writeText(all); } catch (e) {} this.textContent = 'Copied ' + pool.length; setTimeout(function () { document.getElementById('rjfw-cpall').textContent = 'Copy all'; }, 1200); };
+    document.getElementById('rjfw-stop').onclick = function () {
+      farmStopped = !farmStopped;
+      this.textContent = farmStopped ? '▶ Start all' : '⏹ Stop all';
+      this.style.background = farmStopped ? 'linear-gradient(135deg,#10b981,#059669)' : 'linear-gradient(135deg,#ef4444,#b91c1c)';
+      if (farmStopped) {
+        for (var i = 0; i < N; i++) { var w = widgets[i]; if (w) { w.pendingSince = null; try { if (w.wid !== null) turnstile.remove(w.wid); } catch (e) {} w.wid = null; if (w.el) w.el.innerHTML = ''; setStatus(i, '⏹ stopped', '#8888aa'); } }
+      } else {
+        for (var j = 0; j < N; j++) renderWidget(j);
+      }
+    };
     document.getElementById('rjfw-apply').onclick = function () { var k = document.getElementById('rjfw-key').value.trim(); if (k) { SITEKEY = k; try { localStorage.setItem('rj_farm_sitekey', k); } catch (e) {} location.reload(); } };
     document.getElementById('rjfw-relayapply').onclick = function () { var r = document.getElementById('rjfw-relayurl').value.trim(); if (r) { RELAY = r; try { localStorage.setItem('rj_relay_url', r); } catch (e) {} this.textContent = 'Set ✓'; var s = this; setTimeout(function () { s.textContent = 'Set'; }, 1000); } };
     // drag
@@ -138,13 +150,14 @@
   }
 
   function resetWidget(i) {
+    if (farmStopped) return;
     var w = widgets[i]; if (!w) return;
     if (w.wid === null) { renderWidget(i); return; }
     try { turnstile.reset(w.wid); w.pendingSince = Date.now(); setStatus(i, '↻ re-solving…', '#fcd34d'); }
     catch (e) { renderWidget(i); }
   }
   function renderWidget(i) {
-    if (typeof turnstile === 'undefined') return;
+    if (farmStopped || typeof turnstile === 'undefined') return;
     var w = widgets[i]; if (!w || !w.el) return;
     try {
       if (w.wid !== null) { try { turnstile.remove(w.wid); } catch (e) {} w.el.innerHTML = ''; }
@@ -177,6 +190,7 @@
     // watchdog: a widget stuck unsolved (interactive checkbox left unclicked) past IDLE_MS gets
     // auto-reset to churn for an invisible pass — so blank widgets never sit idle forever.
     setInterval(function () {
+      if (farmStopped) return;
       var now = Date.now();
       for (var i = 0; i < N; i++) { var w = widgets[i]; if (w && w.wid !== null && w.pendingSince && now - w.pendingSince > IDLE_MS) resetWidget(i); }
     }, 2000);
