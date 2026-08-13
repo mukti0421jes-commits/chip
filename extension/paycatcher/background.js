@@ -9,6 +9,7 @@ const FILTER = { urls: ["*://api.ivacbd.com/*", "*://appointment.ivacbd.com/*", 
 const DEFAULT = { url: null, tranId: '', status: 'waiting — pay, the callback will be caught', tries: 0, done: false, stopped: false, autofire: true, intervalMs: 1000, at: 0 };
 let S = Object.assign({}, DEFAULT);
 let loopTimer = null;
+let running = false;   // true for the WHOLE loop (incl. the in-flight fetch) — prevents parallel loops
 
 function isCallback(u) { u = '' + (u || ''); return /callback/i.test(u) && /[?&]tran_id=/i.test(u) && /payment|dg-?epay/i.test(u); }
 function save() { try { chrome.storage.local.set({ S }); } catch (e) {} }
@@ -23,7 +24,7 @@ chrome.storage.local.get('S', d => {
 
 function capture(url, via) {
   if (!isCallback(url)) return;
-  if (S.url === url && !S.stopped) { if (!S.done && !loopTimer && S.autofire) startLoop(); return; }
+  if (S.url === url && !S.stopped) { if (!S.done && !running && S.autofire) startLoop(); return; }
   S.url = url;
   S.tranId = (url.match(/[?&]tran_id=([^&#]+)/i) || [])[1] || '';
   S.done = false; S.stopped = false; S.tries = 0; S.at = Date.now();
@@ -43,15 +44,15 @@ try { chrome.webRequest.onCompleted.addListener(d => capture(d.url, 'completed')
 // keepalive backstop: if the worker was suspended and the loop timer was lost, resume it
 try {
   chrome.alarms.create('ka', { periodInMinutes: 0.5 });
-  chrome.alarms.onAlarm.addListener(() => { if (S.url && S.autofire && !S.done && !S.stopped && !loopTimer) startLoop(); });
+  chrome.alarms.onAlarm.addListener(() => { if (S.url && S.autofire && !S.done && !S.stopped && !running) startLoop(); });
 } catch (e) {}
 
-function startLoop() { if (loopTimer || !S.url || S.done || S.stopped) return; tick(); }
-function stopLoop() { if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; } }
+function startLoop() { if (running || !S.url || S.done || S.stopped) return; running = true; tick(); }
+function stopLoop() { running = false; if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; } }
 
 async function tick() {
   loopTimer = null;
-  if (S.stopped || S.done || !S.url) return;
+  if (!running || S.stopped || S.done || !S.url) { running = false; return; }
   S.tries++;
   try {
     const r = await fetch(S.url, { method: 'GET', redirect: 'manual', cache: 'no-store', credentials: 'include', headers: { 'Upgrade-Insecure-Requests': '1' } });
@@ -60,13 +61,14 @@ async function tick() {
       S.done = true; S.status = '✓ SUCCESS (' + tag + ') after #' + S.tries; save(); badge('✓', '#10b981');
       notify('Payment confirmed', 'callback ' + tag + ' — done after ' + S.tries + ' tries');
       try { const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); if (tab) chrome.tabs.update(tab.id, { url: S.url }); } catch (e) {}
-      return;
+      running = false; return;
     }
     S.status = '🔁 #' + S.tries + ' → ' + tag + ' — retrying'; save();
   } catch (e) {
     S.status = '🔁 #' + S.tries + ' err (' + ((e && e.message) || '') + ') — retrying'; save();
   }
-  if (!S.stopped && !S.done) loopTimer = setTimeout(tick, S.intervalMs);
+  if (!S.stopped && !S.done && running) loopTimer = setTimeout(tick, S.intervalMs);
+  else running = false;
 }
 
 // popup <-> worker
