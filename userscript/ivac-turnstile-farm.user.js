@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         IVAC Turnstile Token Farm (RJ) — 4 widgets
 // @namespace    rj-turnstile-farm
-// @version      0.1.0
+// @version      0.2.0
 // @description  Test panel: renders 4 Turnstile widgets on appointment.ivacbd.com, auto re-solves each after it passes, and pools the solved tokens (localStorage + BroadcastChannel 'rj_tokens') so the RJ SLOT code can consume them. Runs on the real domain so tokens are valid.
 // @match        https://appointment.ivacbd.com/*
 // @match        https://*.ivacbd.com/*
 // @run-at       document-idle
+// @noframes
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // @connect      localhost
@@ -14,6 +15,7 @@
 
 (function () {
   'use strict';
+  try { if (window.top !== window.self) return; } catch (e) { return; }   // main page only, never in iframes
   if (window.__rjFarm) return; window.__rjFarm = 1;
 
   var N = 4;                                   // number of widgets
