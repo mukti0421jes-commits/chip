@@ -106,6 +106,7 @@
         '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">' +
           '<div style="flex:1;font:800 .72rem Segoe UI">fresh tokens: <span id="rjfw-fresh" style="color:#4ade80">0</span></div>' +
           '<button id="rjfw-stop" style="padding:5px 8px;border:0;border-radius:5px;background:linear-gradient(135deg,#ef4444,#b91c1c);color:#fff;font-weight:800;font-size:.6rem;cursor:pointer">⏹ Stop all</button>' +
+          '<button id="rjfw-del" style="padding:5px 8px;border:0;border-radius:5px;background:#7f1d1d;color:#fff;font-weight:800;font-size:.6rem;cursor:pointer" title="Delete ALL tokens — farm pool + relay + RJ SLOT queue">🗑 Del</button>' +
           '<button id="rjfw-cpall" style="padding:5px 8px;border:0;border-radius:5px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;font-weight:800;font-size:.6rem;cursor:pointer">Copy all</button>' +
         '</div>' +
         '<div style="display:flex;gap:5px;align-items:center;margin-bottom:8px"><input id="rjfw-relayurl" value="' + RELAY + '" spellcheck="false" title="Relay URL — same PC: http://127.0.0.1:8787 ; other PC: http://LAN-IP:8787" style="flex:1;min-width:0;padding:5px 6px;border-radius:5px;border:1px solid #3a3a5e;background:#12122c;color:#7dd3fc;font:700 .56rem Consolas,monospace">' +
@@ -123,6 +124,14 @@
 
     document.getElementById('rjfw-min').onclick = function () { var b = panel.querySelector('div:nth-child(2)'); if (b) b.style.display = b.style.display === 'none' ? 'block' : 'none'; };
     document.getElementById('rjfw-cpall').onclick = function () { prune(); var all = pool.map(function (p) { return p.token; }).join('\n'); try { navigator.clipboard.writeText(all); } catch (e) {} this.textContent = 'Copied ' + pool.length; setTimeout(function () { document.getElementById('rjfw-cpall').textContent = 'Copy all'; }, 1200); };
+    document.getElementById('rjfw-del').onclick = function () {
+      // wipe EVERYWHERE: farm pool + localStorage + relay queue (relay bumps clearedAt → RJ SLOT wipes its queue too)
+      pool.length = 0;
+      try { localStorage.removeItem('rj_farm_tokens'); } catch (e) {}
+      if (GMx && RELAY) { try { GMx({ method: 'GET', url: RELAY.replace(/\/+$/, '') + '/clear', timeout: 8000 }); } catch (e) {} }
+      refresh();
+      this.textContent = 'Deleted'; var s = this; setTimeout(function () { s.textContent = '🗑 Del'; }, 1200);
+    };
     document.getElementById('rjfw-stop').onclick = function () {
       farmStopped = !farmStopped;
       this.textContent = farmStopped ? '▶ Start all' : '⏹ Stop all';

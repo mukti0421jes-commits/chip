@@ -14,6 +14,7 @@ const http = require('http');
 const PORT = process.env.PORT || 8787;
 const TTL_MS = 120000;   // 2 min — Turnstile tokens live ~5min; we keep only fresh ones (safety margin)
 let q = [];   // { token, at }
+let clearedAt = 0;   // bumped on /clear so pullers (RJ SLOT) can wipe their own queue too
 
 function prune() { const now = Date.now(); const before = q.length; q = q.filter(x => now - x.at < TTL_MS); const dropped = before - q.length; if (dropped > 0) console.log('[RJ Token Relay] auto-removed ' + dropped + ' expired token(s), ' + q.length + ' left'); }
 // active sweeper: auto-remove expired tokens from the queue even when no request comes in
@@ -47,9 +48,15 @@ http.createServer((req, res) => {
   }
   if (req.method === 'GET' && u === '/pull') {
     const item = q.shift() || null;   // FIFO, single-use (prune() above already dropped >TTL tokens)
-    return send(res, 200, { token: item ? item.token : null, at: item ? item.at : 0, ageMs: item ? (Date.now() - item.at) : 0, ttlMs: TTL_MS, fresh: q.length });
+    return send(res, 200, { token: item ? item.token : null, at: item ? item.at : 0, ageMs: item ? (Date.now() - item.at) : 0, ttlMs: TTL_MS, fresh: q.length, clearedAt });
   }
-  if (req.method === 'GET' && u === '/count') return send(res, 200, { fresh: q.length });
+  // wipe ALL tokens (GET or POST so a browser can hit it too); clearedAt lets pullers wipe their queue
+  if ((req.method === 'GET' || req.method === 'POST') && u === '/clear') {
+    const n = q.length; q = []; clearedAt = Date.now();
+    console.log('[RJ Token Relay] /clear — wiped ' + n + ' token(s)');
+    return send(res, 200, { ok: true, cleared: n, clearedAt });
+  }
+  if (req.method === 'GET' && u === '/count') return send(res, 200, { fresh: q.length, clearedAt });
   if (req.method === 'GET' && u === '/peek') return send(res, 200, { fresh: q.length, tokens: q.map(x => x.token.slice(0, 24) + '…') });
   if (u === '/' ) return send(res, 200, { ok: true, service: 'rj-token-relay', fresh: q.length });
   send(res, 404, { ok: false });
