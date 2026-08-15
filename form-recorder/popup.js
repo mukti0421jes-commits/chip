@@ -72,4 +72,22 @@ btnClear.addEventListener("click", async () => {
   refresh();
 });
 
+// Clean All: wipe every page's saved record in one click. Works directly on
+// storage (no content script needed), so it clears records for all sites at
+// once. Keeps the recording/autopilot state flags untouched.
+document.getElementById("cleanall").addEventListener("click", async () => {
+  const STATE = ["ffr:recording", "ffr:autopilot"];
+  const all = await chrome.storage.local.get(null);
+  const keys = Object.keys(all).filter(
+    (k) => k.startsWith("ffr:") && !STATE.includes(k) && !k.startsWith("ffr:autotries:")
+  );
+  if (keys.length === 0) {
+    statusEl.textContent = "মোছার মতো কোনো record নেই।";
+    return;
+  }
+  if (!confirm(`সব page মিলিয়ে ${keys.length} টি page-এর record মুছে ফেলা হবে। নিশ্চিত?`)) return;
+  await chrome.storage.local.remove(keys);
+  statusEl.textContent = `🧹 ${keys.length} টি page-এর record মুছে ফেলা হয়েছে।`;
+});
+
 refresh();
