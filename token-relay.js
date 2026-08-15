@@ -12,10 +12,12 @@
 
 const http = require('http');
 const PORT = process.env.PORT || 8787;
-const TTL_MS = 150000;   // 2.5 min — Turnstile tokens live ~5min; we serve only fresh ones (safety margin)
+const TTL_MS = 120000;   // 2 min — Turnstile tokens live ~5min; we keep only fresh ones (safety margin)
 let q = [];   // { token, at }
 
-function prune() { const now = Date.now(); q = q.filter(x => now - x.at < TTL_MS); }
+function prune() { const now = Date.now(); const before = q.length; q = q.filter(x => now - x.at < TTL_MS); const dropped = before - q.length; if (dropped > 0) console.log('[RJ Token Relay] auto-removed ' + dropped + ' expired token(s), ' + q.length + ' left'); }
+// active sweeper: auto-remove expired tokens from the queue even when no request comes in
+setInterval(prune, 5000);
 function send(res, code, obj) {
   res.writeHead(code, {
     'Content-Type': 'application/json',
