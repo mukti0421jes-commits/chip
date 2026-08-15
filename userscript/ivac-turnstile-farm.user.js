@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IVAC Turnstile Token Farm (RJ) — 4 widgets
 // @namespace    rj-turnstile-farm
-// @version      0.4.0
+// @version      0.5.0
 // @description  Test panel: renders 4 Turnstile widgets on appointment.ivacbd.com, auto re-solves each after it passes, and pools the solved tokens (localStorage + BroadcastChannel 'rj_tokens') so the RJ SLOT code can consume them. Runs on the real domain so tokens are valid.
 // @match        https://appointment.ivacbd.com/*
 // @match        https://*.ivacbd.com/*
@@ -19,7 +19,7 @@
   if (window.__rjFarm) return; window.__rjFarm = 1;
 
   var N = 4;                                   // number of widgets
-  var TTL = 290000;                            // token ~300s; drop a bit early
+  var TTL = 120000;                            // 2 min — match the relay + RJ SLOT lifetime (UI count minuses on expiry)
   var RESOLVE_DELAY = 800;                     // ms after a solve before re-rendering that widget
   var IDLE_MS = 12000;                         // if a widget sits unsolved this long (interactive checkbox
                                                // left unclicked), auto-reset it to try for an invisible pass
