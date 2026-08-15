@@ -12,7 +12,7 @@
 
 const http = require('http');
 const PORT = process.env.PORT || 8787;
-const TTL_MS = 290000;
+const TTL_MS = 150000;   // 2.5 min — Turnstile tokens live ~5min; we serve only fresh ones (safety margin)
 let q = [];   // { token, at }
 
 function prune() { const now = Date.now(); q = q.filter(x => now - x.at < TTL_MS); }
@@ -44,8 +44,8 @@ http.createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && u === '/pull') {
-    const item = q.shift() || null;   // FIFO, single-use
-    return send(res, 200, { token: item ? item.token : null, fresh: q.length });
+    const item = q.shift() || null;   // FIFO, single-use (prune() above already dropped >TTL tokens)
+    return send(res, 200, { token: item ? item.token : null, at: item ? item.at : 0, ageMs: item ? (Date.now() - item.at) : 0, ttlMs: TTL_MS, fresh: q.length });
   }
   if (req.method === 'GET' && u === '/count') return send(res, 200, { fresh: q.length });
   if (req.method === 'GET' && u === '/peek') return send(res, 200, { fresh: q.length, tokens: q.map(x => x.token.slice(0, 24) + '…') });
