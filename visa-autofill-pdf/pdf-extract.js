@@ -219,6 +219,14 @@ export function parseVisaPdf(rawText) {
   const refNames = grab(/I\. Details of Two Reference[\s\S]*?Name\s+([^\n]+)/);
   if (refNames) values['nameofsponsor_ind'] = refNames; // দুই কলাম মিশে থাকতে পারে — edit করে নিন
 
+  // ---------- Registration (Mission) ডিফল্ট + Purpose কোড ----------
+  values['countryname_id'] = values['countryname_id'] || 'BGD';
+  values['nationality_id'] = values['nationality_id'] || 'BGD';
+  values['missioncode_id'] = values['missioncode_id'] || 'BGDD';
+  const vtype = grab(/Type Of Visa Required\s+([A-Z0-9 ()-]+?)\s+No of Entries/);
+  const pmap = { TOURIST: '544', MEDICAL: '545', BUSINESS: '537', STUDENT: '540', TRANSIT: '233', JOURNALIST: '228' };
+  for (const k in pmap) if (vtype && vtype.includes(k)) { values['visaPurposeDropdown'] = pmap[k]; break; }
+
   const name = clean((values['givenName'] || '') + ' ' + (values['surname'] || '')) || 'New Profile';
   return { values, flags, name };
 }

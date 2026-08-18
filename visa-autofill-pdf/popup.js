@@ -1,5 +1,6 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf } from './pdf-extract.js';
+import { ocrImage, parsePassport } from './ocr.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 const SITE = 'https://indianvisa-bangladesh.nic.in/visa/';
@@ -10,8 +11,7 @@ const TABS = [
     ['countryname_id', 'Country you apply from', 'BGD = Bangladesh'],
     ['missioncode_id', 'Indian Mission/Office', 'BGDD Dhaka, BGDC Chittagong...'],
     ['nationality_id', 'Nationality', 'BGD = Bangladesh'],
-    ['visaService', 'Visa Type', '3=TOURIST, 1=BUSINESS, 2=STUDENT...'],
-    ['purpose', 'Purpose (option value)', ''],
+    ['visaPurposeDropdown', 'Visiting India for (purpose code)', '544=TOURIST T1, 545=MEDICAL M1, 546=MEDICAL M2, 537=BUSINESS B1, 233=TRANSIT'],
   ]},
   { t: 'A. Personal', f: [
     ['surname', 'Surname'], ['givenName', 'Given Name'],
@@ -216,42 +216,81 @@ $('newProfile').onclick = () => {
   persist(); renderProfiles(); openEditor(id);
 };
 
-async function importPdf(file) {
-  status('⏳ PDF পড়া হচ্ছে...');
-  try {
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-    let full = '';
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const tc = await page.getTextContent();
-      let line = '', lastY = null;
-      for (const it of tc.items) {
-        const y = Math.round(it.transform[5]);
-        if (lastY !== null && Math.abs(y - lastY) > 3) { full += line + '\n'; line = ''; }
-        line += it.str; lastY = y;
-      }
-      full += line + '\n';
+function saveImported(res) {
+  const id = newId();
+  state.profiles[id] = { name: res.name, values: res.values, flags: res.flags };
+  state.activeId = id;
+  persist(); renderProfiles();
+  status('✔ "' + res.name + '" পড়া হয়েছে — Edit করে যাচাই করে Save করুন।');
+  openEditor(id);
+}
+
+// text-PDF: সব পেজের লেখা এক করে ফেরত দেয় (0 হলে বুঝব এটা image-PDF)
+async function pdfText(doc) {
+  let full = '';
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    let line = '', lastY = null;
+    for (const it of tc.items) {
+      const y = Math.round(it.transform[5]);
+      if (lastY !== null && Math.abs(y - lastY) > 3) { full += line + '\n'; line = ''; }
+      line += it.str; lastY = y;
     }
-    const { values, flags, name } = parseVisaPdf(full);
-    const id = newId();
-    state.profiles[id] = { name, values, flags };
-    state.activeId = id;
-    persist(); renderProfiles();
-    status('✔ "' + name + '" পড়া হয়েছে — Edit করে যাচাই করে Save করুন।');
-    openEditor(id);
+    full += line + '\n';
+  }
+  return full;
+}
+
+async function pdfPageToCanvas(page, scale = 2) {
+  const vp = page.getViewport({ scale });
+  const c = document.createElement('canvas');
+  c.width = vp.width; c.height = vp.height;
+  await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+  return c;
+}
+
+async function importFile(file) {
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  try {
+    if (isPdf) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+      status('⏳ PDF পড়া হচ্ছে...');
+      const text = await pdfText(doc);
+      if (text.replace(/\s/g, '').length > 40) {
+        // লেখা-সহ PDF (application form)
+        saveImported(parseVisaPdf(text));
+        return;
+      }
+      // image-only PDF → পেজ ছবি বানিয়ে OCR
+      status('🔎 ছবি-PDF — OCR চলছে (কয়েক সেকেন্ড)...');
+      let ocrText = '';
+      for (let i = 1; i <= Math.min(doc.numPages, 2); i++) {
+        const canvas = await pdfPageToCanvas(await doc.getPage(i), 2);
+        ocrText += '\n' + await ocrImage(canvas, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
+      }
+      saveImported(parsePassport(ocrText));
+      return;
+    }
+    // সরাসরি ছবি ফাইল
+    status('🔎 ছবি OCR চলছে (কয়েক সেকেন্ড)...');
+    const url = URL.createObjectURL(file);
+    const text = await ocrImage(url, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
+    URL.revokeObjectURL(url);
+    saveImported(parsePassport(text));
   } catch (e) {
     console.error(e);
-    status('✘ PDF পড়া যায়নি: ' + e.message, false);
+    status('✘ পড়া যায়নি: ' + e.message, false);
   }
 }
 
 const drop = $('drop'), fileInput = $('file');
 drop.onclick = () => fileInput.click();
-fileInput.onchange = () => { if (fileInput.files[0]) importPdf(fileInput.files[0]); };
+fileInput.onchange = () => { if (fileInput.files[0]) importFile(fileInput.files[0]); };
 ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
 ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
-drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f && f.type === 'application/pdf') importPdf(f); });
+drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f && (f.type === 'application/pdf' || f.type.startsWith('image/'))) importFile(f); });
 
 // ---------------- toggles & actions ----------------
 $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.target.checked });

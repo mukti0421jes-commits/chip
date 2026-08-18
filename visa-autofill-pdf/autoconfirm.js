@@ -32,4 +32,27 @@
   document.addEventListener('ivac-macros-autoconfirm', function (e) {
     autoConfirmEnabled = !!(e.detail && e.detail.enabled);
   });
+
+  // MAIN-world কাজ: chosen (Purpose) dropdown আপডেট + datepicker বন্ধ —
+  // পেজের নিজের jQuery দিয়ে (content script isolated world থেকে যা করা যায় না)
+  document.addEventListener('vafill-main', function (e) {
+    var d = (e && e.detail) || {};
+    var $ = window.jQuery || window.$;
+    try {
+      if ($) {
+        // Purpose (chosen) — কোড থাকলে সিলেক্ট করে cascade চালাও
+        if (d.purpose) {
+          $('#visaPurposeDropdown').val(d.purpose).trigger('chosen:updated');
+          $('#visaPurposeDropdown').trigger('change');
+          if (typeof window.visit_purpose === 'function') { try { window.visit_purpose(d.purpose); } catch (_) {} }
+        }
+        // options AJAX-এ এলে chosen যাতে সেগুলো দেখায় / খোলে
+        $('.chosen-select').trigger('chosen:updated');
+        // খোলা datepicker বন্ধ
+        try { $('.hasDatepicker').datepicker('hide'); } catch (_) {}
+        $('#ui-datepicker-div').hide();
+      }
+    } catch (_) {}
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  });
 })();

@@ -69,6 +69,11 @@
     document.dispatchEvent(new CustomEvent('ivac-macros-autoconfirm', { detail: { enabled } }));
   }
 
+  // MAIN world-এ jQuery কাজ চালাতে (chosen Purpose + datepicker বন্ধ)
+  function mainWorld(detail) {
+    document.dispatchEvent(new CustomEvent('vafill-main', { detail }));
+  }
+
   // state বদলানোর পর AJAX-এ district আসতে সময় লাগে — option না আসা পর্যন্ত অপেক্ষা
   async function waitAndSet(id, value, timeoutMs = 6000) {
     if (!value) return false;
@@ -144,10 +149,15 @@
 
       const isRegistration = /Registration/i.test(path);
       setAutoConfirm(true);
+      const purpose = (active.values || {}).visaPurposeDropdown || '';
       try {
         await fillPage(active);
         await sleep(1200);
         await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
+
+        // chosen Purpose সেট + খোলা datepicker বন্ধ (পেজের jQuery দিয়ে, MAIN world)
+        mainWorld({ purpose });
+        setTimeout(() => mainWorld({ purpose }), 1500); // purpose option AJAX-এ এলে আবার
 
         if (isRegistration) {
           const cap = document.getElementById('captcha');
