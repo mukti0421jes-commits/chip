@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<title>Visa Autofill (PDF)</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--muted:#94a3b8;--line:#334155;--accent:#3b82f6;--accent2:#22c55e;}
+  body{width:430px;max-height:600px;overflow-y:auto;margin:0;padding:12px;background:var(--bg);
+    color:#e2e8f0;font-family:"Noto Sans Bengali",Arial,sans-serif;font-size:13px;}
+  h1{font-size:17px;margin:0 0 2px;color:var(--accent);}
+  .sub{font-size:11px;color:var(--muted);margin-bottom:10px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;}
+  .card h2{font-size:13px;margin:0 0 8px;color:#cbd5e1;font-weight:600;}
+  #drop{border:2px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--muted);
+    cursor:pointer;transition:.15s;}
+  #drop.drag{border-color:var(--accent);background:#16233b;color:#e2e8f0;}
+  input[type=file]{display:none;}
+  .prof{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;background:#0b1526;}
+  .prof.active{border-color:var(--accent);background:#13233f;}
+  .prof .nm{color:var(--accent);font-weight:600;cursor:pointer;}
+  .prof .btns{margin-top:6px;display:flex;gap:6px;}
+  .prof .btns button{font-size:11px;padding:4px 8px;}
+  button{background:var(--card);color:#e2e8f0;border:1px solid var(--line);border-radius:7px;
+    padding:8px;cursor:pointer;font-size:12px;}
+  button:hover{border-color:var(--accent);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;width:100%;padding:10px;}
+  button.danger{color:#f87171;border-color:#7f1d1d;}
+  .bigbtns button{width:100%;margin-bottom:8px;}
+  .tabs{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;}
+  .tabs button{padding:5px 9px;border-radius:14px;font-size:11px;}
+  .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;}
+  .fld{display:flex;flex-direction:column;}
+  .fld.full{grid-column:1 / -1;}
+  .fld label{font-size:11px;color:#cbd5e1;margin-bottom:3px;}
+  .fld .hint{font-size:10px;color:var(--muted);margin-top:2px;}
+  .fld input,.fld select{background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;
+    padding:6px;font-size:12px;font-family:monospace;}
+  .toggle{display:flex;align-items:center;justify-content:space-between;padding:6px 2px;}
+  #status{font-size:12px;min-height:16px;margin-top:6px;}
+  .ok{color:var(--accent2);} .err{color:#f87171;}
+  .warn{font-size:11px;color:#fcd34d;background:#3a2f0b;border:1px solid #6b5510;border-radius:6px;padding:6px 8px;margin-top:8px;line-height:1.4;}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+  <h1>Visa Autofill (PDF)</h1>
+  <div class="sub">Indian Visa ফর্ম — অফলাইন অটো-ফিল</div>
+
+  <div class="card">
+    <h2>📄 PDF থেকে তথ্য নিন</h2>
+    <div id="drop">এখানে visa application PDF <b>ড্রপ করুন</b><br>অথবা ক্লিক করে বেছে নিন</div>
+    <input type="file" id="file" accept="application/pdf">
+    <div class="sub" style="margin:8px 0 0">কোনো ইন্টারনেট/credit লাগে না — সব আপনার ব্রাউজারেই হয়।</div>
+  </div>
+
+  <div class="card">
+    <h2>👤 সেভ করা Profiles</h2>
+    <div id="profiles"></div>
+    <div id="noProfiles" class="sub">এখনো কোনো profile নেই। PDF ড্রপ করুন বা নিচে নতুন তৈরি করুন।</div>
+    <button id="newProfile" style="width:100%;margin-top:8px">+ খালি profile তৈরি করুন</button>
+  </div>
+
+  <div class="card hidden" id="editorCard">
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>✏️ তথ্য এডিট — <span id="editName" style="color:var(--accent)"></span></span>
+      <button id="closeEditor" style="padding:4px 8px;font-size:11px">বন্ধ</button>
+    </h2>
+    <div class="tabs" id="tabs"></div>
+    <div class="grid" id="fields"></div>
+    <div class="warn">ঠিকানা / Reference / Hotel ঘরগুলো PDF থেকে আনুমানিক আসে — Save করার আগে একবার দেখে নিন।</div>
+    <button class="primary" id="saveBtn" style="margin-top:10px">💾 Profile Save করুন</button>
+  </div>
+
+  <div class="card">
+    <div class="toggle"><span>অটো-ফিল চালু</span><input type="checkbox" id="enableToggle"></div>
+    <div class="toggle"><span>প্রতি পেজে Continue অটো-ক্লিক</span><input type="checkbox" id="autoContinueToggle"></div>
+    <div class="warn" style="background:#3a1010;border-color:#7f1d1d;color:#fca5a5">
+      ⚠️ CAPTCHA ও ছবি/PDF আপলোড সবসময় ম্যানুয়াল। Auto-Continue চালু থাকলে প্রতি পেজ ভরে নিজে থেকে পরের পেজে চলে যাবে (রিভিউয়ের সুযোগ কম)।
+    </div>
+  </div>
+
+  <div class="bigbtns">
+    <button id="fillNow" class="primary">⚡ এই ট্যাবের ফর্ম এখন ভরো</button>
+    <button id="openSite">🌐 Visa Website খুলুন</button>
+  </div>
+  <div id="status"></div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

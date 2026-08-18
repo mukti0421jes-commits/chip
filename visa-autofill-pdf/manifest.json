@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Visa Autofill (PDF)",
+  "version": "2.0",
+  "description": "Indian Visa (indianvisa-bangladesh.nic.in) ফর্মের অফলাইন অটো-ফিল। PDF ড্রপ করে তথ্য পড়ে, edit/save করে, তারপর ফর্মে অটো-ফিল করে। CAPTCHA ও ফাইল আপলোড ম্যানুয়াল।",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://indianvisa-bangladesh.nic.in/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Visa Autofill (PDF)"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://indianvisa-bangladesh.nic.in/visa/*"],
+      "js": ["autoconfirm.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://indianvisa-bangladesh.nic.in/visa/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/pdf.worker.min.mjs"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
