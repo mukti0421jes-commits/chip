@@ -120,6 +120,25 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // <select> এর জন্য: option value মিললে value দিয়ে, নাহলে দৃশ্যমান লেখা দিয়ে মেলায়।
+  // মিলিয়ে সেট করতে পারলে true; option এখনো না এলে (dependent dropdown) false।
+  function setSelectSmart(el, value) {
+    if (value == null || value === "") return false;
+    const v = String(value);
+    const opts = Array.from(el.options);
+    let opt =
+      opts.find((o) => o.value === v) ||
+      opts.find((o) => o.value.toUpperCase() === v.toUpperCase()) ||
+      opts.find((o) => (o.textContent || "").trim().toUpperCase() === v.toUpperCase());
+    if (!opt) return false;
+    el.value = opt.value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value === opt.value;
+  }
+
   // While auto-filling, mark the document so injected.js (running in the
   // page's world) auto-answers alert/confirm dialogs with OK.
   let autoModeTimer = null;
@@ -140,6 +159,7 @@
     }
     let filled = 0;
     const entries = Object.values(data);
+    const pendingSelects = []; // যেসব select প্রথমবার বসেনি (option AJAX-এ আসে)
     for (const entry of entries) {
       let el = null;
       try {
@@ -152,14 +172,33 @@
         if (el.checked !== entry.checked) el.click();
         filled++;
       } else if (entry.type === "select") {
-        setNativeValue(el, entry.value);
-        filled++;
+        if (setSelectSmart(el, entry.value)) filled++;
+        else pendingSelects.push(entry); // District-এর মতো dependent dropdown
       } else {
         el.focus();
         setNativeValue(el, entry.value);
         filled++;
       }
     }
+
+    // dependent dropdown (State → District): option AJAX-এ আসতে সময় লাগে,
+    // তাই না-বসা select গুলো কয়েক সেকেন্ড ধরে বারবার চেষ্টা করি
+    for (let attempt = 0; attempt < 12 && pendingSelects.length; attempt++) {
+      await sleep(400);
+      for (let i = pendingSelects.length - 1; i >= 0; i--) {
+        let el = null;
+        try {
+          el = document.querySelector(pendingSelects[i].selector);
+        } catch (_) {
+          /* skip */
+        }
+        if (el && setSelectSmart(el, pendingSelects[i].value)) {
+          filled++;
+          pendingSelects.splice(i, 1);
+        }
+      }
+    }
+
     applyForcedRules();
     flashBanner(`✅ ${filled}/${entries.length} টি ফিল্ড পূরণ হয়েছে`);
     return { filled, total: entries.length };
