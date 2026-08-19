@@ -96,7 +96,8 @@
     if (flags.sameAddress) setCheckbox('sameAddress_id', true);
 
     if (flags.otherPassport) clickRadio(flags.otherPassport === 'YES' ? 'other_ppt_1' : 'other_ppt_2');
-    if (flags.grandparent) clickRadio(flags.grandparent === 'YES' ? 'grandparent_flag1' : 'grandparent_flag2');
+    // Grandfather/Grandmother Pakistan প্রশ্ন — নিয়ম অনুযায়ী সবসময় "No"
+    clickRadio('grandparent_flag2');
     if (flags.visitedIndia) { clickRadio(flags.visitedIndia === 'YES' ? 'old_visa_flag1' : 'old_visa_flag2'); await sleep(200); }
     if (flags.refused) clickRadio(flags.refused === 'YES' ? 'refuse_flag1' : 'refuse_flag2');
     if (flags.saarc) clickRadio(flags.saarc === 'YES' ? 'saarc_flag1' : 'saarc_flag2');

@@ -22,7 +22,10 @@ function clean(s) {
 
 // PDF text (পুরোটা এক string) থেকে তথ্য বের করে {values, flags, name} ফেরত দেয়
 export function parseVisaPdf(rawText) {
-  const T = rawText.replace(/\r/g, '');
+  // plain অংশ সব parsing-এ, tabbed অংশ শুধু References কলাম আলাদা করতে
+  const split = rawText.replace(/\r/g, '').split('<<<TABS>>>');
+  const T = split[0];
+  const TAB = split[1] || '';
   const values = {};
   const flags = {};
 
@@ -180,12 +183,22 @@ export function parseVisaPdf(rawText) {
   if (refused) flags.refused = refused.toUpperCase();
 
   // ---------- G. Profession ----------
-  put('occupation', grab(/Present Occupation\s+([A-Za-z /'-]+?)\s+Designation\/Rank/));
-  put('empdesignation', grab(/Designation\/Rank\s+([A-Za-z /'-]+?)\s*(?:\n|Employer)/));
+  // সাইটের occupation ড্রপডাউনের বৈধ মান — না মিললে OTHERS + specify (occupationOther)
+  const OCC = ['AIR FORCE', 'BUSINESS PERSON', 'CAMERAMAN', 'CHARITY/SOCIAL WORKER', 'CHARTERED ACCOUNTANT', 'COLLEGE/UNIVERSITY TEACHER', 'DIPLOMAT', 'DOCTOR', 'ENGINEER', 'FILM PRODUCER', 'GOVERNMENT SERVICE', 'HOUSE WIFE', 'JOURNALIST', 'LABOUR', 'LAWYER', 'MEDIA', 'MILITARY', 'MISSIONARY', 'NAVY', 'NEWS BROADCASTER', 'OFFICIAL', 'OTHERS', 'POLICE', 'PRESS', 'PRIVATE SERVICE', 'PUBLISHER', 'REPORTER', 'RESEARCHER', 'RETIRED', 'SEA MAN', 'SELF EMPLOYED/ FREELANCER', 'STUDENT', 'TRADER', 'TV PRODUCER', 'UN-EMPLOYED', 'UN OFFICIAL', 'WORKER', 'WRITER'];
+  const occ = grab(/Present Occupation\s+([A-Za-z0-9 /'&-]+?)\s+Designation\/Rank/);
+  if (occ) {
+    if (OCC.includes(occ.toUpperCase())) values['occupation'] = occ.toUpperCase();
+    else { values['occupation'] = 'OTHERS'; values['occupationOther'] = occ; }
+  }
+  // Designation শুধু একই লাইনে থাকলে (ফাঁকা হলে খালিই থাকবে)
+  put('empdesignation', grab(/Designation\/Rank[ \t]+([A-Za-z0-9 ./'-]+)/));
   put('empname', grab(/Employer name\/business\s+([^\n]+)/));
-  put('empaddress', grab(/Employer Address\s*\n?\s*(?:Phone Number\s+)?([^\n]+)/));
-  const empPhoneOnly = grab(/Phone Number\s+([0-9+]{6,})\s*(?:\n|Past)/);
-  if (empPhoneOnly) values['empphone'] = empPhoneOnly;
+  // Employer Address + Phone — layout ভিন্ন হতে পারে, তাই block থেকে ভাগ করি
+  const profBlock = rawBlock(/Employer Address/, /Past occupation/);
+  profBlock.split('\n').map((l) => l.replace(/Phone Number/i, '')).map(clean).filter(Boolean).forEach((l) => {
+    if (/^[0-9+][0-9+\s-]{5,}$/.test(l)) { if (!values['empphone']) values['empphone'] = l.replace(/\s/g, ''); }
+    else if (!values['empaddress']) values['empaddress'] = l;
+  });
   const mil = grab(/Armed forces\/\s*Police[^\n]*?\b(YES|NO)\b/i);
   if (mil) flags.military = mil.toUpperCase();
 
@@ -213,11 +226,15 @@ export function parseVisaPdf(rawText) {
     values['place_of_stay1'] = clean(rest); // Place + Address মিলিয়ে — edit করে ভাগ করা যায়
   }
 
-  // ---------- I. References ----------
-  const refPhones = T.match(/Phone Number\s+([0-9+]{6,})\s+([0-9+]{6,})/);
-  if (refPhones) { values['phoneofsponsor_ind'] = refPhones[1]; values['phoneofsponsor_msn'] = refPhones[2]; }
-  const refNames = grab(/I\. Details of Two Reference[\s\S]*?Name\s+([^\n]+)/);
-  if (refNames) values['nameofsponsor_ind'] = refNames; // দুই কলাম মিশে থাকতে পারে — edit করে নিন
+  // ---------- I. References (দুই কলাম: India | Bangladesh, Tab দিয়ে আলাদা) ----------
+  parseReferences(TAB, values);
+
+  // ---------- Present == Permanent হলে "same address" checkbox ----------
+  const norm = (s) => (s || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (values['pres_add1'] && norm(values['pres_add1']) === norm(values['perm_address1']) &&
+      norm(values['pres_add2']) === norm(values['perm_address2'])) {
+    flags.sameAddress = true;
+  }
 
   // ---------- Registration (Mission) ডিফল্ট + Purpose কোড ----------
   values['countryname_id'] = values['countryname_id'] || 'BGD';
@@ -229,6 +246,51 @@ export function parseVisaPdf(rawText) {
 
   const name = clean((values['givenName'] || '') + ' ' + (values['surname'] || '')) || 'New Profile';
   return { values, flags, name };
+}
+
+// ভারতের রাজ্য (site stateofsponsor_ind option) — দীর্ঘতমটা আগে মেলাতে length-এ sort
+const STATES = ['ANDAMAN AND NICOBAR ISLANDS', 'ANDHRA PRADESH', 'ARUNACHAL PRADESH', 'ASSAM', 'BIHAR', 'CHANDIGARH', 'CHHATTISGARH', 'DADRA NAGAR HAVELI AND DAMAN AND DIU', 'DADRA NAGAR HAVELI', 'DELHI', 'GOA', 'GUJARAT', 'HARYANA', 'HIMACHAL PRADESH', 'JAMMU AND KASHMIR', 'JHARKHAND', 'KARNATAKA', 'KERALA', 'LADAKH', 'LAKSHADWEEP', 'MADHYA PRADESH', 'MAHARASHTRA', 'MANIPUR', 'MEGHALAYA', 'MIZORAM', 'NAGALAND', 'ORISSA', 'PONDICHERRY', 'PUNJAB', 'RAJASTHAN', 'SIKKIM', 'TAMIL NADU', 'TELANGANA', 'TRIPURA', 'UTTARAKHAND', 'UTTAR PRADESH', 'WEST BENGAL'].sort((a, b) => b.length - a.length);
+// পশ্চিমবঙ্গের জেলা (BD→India reference প্রায় সবসময় WB) — দীর্ঘতমটা আগে
+const WB_DIST = ['ALIPURDUAR', 'BANKURA', 'BIRBHUM', 'DARJILING', 'EAST BURDWAN', 'EAST MIDNAPORE', 'HAWRAH', 'HOOGHLY', 'JALPAIGURI', 'JHARGRAM', 'KALIMPONG', 'KOCH BIHAR', 'KOLKATA', 'MALDA', 'MURSHIDABAD', 'NADIA', 'NORTH 24 PARGANAS', 'NORTH DINAJPUR', 'PURBABARDHAMAN', 'PURULIYA', 'SOUTH 24 PARGANAS', 'SOUTH DINAJPUR', 'WEST BURDWAN', 'WEST MIDNAPORE'].sort((a, b) => b.length - a.length);
+
+const rclean = (s) => (s || '').replace(/\s+/g, ' ').replace(/^[,\s]+|[,\s]+$/g, '').trim();
+
+function assignRef(segs, values, ids) {
+  if (!segs.length) return;
+  values[ids.name] = rclean(segs[0]);
+  let phone = '';
+  if (/^[0-9+][0-9+\s-]{6,}$/.test(segs[segs.length - 1])) phone = segs.pop().replace(/[^0-9+]/g, '');
+  if (phone) values[ids.phone] = phone;
+  let addr = rclean(segs.slice(1).join(' '));
+  if (ids.state && addr) {
+    const st = STATES.find((s) => new RegExp('\\b' + s.replace(/[-/]/g, '\\$&') + '\\b').test(addr.toUpperCase()));
+    if (st) { values[ids.state] = st; addr = rclean(addr.replace(new RegExp(st, 'i'), '')); }
+    const dt = WB_DIST.find((d) => addr.toUpperCase().includes(d));
+    if (dt) { values[ids.dist] = dt; addr = rclean(addr.replace(new RegExp(dt, 'i'), '')); }
+  }
+  const parts = addr.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length) {
+    const half = Math.ceil(parts.length / 2);
+    values[ids.a1] = parts.slice(0, half).join(', ');
+    if (parts.length > half) values[ids.a2] = parts.slice(half).join(', ');
+  }
+}
+
+// References ব্লক: প্রতি লাইন Tab দিয়ে [label, India, Bangladesh] — কলাম বেছে নিই
+function parseReferences(T, values) {
+  const m = T.match(/I\. Details of Two Reference([\s\S]*?)(?:\n\s*I\. DOCUMENTS|\n\s*K\. DECLARATION|$)/);
+  if (!m) return;
+  const indSegs = [], bdSegs = [];
+  for (const raw of m[1].split('\n')) {
+    const parts = raw.split('\t');
+    // কমা রেখে দিই (ঠিকানার অংশ যেন না মেশে), শুধু whitespace trim
+    const ind = (parts[1] || '').replace(/\s+/g, ' ').trim();
+    const bd = (parts[2] || '').replace(/\s+/g, ' ').trim();
+    if (ind && !/^In India$/i.test(ind)) indSegs.push(ind);
+    if (bd && !/^In BANGLADESH$/i.test(bd)) bdSegs.push(bd);
+  }
+  assignRef(indSegs, values, { name: 'nameofsponsor_ind', a1: 'add1ofsponsor_ind', a2: 'add2ofsponsor_ind', phone: 'phoneofsponsor_ind', state: 'stateofsponsor_ind', dist: 'districtofsponsor_ind' });
+  assignRef(bdSegs, values, { name: 'nameofsponsor_msn', a1: 'add1ofsponsor_msn', a2: 'add2ofsponsor_msn', phone: 'phoneofsponsor_msn' });
 }
 
 function renameFamily(values, prefix, map) {

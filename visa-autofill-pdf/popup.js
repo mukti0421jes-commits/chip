@@ -225,21 +225,35 @@ function saveImported(res) {
   openEditor(id);
 }
 
-// text-PDF: সব পেজের লেখা এক করে ফেরত দেয় (0 হলে বুঝব এটা image-PDF)
+// text-PDF: সব পেজের লেখা এক করে ফেরত দেয় (0 হলে বুঝব এটা image-PDF)।
+// কলাম-ওলা অংশ (References ইত্যাদি) ধরার জন্য বড় x-ফাঁকে Tab বসাই, আর লাইন
+// মাঝ-কলামে শুরু হলে সামনে Tab দিয়ে প্যাড করি (label≈41, India≈170, BD≈300)।
 async function pdfText(doc) {
-  let full = '';
+  let plain = '', tabbed = '';
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const tc = await page.getTextContent();
+    // plain: আগের মতো y ধরে জোড়া (family/address/occupation ইত্যাদির জন্য)
     let line = '', lastY = null;
     for (const it of tc.items) {
       const y = Math.round(it.transform[5]);
-      if (lastY !== null && Math.abs(y - lastY) > 3) { full += line + '\n'; line = ''; }
+      if (lastY !== null && Math.abs(y - lastY) > 3) { plain += line + '\n'; line = ''; }
       line += it.str; lastY = y;
     }
-    full += line + '\n';
+    plain += line + '\n';
+    // tabbed: row-wise, প্রতি item Tab দিয়ে + x-band leading pad (শুধু References কলামের জন্য)
+    const rows = new Map();
+    for (const it of tc.items) { const y = Math.round(it.transform[5]); if (!rows.has(y)) rows.set(y, []); rows.get(y).push(it); }
+    for (const y of [...rows.keys()].sort((a, b) => b - a)) {
+      const items = rows.get(y).filter((it) => it.str.trim() !== '').sort((a, b) => a.transform[4] - b.transform[4]);
+      if (!items.length) continue;
+      const x0 = items[0].transform[4];
+      let tl = x0 >= 285 ? '\t\t' : x0 >= 130 ? '\t' : '', first = true;
+      for (const it of items) { if (!first) tl += '\t'; tl += it.str; first = false; }
+      tabbed += tl + '\n';
+    }
   }
-  return full;
+  return plain + '\n<<<TABS>>>\n' + tabbed;
 }
 
 async function pdfPageToCanvas(page, scale = 2) {
