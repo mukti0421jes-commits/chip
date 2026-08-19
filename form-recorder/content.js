@@ -181,21 +181,24 @@
       }
     }
 
-    // dependent dropdown (State → District): option AJAX-এ আসতে সময় লাগে,
-    // তাই না-বসা select গুলো কয়েক সেকেন্ড ধরে বারবার চেষ্টা করি
-    for (let attempt = 0; attempt < 12 && pendingSelects.length; attempt++) {
-      await sleep(400);
+    // dependent dropdown (State → District): option AJAX-এ আসতে সময় লাগে, আবার
+    // State বদলের AJAX আমাদের বসানো District পরে রিসেটও করতে পারে। তাই কয়েক সেকেন্ড
+    // ধরে বারবার বসাই, আর মান পরপর কয়েকবার স্থির থাকলে তবেই "done" ধরি।
+    for (let attempt = 0; attempt < 24 && pendingSelects.length; attempt++) {
+      await sleep(500);
       for (let i = pendingSelects.length - 1; i >= 0; i--) {
+        const entry = pendingSelects[i];
         let el = null;
         try {
-          el = document.querySelector(pendingSelects[i].selector);
+          el = document.querySelector(entry.selector);
         } catch (_) {
           /* skip */
         }
-        if (el && setSelectSmart(el, pendingSelects[i].value)) {
-          filled++;
-          pendingSelects.splice(i, 1);
-        }
+        if (!el) continue;
+        setSelectSmart(el, entry.value); // প্রতিবার আবার বসাই (দেরির AJAX-reset ঠেকাতে)
+        const ok = el.value && el.value.toUpperCase() === String(entry.value).toUpperCase();
+        entry._ok = ok ? (entry._ok || 0) + 1 : 0;
+        if (entry._ok >= 8) { filled++; pendingSelects.splice(i, 1); } // ~4s স্থির থাকলে done
       }
     }
 
