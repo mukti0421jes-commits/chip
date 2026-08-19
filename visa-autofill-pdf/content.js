@@ -103,6 +103,31 @@
     if (flags.military) clickRadio(flags.military === 'YES' ? 'prev_org1' : 'prev_org2');
   }
 
+  // Registration পেজ: dropdown গুলো ধাপে ধাপে AJAX-এ লোড হয়, তাই ক্রম মেনে অপেক্ষা করে ভরি
+  async function fillRegistration(data) {
+    const v = data.values || {};
+    if (v.countryname_id) { fillById('countryname_id', v.countryname_id); await sleep(700); }
+    if (v.missioncode_id) { fillById('missioncode_id', v.missioncode_id); await sleep(500); }
+    // Nationality option AJAX-এ আসে — অপেক্ষা করে সেট (এতে Purpose AJAX-ও শুরু হয়)
+    if (v.nationality_id) { await waitAndSet('nationality_id', v.nationality_id, 8000); await sleep(500); }
+
+    const setTexts = () => {
+      fillById('dob_id', v.dob_id);
+      fillById('email_id', v.email_id);
+      fillById('email_re_id', v.email_re_id || v.email_id);
+      fillById('jouryney_id', v.jouryney_id);
+    };
+    setTexts();
+    mainWorld({ purpose: v.visaPurposeDropdown || '' }); // chosen Purpose + datepicker বন্ধ
+    await sleep(700);
+    setTexts(); // AJAX reset ঠেকাতে আবার
+    mainWorld({ purpose: v.visaPurposeDropdown || '' });
+
+    const cap = document.getElementById('captcha');
+    if (cap) cap.focus();
+    showBadge('✔ ফিল হয়েছে — CAPTCHA টাইপ করে Continue চাপুন', '#27ae60');
+  }
+
   async function fillPage(data) {
     const values = data.values || {};
     const flags = data.flags || {};
@@ -151,6 +176,12 @@
       setAutoConfirm(true);
       const purpose = (active.values || {}).visaPurposeDropdown || '';
       try {
+        // Registration পেজ আলাদা — cascading dropdown ক্রম মেনে ভরতে হয়
+        if (isRegistration) {
+          await fillRegistration(active);
+          return; // Registration পেজে কখনো অটো-Continue নয়
+        }
+
         await fillPage(active);
         await sleep(1200);
         await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
@@ -158,13 +189,6 @@
         // chosen Purpose সেট + খোলা datepicker বন্ধ (পেজের jQuery দিয়ে, MAIN world)
         mainWorld({ purpose });
         setTimeout(() => mainWorld({ purpose }), 1500); // purpose option AJAX-এ এলে আবার
-
-        if (isRegistration) {
-          const cap = document.getElementById('captcha');
-          if (cap) cap.focus();
-          showBadge('✔ ফিল হয়েছে — CAPTCHA টাইপ করে Continue চাপুন', '#27ae60');
-          return; // Registration পেজে কখনো অটো-Continue নয়
-        }
 
         if (res.vaAutoContinue === true) {
           await sleep(500);
