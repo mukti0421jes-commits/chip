@@ -20,6 +20,21 @@ function clean(s) {
   return (s || '').replace(/\s+/g, ' ').replace(/^[,\s]+|[,\s]+$/g, '').trim();
 }
 
+// লম্বা লেখা শব্দ ধরে maxLen অক্ষরের maxLines লাইনে ভাগ করে (৩৫-অক্ষরের ঘরগুলোর জন্য)
+function packInto(text, maxLen, maxLines) {
+  const words = clean(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const t = cur ? cur + ' ' + w : w;
+    if (t.length <= maxLen) cur = t;
+    else if (lines.length < maxLines - 1) { lines.push(cur); cur = w; }
+    else cur = t; // শেষ লাইন — বাকিটা এখানেই (সাইট ৩৫-এ কেটে নেবে)
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, maxLines);
+}
+
 // PDF text (পুরোটা এক string) থেকে তথ্য বের করে {values, flags, name} ফেরত দেয়
 export function parseVisaPdf(rawText) {
   // plain অংশ সব parsing-এ, tabbed অংশ শুধু References কলাম আলাদা করতে
@@ -167,10 +182,13 @@ export function parseVisaPdf(rawText) {
   if (visited) {
     flags.visitedIndia = visited.toUpperCase();
     if (flags.visitedIndia === 'YES') {
-      const blk = grab(/Address where You stayed in\s*India\s*([\s\S]*?)\s*Cities in India Visited/);
-      const bl = blk.split('\n').map(clean).filter(Boolean);
-      if (bl[0]) values['prv_visit_add1'] = bl[0];
-      if (bl[1]) values['prv_visit_add2'] = bl.slice(1).join(' ');
+      // raw block (newline রাখা) → 'India' label বাদ → ৩৫ অক্ষরের ৩ লাইনে ভাগ
+      const blkRaw = rawBlock(/Address where You stayed in/, /Cities in India Visited/);
+      const full = clean(blkRaw).replace(/^India\s+/i, '');
+      const ln = packInto(full, 35, 3);
+      if (ln[0]) values['prv_visit_add1'] = ln[0];
+      if (ln[1]) values['prv_visit_add2'] = ln[1];
+      if (ln[2]) values['prv_visit_add3'] = ln[2];
       put('visited_city', grab(/Cities in India Visited\s+([^\n]+)/));
       put('old_visa_type_id', grab(/Type of Visa\s+([A-Za-z ]+?)\s+Visa Number/));
       put('old_visa_no', grab(/Visa Number\s+([A-Za-z0-9]+)/));
