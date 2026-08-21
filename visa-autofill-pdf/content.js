@@ -104,6 +104,26 @@
     if (flags.military) clickRadio(flags.military === 'YES' ? 'prev_org1' : 'prev_org2');
   }
 
+  // Additional Questions পেজ: প্রতিটা প্রশ্নের radio "No" + declaration checkbox টিক
+  function fillAdditionalQuestions() {
+    const groups = {};
+    document.querySelectorAll('input[type="radio"]').forEach((r) => {
+      const k = r.name || r.id;
+      (groups[k] = groups[k] || []).push(r);
+    });
+    let n = 0;
+    for (const k in groups) {
+      const no = groups[k].find((r) => /^\s*n(o)?\s*$/i.test(r.value)) ||
+        groups[k].find((r) => /\bno\b/i.test(r.value)) ||
+        groups[k].find((r) => /\bno\b/i.test((document.querySelector('label[for="' + r.id + '"]') || {}).textContent || ''));
+      if (no) { if (!no.checked) no.click(); n++; }
+    }
+    // declaration checkbox (নিচের "I ... hereby declare")
+    document.querySelectorAll('input[type="checkbox"]').forEach((c) => { if (!c.disabled && !c.checked) c.click(); });
+    showBadge('✔ সব প্রশ্ন No + declaration টিক — যাচাই করে Continue চাপুন', '#27ae60');
+    return n;
+  }
+
   // Registration পেজ: dropdown গুলো ধাপে ধাপে AJAX-এ লোড হয়, তাই ক্রম মেনে অপেক্ষা করে ভরি
   async function fillRegistration(data) {
     const v = data.values || {};
@@ -172,6 +192,17 @@
       if (/PhotoUpload/i.test(path)) { showBadge('⚠ ছবি আপলোড ম্যানুয়ালি করুন', '#c0392b'); return; }
       if (/DocumentUpload/i.test(path)) { showBadge('⚠ ডকুমেন্ট আপলোড ম্যানুয়ালি করুন', '#c0392b'); return; }
       if (/Confirm/i.test(path)) { showBadge('👀 সব যাচাই করে তারপর Confirm করুন', '#e67e22'); return; }
+
+      // Additional Questions পেজ: ৬টা প্রশ্নই "No" + declaration checkbox টিক
+      if (/AdditionalQuestion/i.test(path)) {
+        fillAdditionalQuestions();
+        if (res.vaAutoContinue === true) {
+          await sleep(500);
+          const btn = document.getElementById('continue');
+          if (btn) { showBadge('➡ অটো-Continue...', '#2980b9'); await sleep(400); btn.click(); }
+        }
+        return;
+      }
 
       const isRegistration = /Registration/i.test(path);
       setAutoConfirm(true);
