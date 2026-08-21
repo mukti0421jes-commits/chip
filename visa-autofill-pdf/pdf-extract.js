@@ -74,7 +74,8 @@ export function parseVisaPdf(rawText) {
   put('passport_issue_place', grab(/Place of Issue\s+([A-Za-z .'-]+?)\s+Date of Expiry/));
   put('passport_expiry_date', toDate(grab(/Date of Expiry\s*\(?[^)]*\)?\s+([0-9A-Za-z-]+)/)));
 
-  const other = grab(/Any other Passport\/Identity Certificate held[^\n]*?\b(YES|NO)\b/i);
+  // লাইনে "(if yes ...)" থাকে, তাই lazy নয় — greedy দিয়ে লাইনের শেষ YES/NO (আসল উত্তর) নিই
+  const other = grab(/Any other Passport\/Identity Certificate held.*\b(YES|NO)\b/i);
   if (other) {
     flags.otherPassport = other.toUpperCase();
     if (flags.otherPassport === 'YES') {
@@ -197,7 +198,7 @@ export function parseVisaPdf(rawText) {
     }
   }
   put('country_visited', grab(/Countries visited in last 10 years\s+([^\n]+)/));
-  const refused = grab(/refused an Indian Visa[^\n]*?\b(YES|NO)\b/i);
+  const refused = grab(/refused an Indian Visa.*\b(YES|NO)\b/i);
   if (refused) flags.refused = refused.toUpperCase();
 
   // ---------- G. Profession ----------
