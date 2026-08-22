@@ -125,8 +125,12 @@
   // খোলা jQuery-UI datepicker বন্ধ করা: focus সরানো + বাইরে mousedown (outside-click) + hide
   function closeDatepickers() {
     try {
+      // প্রতিটা datepicker ঘরে Escape পাঠাই (jQuery-UI এতে নিশ্চিত বন্ধ হয়) + blur
+      document.querySelectorAll("input.hasDatepicker").forEach((el) => {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, which: 27, bubbles: true }));
+        if (el.blur) el.blur();
+      });
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      document.querySelectorAll("input.hasDatepicker").forEach((el) => el.blur && el.blur());
       document.body && document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       document.querySelectorAll("#ui-datepicker-div").forEach((d) => { d.style.display = "none"; });
     } catch (_) { /* ignore */ }
