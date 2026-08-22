@@ -184,8 +184,25 @@
     // dependent dropdown (State → District): option AJAX-এ আসতে সময় লাগে, আবার
     // State বদলের AJAX আমাদের বসানো District পরে রিসেটও করতে পারে। তাই কয়েক সেকেন্ড
     // ধরে বারবার বসাই, আর মান পরপর কয়েকবার স্থির থাকলে তবেই "done" ধরি।
-    for (let attempt = 0; attempt < 24 && pendingSelects.length; attempt++) {
+    for (let attempt = 0; attempt < 30 && pendingSelects.length; attempt++) {
       await sleep(500);
+
+      // pending select-এর option এখনো না এলে (≤১টা), সম্ভাব্য parent (State ইত্যাদি
+      // যেসব select-এ মান বসেছে) এর change আবার fire করি — যাতে fetchDistrict-এর মতো
+      // AJAX আবার চলে District-এর option নিয়ে আসে।
+      const stuck = pendingSelects.some((e) => {
+        try { const el = document.querySelector(e.selector); return el && el.options.length <= 1; } catch (_) { return false; }
+      });
+      if (stuck) {
+        const pendingEls = pendingSelects.map((e) => { try { return document.querySelector(e.selector); } catch (_) { return null; } });
+        document.querySelectorAll('select').forEach((s) => {
+          if (s.value && s.options.length > 1 && pendingEls.indexOf(s) === -1) {
+            s.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+        await sleep(300); // AJAX শুরু হওয়ার একটু সময়
+      }
+
       for (let i = pendingSelects.length - 1; i >= 0; i--) {
         const entry = pendingSelects[i];
         let el = null;
