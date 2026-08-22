@@ -159,7 +159,7 @@
     }
     let filled = 0;
     const entries = Object.values(data);
-    const pendingSelects = []; // যেসব select প্রথমবার বসেনি (option AJAX-এ আসে)
+    const selectEntries = []; // সব <select> — শেষে স্থিরতার জন্য নজরে রাখব
     for (const entry of entries) {
       let el = null;
       try {
@@ -172,8 +172,8 @@
         if (el.checked !== entry.checked) el.click();
         filled++;
       } else if (entry.type === "select") {
-        if (setSelectSmart(el, entry.value)) filled++;
-        else pendingSelects.push(entry); // District-এর মতো dependent dropdown
+        setSelectSmart(el, entry.value);
+        selectEntries.push(entry); // পরে monitor করব
       } else {
         el.focus();
         setNativeValue(el, entry.value);
@@ -181,42 +181,40 @@
       }
     }
 
-    // dependent dropdown (State → District): option AJAX-এ আসতে সময় লাগে, আবার
-    // State বদলের AJAX আমাদের বসানো District পরে রিসেটও করতে পারে। তাই কয়েক সেকেন্ড
-    // ধরে বারবার বসাই, আর মান পরপর কয়েকবার স্থির থাকলে তবেই "done" ধরি।
-    for (let attempt = 0; attempt < 30 && pendingSelects.length; attempt++) {
+    // সব <select> নজরে রাখি: State→District এর মতো dependent dropdown-এর option
+    // দেরিতে আসে, আবার State-এর AJAX আগে-বসানো District কে পরে খালি/বদলে দিতে পারে।
+    // তাই মান রেকর্ড-করা মানের সাথে না মিললে আবার বসাই; সব ঠিকমতো কয়েক সেকেন্ড
+    // স্থির থাকলে তবেই থামি।
+    for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(500);
 
-      // pending select-এর option এখনো না এলে (≤১টা), সম্ভাব্য parent (State ইত্যাদি
-      // যেসব select-এ মান বসেছে) এর change আবার fire করি — যাতে fetchDistrict-এর মতো
-      // AJAX আবার চলে District-এর option নিয়ে আসে।
-      const stuck = pendingSelects.some((e) => {
-        try { const el = document.querySelector(e.selector); return el && el.options.length <= 1; } catch (_) { return false; }
+      // কোনো select-এর option এখনো না এলে (≤১টা) — সম্ভাব্য parent (State) এর change
+      // আবার fire করি যাতে fetchDistrict-এর মতো AJAX অপশন এনে দেয়।
+      const stuck = selectEntries.some((e) => {
+        try { const el = document.querySelector(e.selector); return el && el.value.toUpperCase() !== String(e.value).toUpperCase() && el.options.length <= 1; } catch (_) { return false; }
       });
       if (stuck) {
-        const pendingEls = pendingSelects.map((e) => { try { return document.querySelector(e.selector); } catch (_) { return null; } });
         document.querySelectorAll('select').forEach((s) => {
-          if (s.value && s.options.length > 1 && pendingEls.indexOf(s) === -1) {
-            s.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          if (s.value && s.options.length > 1) s.dispatchEvent(new Event('change', { bubbles: true }));
         });
-        await sleep(300); // AJAX শুরু হওয়ার একটু সময়
+        await sleep(300);
       }
 
-      for (let i = pendingSelects.length - 1; i >= 0; i--) {
-        const entry = pendingSelects[i];
+      let allStable = true;
+      for (const entry of selectEntries) {
         let el = null;
-        try {
-          el = document.querySelector(entry.selector);
-        } catch (_) {
-          /* skip */
-        }
+        try { el = document.querySelector(entry.selector); } catch (_) { /* skip */ }
         if (!el) continue;
-        setSelectSmart(el, entry.value); // প্রতিবার আবার বসাই (দেরির AJAX-reset ঠেকাতে)
-        const ok = el.value && el.value.toUpperCase() === String(entry.value).toUpperCase();
-        entry._ok = ok ? (entry._ok || 0) + 1 : 0;
-        if (entry._ok >= 8) { filled++; pendingSelects.splice(i, 1); } // ~4s স্থির থাকলে done
+        const cur = (el.value || '').toUpperCase();
+        const want = String(entry.value).toUpperCase();
+        if (cur !== want) { setSelectSmart(el, entry.value); entry._ok = 0; allStable = false; } // বদলে গেছে — আবার বসাই
+        else { entry._ok = (entry._ok || 0) + 1; if (entry._ok < 6) allStable = false; } // ~3s স্থির লাগবে
       }
+      if (allStable) break;
+    }
+    // যেসব select শেষমেশ ঠিক আছে সেগুলো গোনা
+    for (const entry of selectEntries) {
+      try { const el = document.querySelector(entry.selector); if (el && (el.value || '').toUpperCase() === String(entry.value).toUpperCase()) filled++; } catch (_) { /* skip */ }
     }
 
     applyForcedRules();
