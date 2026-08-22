@@ -185,19 +185,21 @@
     // দেরিতে আসে, আবার State-এর AJAX আগে-বসানো District কে পরে খালি/বদলে দিতে পারে।
     // তাই মান রেকর্ড-করা মানের সাথে না মিললে আবার বসাই; সব ঠিকমতো কয়েক সেকেন্ড
     // স্থির থাকলে তবেই থামি।
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 16; attempt++) {
       await sleep(500);
 
-      // কোনো select-এর option এখনো না এলে (≤১টা) — সম্ভাব্য parent (State) এর change
-      // আবার fire করি যাতে fetchDistrict-এর মতো AJAX অপশন এনে দেয়।
-      const stuck = selectEntries.some((e) => {
-        try { const el = document.querySelector(e.selector); return el && el.value.toUpperCase() !== String(e.value).toUpperCase() && el.options.length <= 1; } catch (_) { return false; }
-      });
-      if (stuck) {
-        document.querySelectorAll('select').forEach((s) => {
-          if (s.value && s.options.length > 1) s.dispatchEvent(new Event('change', { bubbles: true }));
+      // কোনো select এখনো না মিললে ও option না এলে — সম্ভাব্য parent (State) এর change
+      // আবার fire করি (fetchDistrict AJAX-এর জন্য)। spam এড়াতে প্রতি ৪ বারে একবার।
+      if (attempt % 4 === 0) {
+        const stuck = selectEntries.some((e) => {
+          try { const el = document.querySelector(e.selector); return el && el.value.toUpperCase() !== String(e.value).toUpperCase() && el.options.length <= 1; } catch (_) { return false; }
         });
-        await sleep(300);
+        if (stuck) {
+          document.querySelectorAll('select').forEach((s) => {
+            if (s.value && s.options.length > 1) s.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          await sleep(300);
+        }
       }
 
       let allStable = true;
@@ -207,15 +209,21 @@
         if (!el) continue;
         const cur = (el.value || '').toUpperCase();
         const want = String(entry.value).toUpperCase();
-        if (cur !== want) { setSelectSmart(el, entry.value); entry._ok = 0; allStable = false; } // বদলে গেছে — আবার বসাই
-        else { entry._ok = (entry._ok || 0) + 1; if (entry._ok < 6) allStable = false; } // ~3s স্থির লাগবে
+        if (cur === want) { entry._ok = (entry._ok || 0) + 1; if (entry._ok < 4) allStable = false; } // ~2s স্থির
+        else {
+          entry._miss = (entry._miss || 0) + 1;
+          if (entry._miss <= 10) { setSelectSmart(el, entry.value); allStable = false; } // ১০ বার চেষ্টা, তারপর ছেড়ে দিই (আর ব্লক করে না)
+        }
       }
       if (allStable) break;
     }
-    // যেসব select শেষমেশ ঠিক আছে সেগুলো গোনা
     for (const entry of selectEntries) {
       try { const el = document.querySelector(entry.selector); if (el && (el.value || '').toUpperCase() === String(entry.value).toUpperCase()) filled++; } catch (_) { /* skip */ }
     }
+
+    // date ঘর ভরার সময় খোলা jQuery-UI datepicker বন্ধ করি (নইলে খোলা থেকে হ্যাং লাগে)
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    document.querySelectorAll('#ui-datepicker-div').forEach((d) => { d.style.display = 'none'; });
 
     applyForcedRules();
     flashBanner(`✅ ${filled}/${entries.length} টি ফিল্ড পূরণ হয়েছে`);
