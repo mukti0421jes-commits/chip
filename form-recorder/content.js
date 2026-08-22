@@ -122,6 +122,16 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // খোলা jQuery-UI datepicker বন্ধ করা: focus সরানো + বাইরে mousedown (outside-click) + hide
+  function closeDatepickers() {
+    try {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      document.querySelectorAll("input.hasDatepicker").forEach((el) => el.blur && el.blur());
+      document.body && document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      document.querySelectorAll("#ui-datepicker-div").forEach((d) => { d.style.display = "none"; });
+    } catch (_) { /* ignore */ }
+  }
+
   // <select> এর জন্য: option value মিললে value দিয়ে, নাহলে দৃশ্যমান লেখা দিয়ে মেলায়।
   // মিলিয়ে সেট করতে পারলে true; option এখনো না এলে (dependent dropdown) false।
   function setSelectSmart(el, value) {
@@ -175,8 +185,9 @@
         setSelectSmart(el, entry.value);
         selectEntries.push(entry); // পরে monitor করব
       } else {
-        el.focus();
+        // date ঘরে focus করলে datepicker খুলে যায় — তাই focus ছাড়াই মান বসাই
         setNativeValue(el, entry.value);
+        if (el.classList && el.classList.contains("hasDatepicker") && el.blur) el.blur();
         filled++;
       }
     }
@@ -221,9 +232,8 @@
       try { const el = document.querySelector(entry.selector); if (el && (el.value || '').toUpperCase() === String(entry.value).toUpperCase()) filled++; } catch (_) { /* skip */ }
     }
 
-    // date ঘর ভরার সময় খোলা jQuery-UI datepicker বন্ধ করি (নইলে খোলা থেকে হ্যাং লাগে)
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    document.querySelectorAll('#ui-datepicker-div').forEach((d) => { d.style.display = 'none'; });
+    // খোলা jQuery-UI datepicker জোর করে বন্ধ করি: focus সরাই + বাইরে click + hide
+    closeDatepickers();
 
     applyForcedRules();
     flashBanner(`✅ ${filled}/${entries.length} টি ফিল্ড পূরণ হয়েছে`);
