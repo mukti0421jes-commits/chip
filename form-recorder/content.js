@@ -467,6 +467,14 @@
             sendResponse({ ok: true });
             break;
           }
+          case "snapshotAll": {
+            // এই ট্যাবের বর্তমানে-ভরা সব ঘর তুলে সাথে সাথে সেভ করি (record mode ছাড়াই)
+            captureAllFields();
+            clearTimeout(saveTimer);
+            await chrome.storage.local.set({ [pageKey()]: pageData });
+            sendResponse({ ok: true, count: Object.keys(pageData).length, path: location.pathname });
+            break;
+          }
         }
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });

@@ -90,4 +90,23 @@ document.getElementById("cleanall").addEventListener("click", async () => {
   statusEl.textContent = `🧹 ${keys.length} টি page-এর record মুছে ফেলা হয়েছে।`;
 });
 
+// এক ক্লিকে সব খোলা ট্যাবের বর্তমানে-ভরা ঘরগুলো record করে (প্রতি ট্যাব তার নিজের page-key তে)
+document.getElementById("recordall").addEventListener("click", async () => {
+  statusEl.textContent = "⏳ সব ট্যাব record হচ্ছে...";
+  const tabs = await chrome.tabs.query({});
+  let okTabs = 0, totalFields = 0;
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (!tab.id) return;
+      try {
+        const res = await chrome.tabs.sendMessage(tab.id, { cmd: "snapshotAll" });
+        if (res && res.ok && res.count > 0) { okTabs++; totalFields += res.count; }
+      } catch (_) { /* এই ট্যাবে content script নেই — বাদ */ }
+    })
+  );
+  statusEl.textContent = okTabs
+    ? `⏺⏺ ${okTabs} টি ট্যাব record হয়েছে (মোট ${totalFields} টি ফিল্ড)।`
+    : "কোনো ট্যাবে ভরা ফর্ম পাওয়া যায়নি।";
+});
+
 refresh();
