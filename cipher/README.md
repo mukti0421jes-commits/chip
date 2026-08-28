@@ -1,9 +1,9 @@
 # cipher
 
-A small, self-contained Go package demonstrating two **reversible, key-derived**
-string ciphers over a 64-character alphabet. This is educational/generic crypto
-code — it transforms arbitrary sample strings and is not tied to any external
-service.
+A Go port of the RJ SLOT captcha-token ciphers, matching the site's browser
+bundle **byte-for-byte**. Tokens encrypted here can be decrypted by the server
+because every cipher version reproduces the exact output of the reference
+JavaScript module (`rjslotencryptionmodule.js`).
 
 ## Alphabet
 
@@ -15,7 +15,7 @@ service.
 
 ## How the skip / encryptLen window works
 
-Both ciphers split the input into three parts and only transform the middle:
+Every version splits the input into three parts and only transforms the middle:
 
 ```
 token = [ prefix (skip chars) ][ middle (encryptLen chars) ][ suffix ]
@@ -24,28 +24,39 @@ token = [ prefix (skip chars) ][ middle (encryptLen chars) ][ suffix ]
 
 Characters not in the alphabet are passed through unchanged.
 
-## Cipher 1 — "Cellular Automaton v3" (sign-in)
+## Cipher versions
 
-A **keyed polyalphabetic shift** (Vigenère-style over the 64-char alphabet):
+`EncryptByVersion(version, token, key, skip, encryptLen, modulus)` selects the
+algorithm, exactly like `encryptByVersion` in the JS bundle. `DecryptByVersion`
+inverts it. `modulus` is only used by v9 (pass `0` for the default).
 
-1. A deterministic key stream (SplitMix64 seeded from an FNV-1a hash of the key)
-   produces one shift value `shift[i]` in `[0, 64)` per position.
-2. Encrypt: `out[i] = Charset[(idx[i] + shift[i]) % 64]`
-3. Decrypt: `out[i] = Charset[(idx[i] - shift[i]) mod 64]`
+| v  | Name           | Algorithm                                        |
+|----|----------------|--------------------------------------------------|
+| 1  | block_mix      | ChaCha-style keystream (16-word state, 10 rounds)|
+| 2  | bitmix         | 6-bit Feistel network (8 rounds)                 |
+| 3  | cellular_shift | Rule-30 cellular automaton                       |
+| 4  | rc4_shift      | RC4 over a 64-element state                      |
+| 5  | lfsr_shift     | three-LFSR Geffe generator                       |
+| 6  | polynomial     | GF(67) polynomial evaluation                     |
+| 7  | subst_reverse  | RC4-keyed S-box substitution + reverse           |
+| 8  | prng           | LCG additive shift                               |
+| 9  | modular square | Blum-Blum-Shub style (uses `modulus`)            |
+| 10 | logistic_shift | chaotic logistic map (r=3.99, 100-step warmup)   |
 
-Because the shifts come from the key, the same key always reproduces the same
-stream, so decryption is exact.
+Versions 1, 3, 4, 5, 6, 8, 9, 10 are additive shifts (each derives per-position
+shift values from the key); versions 2 and 7 transform each character directly.
 
-## Cipher 2 — "Feistel v2" (reserve slot)
+## Purpose configs
 
-A **keyed bijective substitution**:
+The bot resolves a cipher config per purpose from the live bundle scan and
+stores it in the global config, used by the convenience helpers:
 
-1. The key seeds a Fisher-Yates shuffle that builds a *permutation* of the 64
-   alphabet indices (a one-to-one mapping).
-2. Encrypt: substitute each char through the permutation.
-3. Decrypt: substitute through the inverse permutation.
+- **sign-in** — `ProcessTokenSignin` (default v3, cellular)
+- **reserve slot** — `ProcessTokenReserveSlot` (default v2, bitmix)
+- **initiate / payment (dg-epay)** — `ProcessTokenInitiate`
 
-Being a true permutation guarantees lossless round-trips.
+Update them with `SetSignInCipherConfig`, `SetReserveCipherConfig`, and
+`SetInitiateCipherConfig`.
 
 ## Run the demo
 
@@ -59,5 +70,6 @@ go run ./cmd/demo
 go test ./cipher/
 ```
 
-Tests cover round-trip correctness, key sensitivity, and that the reserve
-permutation is bijective.
+`TestMatchesJSVectors` pins each version's output against the reference vectors
+extracted from the JS module, so any drift from the site's algorithm fails the
+build. Other tests cover round-trip correctness and key sensitivity.
