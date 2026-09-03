@@ -156,14 +156,38 @@ func entryFilesDir(entryID string) string {
 }
 
 // pickFlowProxy returns a proxy URL for the flow's H2 client (empty = direct).
-func pickFlowProxy() string {
-	ps := getEnabledProxies()
-	for _, p := range ps {
+// Deprecated in favor of pickFlowProxyForInstance — kept for callers without an id.
+func pickFlowProxy() string { return pickFlowProxyForInstance(0) }
+
+// pickFlowProxyForInstance gives each instance its OWN proxy from the enabled list,
+// round-robin by instance id, so N instances spread across the available proxies
+// (instance 0→proxy0, 1→proxy1, … wrapping around). Empty list → direct (no proxy).
+func pickFlowProxyForInstance(id int) string {
+	var enabled []ProxyConfig
+	for _, p := range getEnabledProxies() {
 		if p.Enabled {
-			return getProxyURL(p)
+			enabled = append(enabled, p)
 		}
 	}
-	return ""
+	if len(enabled) == 0 {
+		return "" // no proxy configured → direct connection
+	}
+	idx := id % len(enabled)
+	if idx < 0 {
+		idx = 0
+	}
+	return getProxyURL(enabled[idx])
+}
+
+// maskProxy hides any user:pass in a proxy URL before logging it.
+func maskProxy(u string) string {
+	if i := strings.Index(u, "://"); i >= 0 {
+		rest := u[i+3:]
+		if at := strings.LastIndex(rest, "@"); at >= 0 {
+			return u[:i+3] + "***@" + rest[at+1:]
+		}
+	}
+	return u
 }
 
 // loadEntryPDFs reads the applicant PDFs saved for an entry. The file named
@@ -420,6 +444,14 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// per-instance proxy: each instance gets its own proxy from the enabled list.
+	flowProxy := pickFlowProxyForInstance(id)
+	if flowProxy != "" {
+		addLog(id, "🌐 Using proxy: "+maskProxy(flowProxy))
+	} else {
+		addLog(id, "🌐 No proxy — direct connection")
+	}
+
 	go func() {
 		in := FullAutoInput{
 			Phone:      phone,
@@ -428,7 +460,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			Mission:    mission,
 			IvacCenter: center,
 			Files:      files,
-			ProxyURL:   pickFlowProxy(),
+			ProxyURL:   flowProxy,
 			Single:           retry, // retry each step until success (RJ SLOT)
 			Auto:             true,
 			DelaySec:         delaySec,
