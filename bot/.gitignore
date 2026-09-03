@@ -1,0 +1,14 @@
+# runtime state / build artifacts — not source
+ivacbot
+ivacbot.exe
+*.exe
+portal_users.json
+portal_entries.json
+portal_phones.json
+manual_ids.json
+captcha_config.json
+config.json
+proxies.json
+singlehit.json
+cipher_mode.json
+*.log
