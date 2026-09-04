@@ -253,10 +253,12 @@ func portalEntriesAPI(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		pMu.Lock()
 		var instID int
+		deleted := false
 		nn := pEntries[:0]
 		for _, e := range pEntries {
 			if e.ID == id && (u.Role == "admin" || e.Owner == u.Username) {
 				instID = e.InstanceID
+				deleted = true
 				continue // drop it
 			}
 			nn = append(nn, e)
@@ -264,6 +266,14 @@ func portalEntriesAPI(w http.ResponseWriter, r *http.Request) {
 		pEntries = nn
 		portalSaveEntriesLocked()
 		pMu.Unlock()
+		// also delete this entry's uploaded PDF folder so files don't pile up on disk.
+		if deleted {
+			if err := os.RemoveAll(entryFilesDir(id)); err != nil {
+				fmt.Printf("⚠ [Portal] could not remove files for entry %s: %v\n", id, err)
+			} else {
+				fmt.Printf("🗑 [Portal] removed file folder for entry %s\n", id)
+			}
+		}
 		// also remove the linked admin instance
 		if instID != 0 {
 			instancesMu.Lock()
