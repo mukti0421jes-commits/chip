@@ -103,6 +103,9 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			continue
 		}
 		ok, newly := r.uploadOne(f, dev)
+		if r.fatalUpload != nil { // e.g. appointment expired (>30 days) — stop, don't retry
+			return r.fatalUpload
+		}
 		if ok {
 			uploadedOK++
 			if newly {
@@ -296,21 +299,28 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 			}
 			return false, false
 		}
-		// HTTP 409 Conflict = this file is ALREADY uploaded on the server. Treat it
-		// as done (not a failure, not a new upload) and move on — RJ SLOT parity.
-		if resp.Status == 409 {
-			r.log("✔ " + f.Name + " — already uploaded (HTTP 409), treating as done")
-			return true, false
-		}
 		// success = 2xx AND (no statusCode, or statusCode 2xx)
 		var body struct {
-			StatusCode *int `json:"statusCode"`
+			StatusCode *int   `json:"statusCode"`
+			Message    string `json:"message"`
 		}
 		_ = json.Unmarshal(resp.Body, &body)
-		// a body statusCode of 409 can also ride on a 200 envelope — same meaning.
-		if body.StatusCode != nil && *body.StatusCode == 409 {
-			r.log("✔ " + f.Name + " — already uploaded (statusCode 409), treating as done")
+		msg := strings.ToLower(body.Message)
+
+		// ALREADY UPLOADED — detect by HTTP 409, body statusCode 409, OR the message
+		// (server sometimes says "already uploaded" inside a 200/400). Treat as done.
+		if resp.Status == 409 || (body.StatusCode != nil && *body.StatusCode == 409) ||
+			strings.Contains(msg, "already uploaded") || strings.Contains(msg, "already exist") {
+			r.log("✔ " + f.Name + " — already uploaded (server), treating as done")
 			return true, false
+		}
+		// APPOINTMENT EXPIRED (>30 days) — retrying can't fix this; a new appointment
+		// is needed. Signal the sub-flow to STOP with a clear message (from sample).
+		if strings.Contains(msg, "more than 30 days") || strings.Contains(msg, "30 days") ||
+			(strings.Contains(msg, "appointment") && strings.Contains(msg, "expired")) {
+			r.log("🛑 " + f.Name + " — appointment expired (>30 days): " + body.Message)
+			r.fatalUpload = errAppointmentExpired
+			return false, false
 		}
 		ok := resp.OK() && (body.StatusCode == nil || (*body.StatusCode >= 200 && *body.StatusCode < 300))
 		if ok {

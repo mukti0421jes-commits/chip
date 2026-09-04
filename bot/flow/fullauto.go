@@ -134,6 +134,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			if err == errOverviewMismatch {
 				return err // wrong files — retrying won't help
 			}
+			if err == errAppointmentExpired {
+				return err // >30 days old — a NEW appointment is required; retrying is futile
+			}
 			if !r.Mode.Single { // retry OFF → fail after one attempt
 				return err
 			}

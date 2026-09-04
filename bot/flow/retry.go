@@ -106,6 +106,10 @@ type Runner struct {
 
 	otpVal string // OTP fetched by the SMS/email fetcher
 
+	// fatalUpload, when set by uploadOne (e.g. appointment expired >30 days), makes
+	// the upload sub-flow stop retrying and surface this exact error.
+	fatalUpload error
+
 	dgJob *dgJob // background dg-epay resolution (awaited before Initiate)
 
 	// optional hooks — fired the moment a value is resolved, so the caller can
