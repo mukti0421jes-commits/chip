@@ -76,15 +76,28 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			Data []overviewApplicant `json:"data"`
 		}
 		_ = json.Unmarshal(pre.Body, &pb)
-		used := make([]bool, len(pb.Data))
-		for fi, f := range files {
-			ftok := nameTokens(f.Name)
-			for i := range pb.Data {
-				if !used[i] && tokensMatch(ftok, nameTokens(pb.Data[i].FullName)) {
-					used[i] = true
-					alreadyUp[fi] = true
-					r.log("✔ " + f.Name + ": already uploaded — skip")
-					break
+		// COUNT-AUTHORITY: if the appointment already holds as many applicants as we
+		// have files, EVERY file is already uploaded — mark them all, WITHOUT relying
+		// on fragile name-matching. (A single-word filename like "SHUVO" won't match
+		// "SHUVO HALDER" by tokens, which used to make the primary get re-uploaded and
+		// hit 404 on an already-complete appointment.)
+		if len(pb.Data) >= len(files) && len(files) > 0 {
+			for fi := range files {
+				alreadyUp[fi] = true
+			}
+			r.log("✔ overview shows " + itoa(len(pb.Data)) + " applicant(s) ≥ " + itoa(len(files)) + " file(s) — all already uploaded, skipping uploads")
+		} else {
+			// partial: match by name to find which specific files are still missing.
+			used := make([]bool, len(pb.Data))
+			for fi, f := range files {
+				ftok := nameTokens(f.Name)
+				for i := range pb.Data {
+					if !used[i] && tokensMatch(ftok, nameTokens(pb.Data[i].FullName)) {
+						used[i] = true
+						alreadyUp[fi] = true
+						r.log("✔ " + f.Name + ": already uploaded — skip")
+						break
+					}
 				}
 			}
 		}
