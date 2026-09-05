@@ -7012,7 +7012,7 @@ function refresh() {
             }
             row.insertCell(14).innerHTML = proxyDisplay;
             
-            if (inst.paymentUrl && (inst.step === 'PAYMENT_READY' || inst.step === 'COMPLETED')) { 
+            if (inst.paymentUrl) {
                 row.insertCell(15).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button><button class="btn btn-success btn-sm" onclick="window.open(\'' + inst.paymentUrl + '\', \'_blank\')">🔗 Open</button></div></div>'; 
             } else { 
                 row.insertCell(15).innerHTML = '-'; 
