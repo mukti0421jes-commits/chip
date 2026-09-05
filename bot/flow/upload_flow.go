@@ -234,8 +234,24 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	if err != nil {
 		return err
 	}
-	// RJ SLOT: success = 2xx AND (statusCode absent or 2xx).
-	if !cr.OK() {
+	// Success is decided by the response's successFlag / statusCode / message —
+	// not merely HTTP 2xx (server can return 200 with successFlag:false). An
+	// "already confirmed" response also counts as done.
+	var cb struct {
+		SuccessFlag bool   `json:"successFlag"`
+		StatusCode  *int   `json:"statusCode"`
+		Message     string `json:"message"`
+	}
+	_ = json.Unmarshal(cr.Body, &cb)
+	cmsg := strings.ToLower(cb.Message)
+	confirmOK := cr.OK() && (cb.SuccessFlag ||
+		(cb.StatusCode != nil && *cb.StatusCode >= 200 && *cb.StatusCode < 300) ||
+		strings.Contains(cmsg, "success") || strings.Contains(cmsg, "already"))
+	if confirmOK {
+		r.log("✅ Mission & Center confirmed (" + rCenter + ") — successFlag=" + itoa(boolToInt(cb.SuccessFlag)) + " — uploads complete")
+		return nil
+	}
+	{
 		snip := string(cr.Body)
 		if len(snip) > 200 {
 			snip = snip[:200]
@@ -251,8 +267,13 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 		}
 		return errConfirmCenter
 	}
-	r.log("✅ Mission & Center confirmed (" + rCenter + ") — uploads complete")
-	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // appointmentOK mirrors RJ SLOT: success = 2xx AND (no statusCode, or statusCode 2xx).
