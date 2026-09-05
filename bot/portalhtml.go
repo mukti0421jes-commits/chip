@@ -236,7 +236,10 @@ function loadPayments(){
     // invoice PDF (server proxies /invoice/download with the instance's token + captcha).
     window.invoiceDL=function(entryId,inp){ var t=(inp.value||'').trim(); if(t.length<10){alert('Enter the Transaction ID');return;} window.open('/api/portal/invoiceDownload?entryId='+encodeURIComponent(entryId)+'&txrId='+encodeURIComponent(t),'_blank'); };
     function ridLine(p){ return p.reservationId?('<div class="muted" style="margin-top:4px;font-family:monospace;font-size:11px">RID: '+p.reservationId+'</div>'):''; }
-    function invoiceBox(p){ return '<div style="margin-top:8px;display:flex;gap:6px;align-items:center"><input type="text" maxlength="36" placeholder="Transaction ID → auto-download invoice" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,\'\');if(this.value.length===36)invoiceDL(\''+p.id+'\',this);" style="flex:1;min-width:0;padding:7px;font-family:monospace;font-size:12px;border:1px solid #2b3a52;border-radius:5px;background:#0d1424;color:#cbd5e1"><button class="btn btn-sm" style="background:#b45309" onclick="invoiceDL(\''+p.id+'\',this.previousElementSibling)">&#128196; Invoice</button></div>'; }
+    // trxId input is PRE-FILLED with the reservationId (RID == trxId), but it NEVER
+    // auto-downloads — invoice only downloads on an explicit button click, because the
+    // RID exists before payment (before Initiate) and the invoice may not exist yet.
+    function invoiceBox(p){ var rid=(p.reservationId||''); return '<div style="margin-top:8px;display:flex;gap:6px;align-items:center"><input type="text" maxlength="36" value="'+rid+'" placeholder="Transaction ID (RID) — click Invoice to download" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,\'\');" style="flex:1;min-width:0;padding:7px;font-family:monospace;font-size:12px;border:1px solid #2b3a52;border-radius:5px;background:#0d1424;color:#cbd5e1"><button class="btn btn-sm" style="background:#b45309" onclick="invoiceDL(\''+p.id+'\',this.previousElementSibling)">&#128196; Invoice</button></div>'; }
     // remaining lifetime → label
     function lifeLabel(p){
       if(!p.paymentAt) return '';
