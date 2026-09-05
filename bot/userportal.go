@@ -47,9 +47,15 @@ type portalEntry struct {
 	PayMode       string `json:"payMode"` // admin | self
 	InstanceID    int    `json:"instanceId"`
 	PaymentURL    string `json:"paymentUrl"`
-	PayStatus     string `json:"payStatus"` // pending | ready | done
+	ReservationID string `json:"reservationId"` // RID — shown in the payment hub
+	PaymentAt     string `json:"paymentAt"`     // RFC3339 when the payment URL was generated (for the lifetime countdown)
+	PayStatus     string `json:"payStatus"`     // pending | ready | done | expired
 	CreatedAt     string `json:"createdAt"`
 }
+
+// PaymentLifetimeSec is how long a generated dg-epay payment URL stays usable.
+// After this the hub shows the link as ⏰ Expired.
+const PaymentLifetimeSec = 600 // 10 minutes
 
 type portalPhone struct {
 	ID          string `json:"id"`
@@ -333,6 +339,12 @@ func portalPaymentsAPI(w http.ResponseWriter, r *http.Request) {
 					e.PaymentURL = inst.Data.PaymentURL
 					e.PayStatus = "ready"
 				}
+				if inst.Data.ReservationID != "" {
+					e.ReservationID = inst.Data.ReservationID // RID (live from instance)
+				}
+				if inst.Data.PaymentAt != "" {
+					e.PaymentAt = inst.Data.PaymentAt // when the URL was generated (for countdown)
+				}
 				step := inst.Data.Step
 				inst.mu.Unlock()
 				if step == "COMPLETED" && e.PayStatus == "" {
@@ -340,11 +352,20 @@ func portalPaymentsAPI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// mark the link expired once its lifetime has elapsed (server-side, so the UI
+		// shows a consistent state even before the countdown ticks).
+		if e.PaymentURL != "" && e.PaymentAt != "" && e.PayStatus != "done" {
+			if t, err := time.Parse(time.RFC3339, e.PaymentAt); err == nil {
+				if time.Since(t) > PaymentLifetimeSec*time.Second {
+					e.PayStatus = "expired"
+				}
+			}
+		}
 		if e.PaymentURL != "" || e.PayStatus == "done" {
 			out = append(out, e)
 		}
 	}
-	portalJSON(w, map[string]interface{}{"payments": out})
+	portalJSON(w, map[string]interface{}{"payments": out, "lifetimeSec": PaymentLifetimeSec})
 }
 
 func portalPhonesAPI(w http.ResponseWriter, r *http.Request) {

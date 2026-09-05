@@ -228,12 +228,23 @@ function loadPayments(){
   fetch('/api/portal/payments').then(function(r){return r.json();}).then(function(d){
     var box=document.getElementById('payBox');
     var pays=(d.payments||[]).filter(function(p){return p.paymentUrl||p.payStatus==='done';});
+    var lifeSec=d.lifetimeSec||600;
     if(pays.length===0){box.innerHTML='<div class="spin" id="paySpin">'+payCount+'</div><div class="muted" style="margin-top:18px">No payments yet — auto-refreshing</div>';paySpin=document.getElementById('paySpin');return;}
     var html='';
     window.payCopy=function(btn,url){ navigator.clipboard.writeText(url).then(function(){ var o=btn.innerHTML; btn.innerHTML='&#10003; Copied'; setTimeout(function(){btn.innerHTML=o;},1500); }); };
+    function ridLine(p){ return p.reservationId?('<div class="muted" style="margin-top:4px;font-family:monospace;font-size:11px">RID: '+p.reservationId+'</div>'):''; }
+    // remaining lifetime → label
+    function lifeLabel(p){
+      if(!p.paymentAt) return '';
+      var left=Math.floor(lifeSec-(Date.now()-new Date(p.paymentAt).getTime())/1000);
+      if(left<=0) return '<span class="pill" style="background:#7f1d1d;color:#fecaca">&#9200; Expired</span>';
+      var m=Math.floor(left/60),s=left%60;
+      return '<span class="pill" style="background:#134e2e;color:#86efac">&#9200; '+m+':'+(s<10?'0':'')+s+' left</span>';
+    }
     pays.forEach(function(p){
-      if(p.payStatus==='done'){html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid rgba(34,211,238,.07)"><div><b>'+p.phone+'</b><div class="muted">'+(p.mission||'')+' • '+p.createdAt+'</div></div><span class="pill">&#10003; Done</span></div>';}
-      else{var purl=p.paymentUrl||''; var prev=purl.length>40?purl.substring(0,40)+'…':purl; html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><div class="row-actions"><button class="btn btn-sm" onclick="payCopy(this,\''+purl+'\')">&#128203; Copy</button><button class="btn btn-sm" onclick="window.open(\''+purl+'\',\'_blank\')">PayNow</button></div></div><div class="muted" style="margin-top:6px;font-family:monospace;font-size:12px" title="'+purl+'">'+prev+'</div></div>';}
+      if(p.payStatus==='done'){html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid rgba(34,211,238,.07)"><div><b>'+p.phone+'</b><div class="muted">'+(p.mission||'')+' • '+p.createdAt+'</div>'+ridLine(p)+'</div><span class="pill">&#10003; Done</span></div>';}
+      else if(p.payStatus==='expired'){var eurl=p.paymentUrl||'';html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><span class="pill" style="background:#7f1d1d;color:#fecaca">&#9200; Expired</span></div>'+ridLine(p)+'<div class="muted" style="margin-top:6px;font-size:12px">Payment link expired — re-run Full Auto for a fresh link</div></div>';}
+      else{var purl=p.paymentUrl||''; var prev=purl.length>40?purl.substring(0,40)+'…':purl; html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><div class="row-actions">'+lifeLabel(p)+' <button class="btn btn-sm" onclick="payCopy(this,\''+purl+'\')">&#128203; Copy</button><button class="btn btn-sm" onclick="window.open(\''+purl+'\',\'_blank\')">PayNow</button></div></div>'+ridLine(p)+'<div class="muted" style="margin-top:6px;font-family:monospace;font-size:12px" title="'+purl+'">'+prev+'</div></div>';}
     });
     box.style.textAlign='left';box.style.padding='0';box.innerHTML=html;
   }).catch(function(){});

@@ -556,6 +556,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			inst.Data.Status = "SUCCESS"
 			inst.Data.Step = "PAYMENT READY"
 			inst.Data.PaymentURL = payURL
+			inst.Data.PaymentAt = time.Now().Format(time.RFC3339) // for the lifetime countdown
 			clearFlowSession(id) // done — no resume needed
 		}
 		inst.mu.Unlock()

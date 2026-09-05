@@ -252,6 +252,7 @@ type InstanceData struct {
 	ReservationID    string           `json:"reservationId"`
 	AppointmentDate  string           `json:"appointmentDate"`
 	PaymentURL       string           `json:"paymentUrl"`
+	PaymentAt        string           `json:"paymentAt"` // RFC3339 when the payment URL was generated (lifetime countdown)
 	AppointmentID    string           `json:"appointmentId"`
 	StartTime        time.Time        `json:"startTime"`
 	Duration         string           `json:"duration"`
