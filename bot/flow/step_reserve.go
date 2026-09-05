@@ -193,12 +193,24 @@ func ReserveCycle(r *Runner) StepResult {
 			}
 			dates = []string{r.AppointmentDate}
 		}
-		i := 0
-		for i < len(dates) && !r.Stopped() {
+		// Round-robin staggered start: instance N begins its sweep at a different
+		// date so 10 instances don't all hit date #1 at once. The sweep still wraps
+		// around and covers EVERY date (just in a rotated order), so no date is
+		// skipped — only the starting point differs per instance.
+		off := 0
+		if n := len(dates); n > 0 {
+			off = ((r.ReserveStartOffset % n) + n) % n
+		}
+		if off != 0 {
+			r.log("🔀 reserve round-robin: instance starts at date " + itoa(off+1) + "/" + itoa(len(dates)) + " (" + dates[off] + ")")
+		}
+		step := 0
+		for step < len(dates) && !r.Stopped() {
+			i := (off + step) % len(dates)
 			r.mu.Lock()
 			r.AppointmentDate = dates[i]
 			r.mu.Unlock()
-			r.log("🎟 reserve try date " + itoa(i+1) + "/" + itoa(len(dates)) + ": " + dates[i])
+			r.log("🎟 reserve try date " + itoa(step+1) + "/" + itoa(len(dates)) + ": " + dates[i] + " (idx " + itoa(i+1) + ")")
 			res := StepReserve(r)
 			if res.Win || res.Cancelled {
 				return res
@@ -221,7 +233,7 @@ func ReserveCycle(r *Runner) StepResult {
 			case reserveTransient:
 				// network / no-status. Retry same date in Single mode; else advance.
 				if !r.Mode.Single {
-					i++
+					step++
 					continue
 				}
 				d := r.delayFor(StReserve)
@@ -233,7 +245,7 @@ func ReserveCycle(r *Runner) StepResult {
 				d := r.delayFor(StReserve)
 				r.log("→ date " + dates[i] + " slot full (HTTP " + itoa(res.Status) + ") — next date in " + d.String())
 				r.interruptibleSleep(d)
-				i++
+				step++
 			}
 		}
 		if r.Stopped() {

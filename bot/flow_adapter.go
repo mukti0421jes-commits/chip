@@ -92,7 +92,11 @@ type FullAutoInput struct {
 	// next retry. Keys: signin/verify/book/reserve/initiate. Return <0 to fall back.
 	LiveDelaySec  func(step string) int
 	AppointmentID string // pre-known id → get-booking-config smart-skip (re-login)
-	Log           func(string)
+	// ReserveStartOffset staggers the reserve date-sweep across instances (round-robin):
+	// instance N starts its sweep at a different date so N instances don't all hit
+	// date #1 at once. Typically the instance id; 0 = start at the first date.
+	ReserveStartOffset int
+	Log                func(string)
 
 	// resume state (stop → start): a still-live session skips signin/OTP/verify.
 	PreAccessToken   string
@@ -145,6 +149,7 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	r.OTPPhone = in.OTPPhone
 	r.Password = in.Password
 	r.AppointmentID = in.AppointmentID // enables get-booking-config smart-skip
+	r.ReserveStartOffset = in.ReserveStartOffset // round-robin reserve date-sweep start
 	// resume: preload a still-live session so signin/OTP/verify/reserve are skipped
 	r.AccessToken = in.PreAccessToken
 	r.RequestID = in.PreRequestID

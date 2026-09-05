@@ -101,6 +101,11 @@ type Runner struct {
 	AppointmentDate  string   // reserve date (from Book / picker), YYYY-MM-DD
 	AppointmentDates []string // all available open dates from get-booking-config (normalized, sorted)
 	PickLatestDate   bool     // RJ SLOT date-target-toggle: true = Latest (last), false = Earliest (first)
+	// ReserveStartOffset staggers the reserve date-sweep across instances (round-robin):
+	// instance N begins its sweep at dates[(offset)%len] and wraps around, so 10
+	// instances don't all hammer date #1 at once. Default 0 = start at the first date
+	// (unchanged single-instance behavior). Set per-instance by the handler.
+	ReserveStartOffset int
 	ReservationID    string
 	PaymentURL      string
 

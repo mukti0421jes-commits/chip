@@ -542,6 +542,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			DelaySec:         delaySec,
 			StepDelays:       fullAutoStepDelays(), // initial snapshot (fallback)
 			LiveDelaySec:     liveStepDelaySec,     // read fresh each retry (runtime change)
+			ReserveStartOffset: id,                // round-robin: each instance starts its date-sweep at a different date
 			AppointmentID:    knownAppt,
 			PreAccessToken:   preTok,
 			PreRequestID:     preReq,
