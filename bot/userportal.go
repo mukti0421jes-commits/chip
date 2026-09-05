@@ -540,6 +540,7 @@ func RegisterUserPortal() {
 	http.HandleFunc("/api/portal/me", portalMe)
 	http.HandleFunc("/api/portal/entries", portalEntriesAPI)
 	http.HandleFunc("/api/portal/payments", portalPaymentsAPI)
+	http.HandleFunc("/api/portal/invoiceDownload", handlePortalInvoiceDownload)
 	http.HandleFunc("/api/portal/phones", portalPhonesAPI)
 	http.HandleFunc("/api/portal/users", portalAdminUsers)
 	http.HandleFunc("/api/portal/uploadFile", handlePortalUploadFile)

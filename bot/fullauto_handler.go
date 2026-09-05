@@ -350,6 +350,82 @@ func liveStepDelaySec(step string) int {
 	return -1
 }
 
+// handlePortalInvoiceDownload downloads the IVAC invoice PDF for a paid txrId,
+// server-side (our dashboard is not on ivacbd.com, so we proxy it): it uses the
+// instance's live accessToken (Bearer) + a fresh RAW captcha (x-token), exactly
+// like the IVAC invoice endpoint expects, and streams the PDF back to the browser.
+// GET /api/portal/invoiceDownload?entryId=<id>&txrId=<36-char-trxId>
+func handlePortalInvoiceDownload(w http.ResponseWriter, r *http.Request) {
+	if _, ok := portalSessionUser(r); !ok {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("not logged in"))
+		return
+	}
+	entryID := strings.TrimSpace(r.URL.Query().Get("entryId"))
+	txrID := strings.TrimSpace(r.URL.Query().Get("txrId"))
+	if txrID == "" {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte("txrId required"))
+		return
+	}
+	// resolve the entry → its instance → live accessToken (from the flow session).
+	instID := 0
+	pMu.Lock()
+	for _, e := range pEntries {
+		if e.ID == entryID {
+			instID = e.InstanceID
+			break
+		}
+	}
+	pMu.Unlock()
+	accessTok := ""
+	if s := getFlowSession(instID); s != nil {
+		accessTok = s.AccessToken
+	}
+	if accessTok == "" {
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte("session expired — restart this instance (Full Auto) to refresh the login, then download the invoice"))
+		return
+	}
+	// fresh RAW captcha token for x-token (invoice uses a raw token, like upload/initiate).
+	capTok, ok := captchaMgr.TakeRaw("Signin")
+	if !ok || capTok == "" {
+		if t, err := captchaMgr.solveRaw("Signin"); err == nil {
+			capTok = t
+		}
+	}
+	cfg := flow.NewConfig()
+	doer := &flow.HTTPDoer{Client: newH2Client(pickFlowProxyForInstance(instID))}
+	resp, err := doer.Do(flow.Request{
+		Method: "GET", URL: cfg.InvoiceDownloadURL(txrID), Referrer: flow.APIReferrer,
+		Headers: map[string]string{
+			"accept":        "application/pdf,application/json,*/*",
+			"authorization": "Bearer " + accessTok,
+			"x-token":       capTok,
+		},
+	})
+	if err != nil {
+		w.WriteHeader(502)
+		_, _ = w.Write([]byte("invoice fetch error: " + err.Error()))
+		return
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		w.WriteHeader(resp.Status)
+		snip := string(resp.Body)
+		if len(snip) > 300 {
+			snip = snip[:300]
+		}
+		_, _ = w.Write([]byte("invoice download failed (HTTP " + itoaLocal(resp.Status) + "): " + snip))
+		return
+	}
+	// success → stream the PDF to the browser as a download.
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="Invoice-`+txrID+`.pdf"`)
+	_, _ = w.Write(resp.Body)
+}
+
+func itoaLocal(n int) string { return fmt.Sprintf("%d", n) }
+
 // handleFullAuto runs the RJ SLOT Full Auto pipeline for one admin instance.
 // GET/POST /api/fullAuto?id=<instanceId>[&mission=..&center=..&single=1]
 func handleFullAuto(w http.ResponseWriter, r *http.Request) {
