@@ -171,19 +171,16 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// skip confirm-center when the center is genuinely confirmed (ivacCenter != null);
 	// otherwise Book (get-booking-config) has no confirmed appointment and loops
 	// forever. If center is still null we MUST run confirm-center below.
+	// If NOTHING was newly uploaded this run — every file was already on the server
+	// from a prior session — then the upload+confirm was ALREADY done in that prior
+	// session (files fully uploaded, mission/center confirmed). Overview's ivacCenter
+	// stays null even then, so it is NOT a reliable "confirmed" signal — trying to
+	// re-confirm makes the server return 404 "Appointment not found" (it is already
+	// confirmed) and loops forever. So SKIP confirm-center and let Book
+	// (get-booking-config, the real authority) drive → Reserve → Initiate.
 	if newlyUploaded == 0 {
-		centerConfirmed := false
-		for _, a := range ovBody.Data {
-			if a.IvacCenter != nil && *a.IvacCenter != "" {
-				centerConfirmed = true
-				break
-			}
-		}
-		if centerConfirmed {
-			r.log("⏭ All files uploaded AND center already confirmed (ivacCenter set) — skipping confirm-center → Book/Reserve")
-			return nil
-		}
-		r.log("ℹ Files already uploaded but center NOT confirmed yet (ivacCenter=null) — running confirm-center")
+		r.log("⏭ All files already uploaded in a prior session — skipping confirm-center → Book/Reserve (get-booking-config is authoritative)")
+		return nil
 	}
 
 	// 4) CONFIRM MISSION & CENTER.
