@@ -244,6 +244,14 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			snip = snip[:200]
 		}
 		r.log("✗ confirm center — HTTP " + itoa(cr.Status) + " • " + snip)
+		// 404 "Appointment not found" = the appointment is in a stuck/gone state
+		// (files uploaded in a prior session, center never confirmed). Retrying the
+		// exact same appointment→confirm can NEVER succeed and only triggers 429
+		// rate-limits. Stop now with a clear, actionable message.
+		if cr.Status == 404 || strings.Contains(strings.ToLower(string(cr.Body)), "appointment not found") {
+			r.log("🛑 confirm center: appointment not found — this appointment is stuck (files uploaded earlier but center not confirmed). Delete this entry & re-add to get a fresh appointment.")
+			return errAppointmentNotFound
+		}
 		return errConfirmCenter
 	}
 	r.log("✅ Mission & Center confirmed (" + rCenter + ") — uploads complete")
@@ -320,6 +328,13 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 			(strings.Contains(msg, "appointment") && strings.Contains(msg, "expired")) {
 			r.log("🛑 " + f.Name + " — appointment expired (>30 days): " + body.Message)
 			r.fatalUpload = errAppointmentExpired
+			return false, false
+		}
+		// APPOINTMENT NOT FOUND (404) — the appointment is stuck/gone; re-uploading
+		// can't fix it and only draws 429 rate-limits. Stop the sub-flow.
+		if resp.Status == 404 || strings.Contains(msg, "appointment not found") {
+			r.log("🛑 " + f.Name + " — appointment not found (404): appointment stuck; delete & re-add this entry.")
+			r.fatalUpload = errAppointmentNotFound
 			return false, false
 		}
 		ok := resp.OK() && (body.StatusCode == nil || (*body.StatusCode >= 200 && *body.StatusCode < 300))

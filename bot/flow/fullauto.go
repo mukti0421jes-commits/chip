@@ -137,6 +137,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			if err == errAppointmentExpired {
 				return err // >30 days old — a NEW appointment is required; retrying is futile
 			}
+			if err == errAppointmentNotFound {
+				return err // stuck/gone appointment — retrying only causes 429; stop now
+			}
 			if !r.Mode.Single { // retry OFF → fail after one attempt
 				return err
 			}
