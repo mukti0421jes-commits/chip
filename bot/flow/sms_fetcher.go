@@ -12,7 +12,7 @@ func StartSMSFetcher(r *Runner, phone string) {
 	}
 	url := SMSURL(phone)
 	seen := map[string]bool{}
-	r.sleep(SMSFirstDelay)
+	r.interruptibleSleep(SMSFirstDelay)
 	for a := 0; a < SMSMaxAttempts && !r.Stopped() && r.otp() == ""; a++ {
 		body, err := r.Fetcher.Get(url)
 		if err == nil {
@@ -23,6 +23,6 @@ func StartSMSFetcher(r *Runner, phone string) {
 				return
 			}
 		}
-		r.sleep(SMSPollInterval)
+		r.interruptibleSleep(SMSPollInterval) // Stop cancels the poll wait immediately
 	}
 }

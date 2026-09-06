@@ -300,16 +300,24 @@ func appointmentOK(resp Response) bool {
 	return body.StatusCode == nil || (*body.StatusCode >= 200 && *body.StatusCode < 300)
 }
 
-// uploadOne uploads a single file with a fresh captcha token per attempt,
-// retrying on transient (429/503/5xx) up to UploadMaxTries with 700ms*attempt
-// backoff — byte-faithful to RJ SLOT uploadFile.
+// uploadOne uploads a single file with a fresh captcha token per attempt.
+//
+// TRANSIENT errors (429 / 503 / 5xx / network) are retried:
+//   - retry mode ON (Single)  → retry FOREVER until success (server-busy safe);
+//   - retry mode OFF          → up to UploadMaxTries (RJ SLOT UPLOAD_MAX_TRIES=4).
+//
+// The wait between retries is the dashboard "Upld" delay (live) and is done with
+// interruptibleSleep, so pressing Stop cancels the loop immediately — it does not
+// keep running in the background until the delay elapses.
 //
 // Returns (ok, newly): ok=true means the file is on the server; newly=true means
 // it was uploaded THIS call. An HTTP 409 (Conflict) means the file is ALREADY
 // uploaded on the server, so it returns (true, false) — done, but not new — which
 // also lets the re-login "skip confirm-center" logic work correctly.
 func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
-	for attempt := 1; attempt <= UploadMaxTries; attempt++ {
+	// retryTransient decides whether to try once more after a transient failure.
+	retryTransient := func(attempt int) bool { return r.Mode.Single || attempt < UploadMaxTries }
+	for attempt := 1; ; attempt++ {
 		if r.Stopped() {
 			return false, false
 		}
@@ -331,8 +339,8 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 		resp, err := r.Doer.Do(req)
 		if err != nil {
 			r.log("✗ " + f.Name + " upload — network error: " + err.Error())
-			if attempt < UploadMaxTries {
-				r.sleep(r.delayFor(StUpload)) // UI upload-delay controller (live)
+			if retryTransient(attempt) {
+				r.interruptibleSleep(r.delayFor(StUpload)) // UI upload-delay controller (live), Stop-aware
 				continue
 			}
 			return false, false
@@ -377,18 +385,18 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 		if len(snip) > 220 {
 			snip = snip[:220]
 		}
-		r.log("✗ " + f.Name + " upload — HTTP " + itoa(resp.Status) + " (try " + itoa(attempt) + "/" + itoa(UploadMaxTries) + ") • " + snip)
+		r.log("✗ " + f.Name + " upload — HTTP " + itoa(resp.Status) + " (try " + itoa(attempt) + ") • " + snip)
 		transient := resp.Status == 429 || resp.Status == 503 || resp.Status >= 500
-		if transient && attempt < UploadMaxTries {
+		if transient && retryTransient(attempt) {
 			// Retry delay follows the dashboard's UPLOAD controller (live): whatever
-			// the user set in the "Upld" box governs every upload retry. delayFor
-			// falls back to the mode default / built-in when nothing is configured.
+			// the user set in the "Upld" box governs every upload retry. In retry
+			// (Single) mode this loops until success — so a busy/slow server no longer
+			// makes the file give up after 4 tries. interruptibleSleep keeps Stop instant.
 			d := r.delayFor(StUpload)
 			r.log("⏳ " + f.Name + " " + itoa(resp.Status) + " — retry in " + d.String() + " with fresh token")
-			r.sleep(d)
+			r.interruptibleSleep(d)
 			continue
 		}
 		return false, false
 	}
-	return false, false
 }
