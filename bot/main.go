@@ -1187,7 +1187,7 @@ func loadConfig() error {
 		FlowSingle:           true,
 		FlowAuto:             true,
 		StepDelaySec: map[string]int{
-			"signin": 4, "verify": 4, "reserve": 21, "book": 4, "initiate": 4,
+			"signin": 4, "verify": 4, "upload": 4, "reserve": 21, "book": 4, "initiate": 4,
 		},
 		SingleHitRetry: SingleHitRetryConfig{
 			Signin:  SingleHitRetryItem{Enabled: false, Hits: 2, DelayMs: 100, ReuseCaptcha: true},
@@ -1221,7 +1221,7 @@ func loadConfig() error {
 	// Backfill new flow-control fields for configs saved before this feature.
 	if globalConfig.StepDelaySec == nil {
 		globalConfig.StepDelaySec = map[string]int{
-			"signin": 4, "verify": 4, "reserve": 21, "book": 4, "initiate": 4,
+			"signin": 4, "verify": 4, "upload": 4, "reserve": 21, "book": 4, "initiate": 4,
 		}
 		globalConfig.FlowSingle = true
 		globalConfig.FlowAuto = true
@@ -6391,6 +6391,7 @@ func getDashboardHTML() string {
             <button id="flowSingleBtn" class="mode-btn inactive" onclick="toggleFlow('single')" style="padding:4px 10px;align-self:center;">Single</button>
             <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Sign<input type="number" id="flowDelaySignin"   min="0" max="999" value="4"  title="Signin retry delay (s)"   style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
             <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Verify<input type="number" id="flowDelayVerify"   min="0" max="999" value="4"  title="Verify retry delay (s)"   style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
+            <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Upld<input type="number" id="flowDelayUpload"   min="0" max="999" value="4"  title="File upload retry delay (s)" style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
             <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Resrv<input type="number" id="flowDelayReserve"  min="0" max="999" value="21" title="Reserve retry delay (s)"  style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
             <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Book<input type="number" id="flowDelayBook"     min="0" max="999" value="4"  title="Book retry delay (s)"     style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
             <label style="display:flex;flex-direction:column;align-items:center;font-size:10px;color:#22d3ee !important;font-weight:700;gap:2px;">Init<input type="number" id="flowDelayInitiate" min="0" max="999" value="4"  title="Initiate retry delay (s)" style="width:46px !important;text-align:center !important;color:#67e8f9 !important;background:#0d1424 !important;border:1px solid #7c6cf0 !important;border-radius:6px !important;padding:4px 2px !important;font-weight:800 !important;font-size:14px !important;" onchange="saveFlowDelays()"></label>
@@ -8169,7 +8170,7 @@ function loadFlowControl(){
     fetch('/api/flowControl').then(function(r){return r.json();}).then(function(d){
         flowState.flowSingle=!!d.flowSingle; flowState.flowAuto=!!d.flowAuto;
         var sd=d.stepDelaySec||{};
-        var map={signin:'flowDelaySignin',verify:'flowDelayVerify',reserve:'flowDelayReserve',book:'flowDelayBook',initiate:'flowDelayInitiate'};
+        var map={signin:'flowDelaySignin',verify:'flowDelayVerify',upload:'flowDelayUpload',reserve:'flowDelayReserve',book:'flowDelayBook',initiate:'flowDelayInitiate'};
         Object.keys(map).forEach(function(k){ var el=document.getElementById(map[k]); if(el && sd[k]!=null) el.value=sd[k]; });
         var ad=document.getElementById('flowAutoDelay'); if(ad && d.autoDelaySec!=null) ad.value=d.autoDelaySec;
         renderFlow();
@@ -8186,6 +8187,7 @@ function saveFlowDelays(){
     var sd={
         signin:  parseInt(document.getElementById('flowDelaySignin').value)||0,
         verify:  parseInt(document.getElementById('flowDelayVerify').value)||0,
+        upload:  parseInt(document.getElementById('flowDelayUpload').value)||0,
         reserve: parseInt(document.getElementById('flowDelayReserve').value)||0,
         book:    parseInt(document.getElementById('flowDelayBook').value)||0,
         initiate:parseInt(document.getElementById('flowDelayInitiate').value)||0

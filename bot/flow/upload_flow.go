@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
-	"time"
 )
 
 // UploadMaxTries mirrors RJ SLOT's inner UPLOAD_MAX_TRIES = 4.
@@ -333,7 +332,7 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 		if err != nil {
 			r.log("✗ " + f.Name + " upload — network error: " + err.Error())
 			if attempt < UploadMaxTries {
-				r.sleep(time.Duration(700*attempt) * time.Millisecond)
+				r.sleep(r.delayFor(StUpload)) // UI upload-delay controller (live)
 				continue
 			}
 			return false, false
@@ -381,13 +380,12 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 		r.log("✗ " + f.Name + " upload — HTTP " + itoa(resp.Status) + " (try " + itoa(attempt) + "/" + itoa(UploadMaxTries) + ") • " + snip)
 		transient := resp.Status == 429 || resp.Status == 503 || resp.Status >= 500
 		if transient && attempt < UploadMaxTries {
-			if resp.Status == 429 {
-				r.log("⏳ " + f.Name + " 429 — waiting 20s, retry with fresh token")
-				r.sleep(20 * time.Second)
-			} else {
-				r.log("⏳ " + f.Name + " " + itoa(resp.Status) + " — retry with fresh token")
-				r.sleep(time.Duration(700*attempt) * time.Millisecond)
-			}
+			// Retry delay follows the dashboard's UPLOAD controller (live): whatever
+			// the user set in the "Upld" box governs every upload retry. delayFor
+			// falls back to the mode default / built-in when nothing is configured.
+			d := r.delayFor(StUpload)
+			r.log("⏳ " + f.Name + " " + itoa(resp.Status) + " — retry in " + d.String() + " with fresh token")
+			r.sleep(d)
 			continue
 		}
 		return false, false

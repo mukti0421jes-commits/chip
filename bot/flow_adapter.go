@@ -129,8 +129,8 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	// actually drives each step's retry gap (signin/verify/book/reserve/initiate).
 	if len(in.StepDelays) > 0 {
 		keyMap := map[string]flow.StepName{
-			"signin": flow.StSignin, "verify": flow.StVerify, "book": flow.StBook,
-			"reserve": flow.StReserve, "initiate": flow.StInitiate,
+			"signin": flow.StSignin, "verify": flow.StVerify, "upload": flow.StUpload,
+			"book": flow.StBook, "reserve": flow.StReserve, "initiate": flow.StInitiate,
 		}
 		mode.StepDelays = map[flow.StepName]time.Duration{}
 		for k, sec := range in.StepDelays {
@@ -163,8 +163,8 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	// live retry delays: map "signin/verify/book/reserve/initiate" → StepName.
 	if in.LiveDelaySec != nil {
 		nameOf := map[flow.StepName]string{
-			flow.StSignin: "signin", flow.StVerify: "verify", flow.StBook: "book",
-			flow.StReserve: "reserve", flow.StInitiate: "initiate",
+			flow.StSignin: "signin", flow.StVerify: "verify", flow.StUpload: "upload",
+			flow.StBook: "book", flow.StReserve: "reserve", flow.StInitiate: "initiate",
 		}
 		r.LiveDelaySec = func(sn flow.StepName) int {
 			if k, ok := nameOf[sn]; ok {

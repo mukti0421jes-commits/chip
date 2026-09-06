@@ -24,6 +24,7 @@ type StepName string
 const (
 	StSignin   StepName = "signin"
 	StVerify   StepName = "verify"
+	StUpload   StepName = "upload"
 	StBook     StepName = "book"
 	StReserve  StepName = "reserve"
 	StInitiate StepName = "initiate"
