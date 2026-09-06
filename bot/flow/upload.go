@@ -31,6 +31,12 @@ func (c *Config) InvoiceDownloadURL(trxID string) string {
 	return c.join("/invoice/download") + "?txrId=" + trxID
 }
 
+// InvoiceAllByUserURL → .../invoice/all-by-user (fixed path). Returns every
+// invoice generated for the logged-in user; a row's tranId equals the RID
+// (reservationId), so an RID present here means that payment produced an invoice
+// = payment done.
+func (c *Config) InvoiceAllByUserURL() string { return c.join("/invoice/all-by-user") }
+
 // ── Request builders (byte-exact from RJ SLOT v10.5) ──────────────────────────
 
 // BuildAppointment: POST /appointment, no body.

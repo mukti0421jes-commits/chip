@@ -253,6 +253,7 @@ type InstanceData struct {
 	AppointmentDate  string           `json:"appointmentDate"`
 	PaymentURL       string           `json:"paymentUrl"`
 	PaymentAt        string           `json:"paymentAt"` // RFC3339 when the payment URL was generated (lifetime countdown)
+	PaymentDone      bool             `json:"paymentDone"` // confirmed paid: RID found in /invoice/all-by-user
 	AppointmentID    string           `json:"appointmentId"`
 	StartTime        time.Time        `json:"startTime"`
 	Duration         string           `json:"duration"`

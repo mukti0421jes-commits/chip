@@ -345,9 +345,14 @@ func portalPaymentsAPI(w http.ResponseWriter, r *http.Request) {
 				if inst.Data.PaymentAt != "" {
 					e.PaymentAt = inst.Data.PaymentAt // when the URL was generated (for countdown)
 				}
+				paymentDone := inst.Data.PaymentDone
 				step := inst.Data.Step
 				inst.mu.Unlock()
-				if step == "COMPLETED" && e.PayStatus == "" {
+				// confirmed paid (RID found in /invoice/all-by-user) wins over everything,
+				// even an expired link — an expired link that was actually paid is DONE.
+				if paymentDone {
+					e.PayStatus = "done"
+				} else if step == "COMPLETED" && e.PayStatus == "" {
 					e.PayStatus = "done"
 				}
 			}
@@ -541,6 +546,7 @@ func RegisterUserPortal() {
 	http.HandleFunc("/api/portal/entries", portalEntriesAPI)
 	http.HandleFunc("/api/portal/payments", portalPaymentsAPI)
 	http.HandleFunc("/api/portal/invoiceDownload", handlePortalInvoiceDownload)
+	http.HandleFunc("/api/portal/invoiceCheck", handlePortalInvoiceCheck)
 	http.HandleFunc("/api/portal/phones", portalPhonesAPI)
 	http.HandleFunc("/api/portal/users", portalAdminUsers)
 	http.HandleFunc("/api/portal/uploadFile", handlePortalUploadFile)

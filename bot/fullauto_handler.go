@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -426,6 +427,107 @@ func handlePortalInvoiceDownload(w http.ResponseWriter, r *http.Request) {
 
 func itoaLocal(n int) string { return fmt.Sprintf("%d", n) }
 
+// handlePortalInvoiceCheck confirms whether an entry's payment is DONE by looking
+// up the instance's RID (reservationId) in GET /invoice/all-by-user. An invoice is
+// only generated after a real payment, so if the RID appears as a row's tranId the
+// payment is confirmed done. On a hit it persists inst.Data.PaymentDone=true so the
+// payment hub shows ✓ Done even after the link expires. Server-side proxy (Bearer +
+// raw x-token), same as the invoice download. GET /api/portal/invoiceCheck?entryId=
+func handlePortalInvoiceCheck(w http.ResponseWriter, r *http.Request) {
+	if _, ok := portalSessionUser(r); !ok {
+		w.WriteHeader(401)
+		writeJSON(w, map[string]interface{}{"done": false, "error": "not logged in"})
+		return
+	}
+	entryID := strings.TrimSpace(r.URL.Query().Get("entryId"))
+	// resolve entry → instance.
+	instID := 0
+	pMu.Lock()
+	for _, e := range pEntries {
+		if e.ID == entryID {
+			instID = e.InstanceID
+			break
+		}
+	}
+	pMu.Unlock()
+	if instID == 0 {
+		writeJSON(w, map[string]interface{}{"done": false, "error": "no instance"})
+		return
+	}
+	// the RID we are confirming (live from the instance).
+	rid := ""
+	instancesMu.RLock()
+	inst, ok := instances[instID]
+	instancesMu.RUnlock()
+	if ok {
+		inst.mu.Lock()
+		rid = strings.TrimSpace(inst.Data.ReservationID)
+		if inst.Data.PaymentDone { // already confirmed — no need to spend a captcha
+			inst.mu.Unlock()
+			writeJSON(w, map[string]interface{}{"done": true, "cached": true})
+			return
+		}
+		inst.mu.Unlock()
+	}
+	if rid == "" {
+		writeJSON(w, map[string]interface{}{"done": false, "error": "no reservationId yet"})
+		return
+	}
+	accessTok := ""
+	if s := getFlowSession(instID); s != nil {
+		accessTok = s.AccessToken
+	}
+	if accessTok == "" {
+		writeJSON(w, map[string]interface{}{"done": false, "error": "session expired"})
+		return
+	}
+	// fresh RAW captcha for x-token (all-by-user uses a raw token, like invoice download).
+	capTok, ok2 := captchaMgr.TakeRaw("Signin")
+	if !ok2 || capTok == "" {
+		if t, err := captchaMgr.solveRaw("Signin"); err == nil {
+			capTok = t
+		}
+	}
+	cfg := flow.NewConfig()
+	doer := &flow.HTTPDoer{Client: newH2Client(pickFlowProxyForInstance(instID))}
+	resp, err := doer.Do(flow.Request{
+		Method: "GET", URL: cfg.InvoiceAllByUserURL(), Referrer: flow.APIReferrer,
+		Headers: map[string]string{
+			"accept":        "application/json, text/plain, */*",
+			"authorization": "Bearer " + accessTok,
+			"x-token":       capTok,
+		},
+	})
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"done": false, "error": "fetch error"})
+		return
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		writeJSON(w, map[string]interface{}{"done": false, "error": "HTTP " + itoaLocal(resp.Status)})
+		return
+	}
+	var body struct {
+		Data []struct {
+			TranId string `json:"tranId"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(resp.Body, &body)
+	found := false
+	for _, d := range body.Data {
+		if strings.EqualFold(strings.TrimSpace(d.TranId), rid) {
+			found = true
+			break
+		}
+	}
+	if found && ok {
+		inst.mu.Lock()
+		inst.Data.PaymentDone = true
+		inst.mu.Unlock()
+		saveInstancesToFile()
+	}
+	writeJSON(w, map[string]interface{}{"done": found})
+}
+
 // handleFullAuto runs the RJ SLOT Full Auto pipeline for one admin instance.
 // GET/POST /api/fullAuto?id=<instanceId>[&mission=..&center=..&single=1]
 func handleFullAuto(w http.ResponseWriter, r *http.Request) {
@@ -606,6 +708,9 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			instancesMu.RUnlock()
 			if ok {
 				it.mu.Lock()
+				if resID != it.Data.ReservationID {
+					it.Data.PaymentDone = false // new reservation → its payment isn't confirmed yet
+				}
 				it.Data.ReservationID = resID
 				it.mu.Unlock()
 				saveInstancesToFile()
