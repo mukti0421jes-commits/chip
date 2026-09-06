@@ -253,20 +253,16 @@ function loadPayments(){
       var m=Math.floor(left/60),s=left%60;
       return '<span class="pill" style="background:#134e2e;color:#86efac">&#9200; '+m+':'+(s<10?'0':'')+s+' left</span>';
     }
-    window.payAutoChecked = window.payAutoChecked || {};
     // checkBtn renders the "✅ Check Paid" button (only when the entry has an RID).
+    // Payments are ALSO auto-confirmed server-side every 20s (background watcher),
+    // so this button is just a manual "confirm now" — the row flips to ✓ Done on its
+    // own once the invoice appears for the RID.
     function checkBtn(p){ return p.reservationId?('<button class="btn btn-sm" style="background:#166534" onclick="checkPaid(\''+p.id+'\',this)">&#9989; Check Paid</button>'):''; }
-    var autoCheckList=[];
     pays.forEach(function(p){
       if(p.payStatus==='done'){html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid rgba(34,211,238,.07)"><div><b>'+p.phone+'</b><div class="muted">'+(p.mission||'')+' • '+p.createdAt+'</div>'+ridLine(p)+'</div><span class="pill">&#10003; Done</span></div>';}
-      else if(p.payStatus==='expired'){html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><div class="row-actions"><span class="pill" style="background:#7f1d1d;color:#fecaca">&#9200; Expired</span> '+checkBtn(p)+'</div></div>'+ridLine(p)+'<div class="muted" style="margin-top:6px;font-size:12px">Payment link expired — re-run Full Auto for a fresh link. Already paid? Confirm above or download invoice below:</div>'+invoiceBox(p)+'</div>';
-        // auto-check ONCE per expired entry: was it actually paid before it expired?
-        if(p.reservationId && !window.payAutoChecked[p.id]){ window.payAutoChecked[p.id]=1; autoCheckList.push(p.id); }
-      }
+      else if(p.payStatus==='expired'){html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><div class="row-actions"><span class="pill" style="background:#7f1d1d;color:#fecaca">&#9200; Expired</span> '+checkBtn(p)+'</div></div>'+ridLine(p)+'<div class="muted" style="margin-top:6px;font-size:12px">Payment link expired — re-run Full Auto for a fresh link. Already paid? Confirm above or download invoice below:</div>'+invoiceBox(p)+'</div>';}
       else{var purl=p.paymentUrl||''; var prev=purl.length>40?purl.substring(0,40)+'…':purl; html+='<div style="padding:16px;border-bottom:1px solid rgba(34,211,238,.07);text-align:left"><div style="display:flex;justify-content:space-between;align-items:center"><b>'+p.phone+'</b><div class="row-actions">'+lifeLabel(p)+' <button class="btn btn-sm" onclick="payCopy(this,\''+purl+'\')">&#128203; Copy</button><button class="btn btn-sm" onclick="window.open(\''+purl+'\',\'_blank\')">PayNow</button> '+checkBtn(p)+'</div></div>'+ridLine(p)+'<div class="muted" style="margin-top:6px;font-family:monospace;font-size:12px" title="'+purl+'">'+prev+'</div>'+invoiceBox(p)+'</div>';}
     });
-    // fire the queued one-time auto-checks for expired links (no button element).
-    autoCheckList.forEach(function(eid){ window.checkPaid(eid,null); });
     box.style.textAlign='left';box.style.padding='0';box.innerHTML=html;
   }).catch(function(){});
 }

@@ -8355,6 +8355,7 @@ func main() {
 	loadManualIDs()
 	RegisterCaptchaRoutes()
 	go StartCaptchaQueue()
+	StartInvoiceDoneWatcher() // auto-confirm payments (every 20s) → payment hub ✓ Done
 
 	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()
 	http.ListenAndServe(":8080", nil)

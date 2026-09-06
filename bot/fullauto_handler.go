@@ -454,32 +454,46 @@ func handlePortalInvoiceCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"done": false, "error": "no instance"})
 		return
 	}
-	// the RID we are confirming (live from the instance).
-	rid := ""
+	done, errMsg := invoiceDoneCheck(instID)
+	out := map[string]interface{}{"done": done}
+	if errMsg != "" {
+		out["error"] = errMsg
+	}
+	writeJSON(w, out)
+}
+
+// invoiceDoneCheck looks up an instance's RID (reservationId) in GET
+// /invoice/all-by-user and, on a hit, persists inst.Data.PaymentDone=true. An
+// invoice exists only after a real payment, so an RID present there = payment DONE.
+// Server-side proxy (Bearer + raw x-token). Returns (done, errMsg). It spends one
+// captcha only when a check actually runs (already-done / no-RID / no-session short-
+// circuit first). Used by both the manual check handler and the auto watcher.
+func invoiceDoneCheck(instID int) (bool, string) {
+	if instID == 0 {
+		return false, "no instance"
+	}
 	instancesMu.RLock()
 	inst, ok := instances[instID]
 	instancesMu.RUnlock()
-	if ok {
-		inst.mu.Lock()
-		rid = strings.TrimSpace(inst.Data.ReservationID)
-		if inst.Data.PaymentDone { // already confirmed — no need to spend a captcha
-			inst.mu.Unlock()
-			writeJSON(w, map[string]interface{}{"done": true, "cached": true})
-			return
-		}
-		inst.mu.Unlock()
+	if !ok {
+		return false, "no instance"
 	}
+	inst.mu.Lock()
+	rid := strings.TrimSpace(inst.Data.ReservationID)
+	if inst.Data.PaymentDone { // already confirmed — no need to spend a captcha
+		inst.mu.Unlock()
+		return true, ""
+	}
+	inst.mu.Unlock()
 	if rid == "" {
-		writeJSON(w, map[string]interface{}{"done": false, "error": "no reservationId yet"})
-		return
+		return false, "no reservationId yet"
 	}
 	accessTok := ""
 	if s := getFlowSession(instID); s != nil {
 		accessTok = s.AccessToken
 	}
 	if accessTok == "" {
-		writeJSON(w, map[string]interface{}{"done": false, "error": "session expired"})
-		return
+		return false, "session expired"
 	}
 	// fresh RAW captcha for x-token (all-by-user uses a raw token, like invoice download).
 	capTok, ok2 := captchaMgr.TakeRaw("Signin")
@@ -499,12 +513,10 @@ func handlePortalInvoiceCheck(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"done": false, "error": "fetch error"})
-		return
+		return false, "fetch error"
 	}
 	if resp.Status < 200 || resp.Status >= 300 {
-		writeJSON(w, map[string]interface{}{"done": false, "error": "HTTP " + itoaLocal(resp.Status)})
-		return
+		return false, "HTTP " + itoaLocal(resp.Status)
 	}
 	var body struct {
 		Data []struct {
@@ -519,13 +531,62 @@ func handlePortalInvoiceCheck(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if found && ok {
+	if found {
 		inst.mu.Lock()
 		inst.Data.PaymentDone = true
 		inst.mu.Unlock()
 		saveInstancesToFile()
 	}
-	writeJSON(w, map[string]interface{}{"done": found})
+	return found, ""
+}
+
+// invoiceDoneAutoInterval is how often the background watcher re-checks each
+// ready-but-not-done payment against /invoice/all-by-user.
+const invoiceDoneAutoInterval = 20 * time.Second
+
+// StartInvoiceDoneWatcher runs a background loop that auto-confirms payments:
+// every 20s it checks each instance that has a payment URL but is not yet marked
+// done (and whose login session is still live). It stops checking an instance once
+// it's confirmed done, or once the payment window is well past (lifetime + 5 min
+// grace) so abandoned links don't burn captchas forever. Started once from main.
+func StartInvoiceDoneWatcher() {
+	go func() {
+		for {
+			time.Sleep(invoiceDoneAutoInterval)
+			// snapshot the candidate instance ids without holding locks during the checks.
+			var ids []int
+			instancesMu.RLock()
+			for id, inst := range instances {
+				inst.mu.Lock()
+				candidate := inst.Data.PaymentURL != "" && !inst.Data.PaymentDone && inst.Data.ReservationID != ""
+				pAt := inst.Data.PaymentAt
+				inst.mu.Unlock()
+				if !candidate {
+					continue
+				}
+				// bound the checks to the payment window + a 5-min grace.
+				if pAt != "" {
+					if t, err := time.Parse(time.RFC3339, pAt); err == nil {
+						if time.Since(t) > time.Duration(PaymentLifetimeSec+300)*time.Second {
+							continue
+						}
+					}
+				}
+				ids = append(ids, id)
+			}
+			instancesMu.RUnlock()
+			for _, id := range ids {
+				if getFlowSession(id) == nil {
+					continue // no live login → skip (don't waste a captcha)
+				}
+				done, _ := invoiceDoneCheck(id)
+				if done {
+					addLog(id, "✅ Payment confirmed (invoice found) — marked Done")
+				}
+				time.Sleep(500 * time.Millisecond) // stagger so N instances don't fire at once
+			}
+		}
+	}()
 }
 
 // handleFullAuto runs the RJ SLOT Full Auto pipeline for one admin instance.
