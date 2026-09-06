@@ -51,6 +51,10 @@ type portalEntry struct {
 	PaymentAt     string `json:"paymentAt"`     // RFC3339 when the payment URL was generated (for the lifetime countdown)
 	PayStatus     string `json:"payStatus"`     // pending | ready | done | expired
 	CreatedAt     string `json:"createdAt"`
+	// InvoiceFiles lists the saved invoice PDFs on disk for this entry (filled live
+	// by the payments API, not persisted). Downloaded once via the Invoice button;
+	// afterwards they serve straight from disk with NO IVAC API / captcha / session.
+	InvoiceFiles []string `json:"invoiceFiles,omitempty"`
 }
 
 // PaymentLifetimeSec is how long a generated dg-epay payment URL stays usable.
@@ -274,6 +278,7 @@ func portalEntriesAPI(w http.ResponseWriter, r *http.Request) {
 		pMu.Unlock()
 		// also delete this entry's uploaded PDF folder so files don't pile up on disk.
 		if deleted {
+			_ = os.RemoveAll(entryInvoiceDir(id)) // also drop saved invoice PDFs for this entry
 			if err := os.RemoveAll(entryFilesDir(id)); err != nil {
 				fmt.Printf("⚠ [Portal] could not remove files for entry %s: %v\n", id, err)
 			} else {
@@ -366,7 +371,10 @@ func portalPaymentsAPI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if e.PaymentURL != "" || e.PayStatus == "done" {
+		// attach any saved invoice PDFs (downloaded earlier) so the hub can offer a
+		// direct download with no API/captcha, even after the session ends.
+		e.InvoiceFiles = listEntryInvoices(e.ID)
+		if e.PaymentURL != "" || e.PayStatus == "done" || len(e.InvoiceFiles) > 0 {
 			out = append(out, e)
 		}
 	}
@@ -547,6 +555,7 @@ func RegisterUserPortal() {
 	http.HandleFunc("/api/portal/payments", portalPaymentsAPI)
 	http.HandleFunc("/api/portal/invoiceDownload", handlePortalInvoiceDownload)
 	http.HandleFunc("/api/portal/invoiceCheck", handlePortalInvoiceCheck)
+	http.HandleFunc("/api/portal/invoiceFile", handlePortalInvoiceFile)
 	http.HandleFunc("/api/portal/phones", portalPhonesAPI)
 	http.HandleFunc("/api/portal/users", portalAdminUsers)
 	http.HandleFunc("/api/portal/uploadFile", handlePortalUploadFile)

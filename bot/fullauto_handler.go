@@ -156,6 +156,49 @@ func entryFilesDir(entryID string) string {
 	return filepath.Join("entry_files", entryID)
 }
 
+// entryInvoiceDir is where an entry's downloaded invoice PDFs are cached on disk,
+// so they can be re-downloaded any time with NO IVAC API / captcha / live session.
+func entryInvoiceDir(entryID string) string {
+	return filepath.Join("entry_invoices", entryID)
+}
+
+// safeFileComponent strips path separators / unsafe chars so a value can be used
+// as a filename (defends the invoice file endpoints against path traversal).
+func safeFileComponent(s string) string {
+	s = strings.TrimSpace(s)
+	out := make([]rune, 0, len(s))
+	for _, c := range s {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' {
+			out = append(out, c)
+		}
+	}
+	r := string(out)
+	if strings.Contains(r, "..") { // no parent-dir escapes
+		r = strings.ReplaceAll(r, "..", "")
+	}
+	return r
+}
+
+// listEntryInvoices returns the saved invoice filenames for an entry (newest not
+// guaranteed; simple name list). Empty when none / dir missing.
+func listEntryInvoices(entryID string) []string {
+	if entryID == "" {
+		return nil
+	}
+	ents, err := os.ReadDir(entryInvoiceDir(entryID))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".pdf") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
 // pickFlowProxy returns a proxy URL for the flow's H2 client (empty = direct).
 // Deprecated in favor of pickFlowProxyForInstance — kept for callers without an id.
 func pickFlowProxy() string { return pickFlowProxyForInstance(0) }
@@ -419,10 +462,62 @@ func handlePortalInvoiceDownload(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("invoice download failed (HTTP " + itoaLocal(resp.Status) + "): " + snip))
 		return
 	}
-	// success → stream the PDF to the browser as a download.
+	// SAVE a server-side copy first, so this invoice can be re-downloaded any time
+	// from the hub with NO API / captcha / live session (survives session end).
+	if entryID != "" {
+		dir := entryInvoiceDir(entryID)
+		if os.MkdirAll(dir, 0755) == nil {
+			_ = os.WriteFile(filepath.Join(dir, "Invoice-"+safeFileComponent(txrID)+".pdf"), resp.Body, 0644)
+		}
+	}
+	// then stream the PDF to the browser as a download.
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `attachment; filename="Invoice-`+txrID+`.pdf"`)
 	_, _ = w.Write(resp.Body)
+}
+
+// handlePortalInvoiceFile serves a PREVIOUSLY-SAVED invoice PDF straight from disk
+// — no IVAC API, no captcha, no live session — so a user/admin can re-download it
+// any time. Auth: the entry's owner or an admin. GET
+// /api/portal/invoiceFile?entryId=<id>&name=<file.pdf>
+func handlePortalInvoiceFile(w http.ResponseWriter, r *http.Request) {
+	u, ok := portalSessionUser(r)
+	if !ok {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("not logged in"))
+		return
+	}
+	entryID := safeFileComponent(strings.TrimSpace(r.URL.Query().Get("entryId")))
+	name := safeFileComponent(strings.TrimSpace(r.URL.Query().Get("name")))
+	if entryID == "" || name == "" {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte("entryId and name required"))
+		return
+	}
+	// authorize: admin, or the entry's owner.
+	authorized := u.Role == "admin"
+	pMu.Lock()
+	for _, e := range pEntries {
+		if e.ID == entryID && e.Owner == u.Username {
+			authorized = true
+			break
+		}
+	}
+	pMu.Unlock()
+	if !authorized {
+		w.WriteHeader(403)
+		_, _ = w.Write([]byte("not your entry"))
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(entryInvoiceDir(entryID), name))
+	if err != nil {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte("invoice not found"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	_, _ = w.Write(data)
 }
 
 func itoaLocal(n int) string { return fmt.Sprintf("%d", n) }
