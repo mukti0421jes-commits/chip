@@ -55,7 +55,7 @@ type portalEntry struct {
 
 // PaymentLifetimeSec is how long a generated dg-epay payment URL stays usable.
 // After this the hub shows the link as ⏰ Expired.
-const PaymentLifetimeSec = 600 // 10 minutes
+const PaymentLifetimeSec = 300 // 5 minutes
 
 type portalPhone struct {
 	ID          string `json:"id"`
