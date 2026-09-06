@@ -5575,6 +5575,7 @@ func handleSelectedInstances(w http.ResponseWriter, r *http.Request) {
 				}
 
 			case "stop":
+				stopFullAuto(id) // also cancel any running RJ SLOT Full Auto for this instance
 				inst.mu.Lock()
 				if inst.cancel != nil {
 					inst.cancel()
@@ -6441,17 +6442,12 @@ func getDashboardHTML() string {
             <button class="btn btn-primary" onclick="fullAutoAll()" style="font-weight:800;">⚡ Full Auto All</button>
             <button class="btn btn-outline" onclick="cleanCache()" title="Clear resume sessions, captcha queues & dg-epay scan cache">🧹 Clean Cache</button>
             <button class="btn btn-outline" onclick="changeAdminPassword()" title="Change the admin login password">🔑 Password</button>
-            <button class="btn btn-success" id="toggleAllBtn" onclick="toggleAll()">▶️ Start All</button>
-            <button class="btn btn-warning" id="pauseAllBtn" onclick="togglePause()">⏸️ Pause All</button>
             <button class="btn btn-outline" onclick="refresh()">🔄 Refresh</button>
         </div>
         
         <div class="bulk-actions">
             <span>📌 Bulk Actions:</span>
-            <button class="btn btn-success btn-sm" onclick="bulkAction('start')">▶️ Start</button>
             <button class="btn btn-danger btn-sm" onclick="bulkAction('stop')">⏹️ Stop</button>
-            <button class="btn btn-warning btn-sm" onclick="bulkAction('pause')">⏸️ Pause</button>
-            <button class="btn btn-info btn-sm" onclick="bulkAction('resume')">▶️ Resume</button>
             <button class="btn btn-danger btn-sm" onclick="bulkAction('delete')">🗑️ Delete</button>
             <label style="margin-left:auto;display:flex;align-items:center;gap:6px;color:#94a3b8;font-size:13px;">
                 <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()"> Select All
@@ -7022,16 +7018,14 @@ function refresh() {
             
             row.insertCell(16).innerHTML = '<span style="color:#64748b;font-size:11px;">' + (inst.lastLog || '-') + '</span>'; 
             
-            var actionHtml = ''; 
-            if (inst.status !== 'RUNNING' && inst.step !== 'COMPLETED' && inst.status !== 'PAUSED') 
-                actionHtml += '<button class="btn btn-success btn-sm" onclick="startInstance(' + inst.id + ')">▶️</button> '; 
+            var actionHtml = '';
+            // Full Auto is the only run path now (simple Start/Resume removed — they
+            // drove the old routing engine, not the RJ SLOT Full Auto pipeline).
             if (inst.status !== 'RUNNING')
                 actionHtml += '<button class="btn btn-primary btn-sm" title="RJ SLOT Full Auto" onclick="fullAutoInstance(' + inst.id + ')" style="font-weight:800;">⚡ Full Auto</button> ';
             if (inst.status === 'RUNNING')
                 actionHtml += '<button class="btn btn-danger btn-sm" onclick="stopInstance(' + inst.id + ')">⏹️</button> ';
-            if (inst.status === 'PAUSED') 
-                actionHtml += '<button class="btn btn-info btn-sm" onclick="resumeInstance(' + inst.id + ')">▶️</button> '; 
-            actionHtml += '<button class="btn btn-outline btn-sm" onclick="showLogs(' + inst.id + ')">📋</button> <button class="btn btn-outline btn-sm" onclick="openEditModal(' + JSON.stringify(inst).replace(/'/g, "\\'") + ')">✏️</button> <button class="btn btn-outline btn-sm" onclick="deleteInstance(' + inst.id + ')">🗑️</button>'; 
+            actionHtml += '<button class="btn btn-outline btn-sm" onclick="showLogs(' + inst.id + ')">📋</button> <button class="btn btn-outline btn-sm" onclick="openEditModal(' + JSON.stringify(inst).replace(/'/g, "\\'") + ')">✏️</button> <button class="btn btn-outline btn-sm" onclick="deleteInstance(' + inst.id + ')">🗑️</button>';
             row.insertCell(17).innerHTML = actionHtml; 
         }); 
         
