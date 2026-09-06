@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -135,10 +136,22 @@ type Runner struct {
 	// changes mid-run takes effect on the next retry. Return <0 to fall back to Mode.
 	LiveDelaySec func(StepName) int
 
-	stop  atomic.Bool
-	log   func(string)
-	sleep func(time.Duration)
-	mu    sync.Mutex
+	stop       atomic.Bool
+	stopCtx    context.Context    // cancelled when Stop is called → aborts in-flight HTTP
+	stopCancel context.CancelFunc // set in NewRunner
+	log        func(string)
+	sleep      func(time.Duration)
+	mu         sync.Mutex
+}
+
+// Do sends a request through the runner's Doer with the runner's stop context
+// attached, so pressing Stop cancels an in-flight HTTP call immediately instead
+// of letting it run to its timeout. Every step uses this instead of r.Doer.Do.
+func (r *Runner) Do(req Request) (Response, error) {
+	if r.stopCtx != nil {
+		req.Ctx = r.stopCtx
+	}
+	return r.Doer.Do(req)
 }
 
 // SetOTP stores an OTP fetched by the SMS/email fetcher (thread-safe).
@@ -165,11 +178,19 @@ func NewRunner(cfg *Config, mode Mode, logFn func(string), sleepFn func(time.Dur
 	if sleepFn == nil {
 		sleepFn = time.Sleep
 	}
-	return &Runner{Config: cfg, Mode: mode, log: logFn, sleep: sleepFn}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Runner{Config: cfg, Mode: mode, log: logFn, sleep: sleepFn, stopCtx: ctx, stopCancel: cancel}
 }
 
-// Stop signals every running/queued step to bail (RJ SLOT "Stop All").
-func (r *Runner) Stop() { r.stop.Store(true) }
+// Stop signals every running/queued step to bail (RJ SLOT "Stop All"). It both
+// sets the stop flag (checked by every loop/sleep) AND cancels the stop context
+// (aborts any in-flight HTTP call), so Stop takes effect immediately everywhere.
+func (r *Runner) Stop() {
+	r.stop.Store(true)
+	if r.stopCancel != nil {
+		r.stopCancel()
+	}
+}
 
 // Stopped reports whether Stop was called.
 func (r *Runner) Stopped() bool { return r.stop.Load() }

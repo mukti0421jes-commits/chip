@@ -39,7 +39,7 @@ func StepVerify(r *Runner) StepResult {
 	}
 	req.URL = r.Config.VerifyURL()
 
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}

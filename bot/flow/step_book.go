@@ -32,7 +32,7 @@ func StepBook(r *Runner) StepResult {
 			"pragma":        "no-cache",
 		},
 	}
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}
@@ -87,7 +87,7 @@ func LoadReserveDates(r *Runner) string {
 			"pragma":        "no-cache",
 		},
 	}
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if !r.Stopped() {
 			r.log("✗ Load dates: " + err.Error())

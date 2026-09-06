@@ -144,7 +144,7 @@ func StepReserve(r *Runner) StepResult {
 			"x-v-request-meta": r.Config.VRequestMeta,
 		},
 	}
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}

@@ -2,6 +2,7 @@ package flow
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"time"
@@ -27,7 +28,11 @@ func (d *HTTPDoer) Do(req Request) (Response, error) {
 	if len(req.Body) > 0 {
 		bodyReader = bytes.NewReader(req.Body)
 	}
-	hr, err := http.NewRequest(req.Method, req.URL, bodyReader)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hr, err := http.NewRequestWithContext(ctx, req.Method, req.URL, bodyReader)
 	if err != nil {
 		return Response{}, err
 	}

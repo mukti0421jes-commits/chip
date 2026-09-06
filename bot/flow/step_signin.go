@@ -52,7 +52,7 @@ func StepSignin(r *Runner) StepResult {
 	}
 	req.URL = r.Config.SigninURL() // live scanned endpoint (e.g. /auth/v26-sign-in)
 
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}

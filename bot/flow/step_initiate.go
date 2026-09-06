@@ -32,7 +32,7 @@ func StepInitiate(r *Runner) StepResult {
 			"x-token":       token, // RAW captcha token (initiate does NOT encrypt)
 		},
 	}
-	resp, err := r.Doer.Do(req)
+	resp, err := r.Do(req)
 	if err != nil {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}

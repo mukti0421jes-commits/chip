@@ -56,7 +56,7 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// 1) APPOINTMENT — POST /appointment. This call does NOT return an appointmentId
 	//    (that comes later from get-booking-config); success is just 2xx. It creates
 	//    the appointment context on the server for the uploads that follow.
-	resp, err := r.Doer.Do(r.Config.BuildAppointment(r.AccessToken, dev))
+	resp, err := r.Do(r.Config.BuildAppointment(r.AccessToken, dev))
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	//     So fetch the overview once; any file whose name already matches an
 	//     overview applicant is treated as done and NOT re-uploaded.
 	alreadyUp := map[int]bool{}
-	if pre, err := r.Doer.Do(r.Config.BuildOverview(r.AccessToken, dev)); err == nil && pre.OK() {
+	if pre, err := r.Do(r.Config.BuildOverview(r.AccessToken, dev)); err == nil && pre.OK() {
 		var pb struct {
 			Data []overviewApplicant `json:"data"`
 		}
@@ -134,7 +134,7 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// 3) OVERVIEW check + NAME MATCH — verify uploads before confirming.
 	//    RJ SLOT: fetch over-view-v3, then require overviewCount == loaded,
 	//    every file name-matched to a distinct applicant, and >=1 primary.
-	ov, err := r.Doer.Do(r.Config.BuildOverview(r.AccessToken, dev))
+	ov, err := r.Do(r.Config.BuildOverview(r.AccessToken, dev))
 	if err != nil {
 		return err
 	}
@@ -242,7 +242,7 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	if err != nil {
 		return err
 	}
-	cr, err := r.Doer.Do(bc)
+	cr, err := r.Do(bc)
 	if err != nil {
 		return err
 	}
@@ -336,7 +336,7 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 			IsPrimary:    f.IsPrimary,
 			Boundary:     randomBoundary(),
 		})
-		resp, err := r.Doer.Do(req)
+		resp, err := r.Do(req)
 		if err != nil {
 			r.log("✗ " + f.Name + " upload — network error: " + err.Error())
 			if retryTransient(attempt) {
