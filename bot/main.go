@@ -5669,7 +5669,11 @@ func handleManualOTP(w http.ResponseWriter, r *http.Request) {
 	inst.Data.ManualOTPTime = time.Now()
 	inst.mu.Unlock()
 
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Manual OTP received"})
+	// also feed a RUNNING RJ SLOT Full Auto flow (the new engine), so a manually
+	// typed OTP verifies even when the auto SMS fetch is slow / timed out.
+	injected := setFullAutoOTP(req.InstanceID, req.OTP)
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Manual OTP received", "injected": strconv.FormatBool(injected)})
 }
 
 func handleSaveAppointmentID(w http.ResponseWriter, r *http.Request) {
@@ -6972,8 +6976,8 @@ function refresh() {
             row.insertCell(5).innerHTML = inst.type || (inst.highCom + ' - ' + inst.visaType); 
             row.insertCell(6).innerHTML = getStepBadge(inst.step); 
             
-            if (inst.step === 'WAITING_OTP') { 
-                row.insertCell(7).innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric"><span class="waiting-otp-badge">⏳ Waiting</span></div>'; 
+            if (inst.step === 'WAITING_OTP' || (inst.status === 'RUNNING' && !inst.otp && /otp/i.test(inst.step || ''))) {
+                row.insertCell(7).innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric"><span class="waiting-otp-badge">⏳ Waiting</span></div>';
                 setTimeout(function() { 
                     var inp = document.getElementById('otp_input_' + inst.id); 
                     if (inp) { 

@@ -28,7 +28,24 @@ import (
 var (
 	faStopMu sync.Mutex
 	faStops  = map[int]func(){}
+	// faOTPs maps instanceID → the running Full Auto's SetOTP func, so a manually
+	// typed OTP can be injected into the flow when auto SMS fetch is slow.
+	faOTPs = map[int]func(string){}
 )
+
+// setFullAutoOTP injects a manually-typed OTP into a running Full Auto flow for the
+// instance (fallback when auto SMS fetch is slow/times out). Returns true if a flow
+// was registered to receive it.
+func setFullAutoOTP(id int, otp string) bool {
+	faStopMu.Lock()
+	set := faOTPs[id]
+	faStopMu.Unlock()
+	if set != nil {
+		set(otp)
+		return true
+	}
+	return false
+}
 
 // flowSession is the in-memory resume state per instance. Stop → Start within the
 // token window resumes from where it stopped instead of re-signing in.
@@ -819,6 +836,11 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 				faStops[id] = stop
 				faStopMu.Unlock()
 			},
+			RegisterSetOTP: func(set func(string)) {
+				faStopMu.Lock()
+				faOTPs[id] = set
+				faStopMu.Unlock()
+			},
 			OnScanIDs: func(slotID, dgepayID string) { setDetectedIDs(slotID, dgepayID) },
 			OnHTTP: func(url string, status int) {
 				// live ENDPOINT + STATUS (200/403/503…) column per API call
@@ -881,6 +903,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 		// unregister the stop hook now that the run is finished
 		faStopMu.Lock()
 		delete(faStops, id)
+		delete(faOTPs, id)
 		faStopMu.Unlock()
 
 		stopped := err != nil && strings.Contains(err.Error(), "stop")

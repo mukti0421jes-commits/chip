@@ -116,6 +116,10 @@ type FullAutoInput struct {
 	// RegisterStop receives the runner's Stop func so the caller can cancel the
 	// whole pipeline (Stop button) from outside.
 	RegisterStop func(stop func())
+	// RegisterSetOTP receives the runner's SetOTP func so the dashboard can inject a
+	// MANUALLY-typed OTP into a running flow — a fallback when the auto SMS fetch is
+	// slow/times out. The next Verify retry uses whichever OTP arrives first.
+	RegisterSetOTP func(set func(otp string))
 }
 
 // RunFullAutoForEntry runs the RJ SLOT Full Auto pipeline for one entry, using
@@ -177,6 +181,9 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	cfg.ForcedSlotID, cfg.ForcedDgepayID = getOverrideIDs()
 	if in.RegisterStop != nil {
 		in.RegisterStop(r.Stop) // let the Stop button cancel this run
+	}
+	if in.RegisterSetOTP != nil {
+		in.RegisterSetOTP(r.SetOTP) // let the dashboard inject a manual OTP into this run
 	}
 
 	if err := flow.RunFullAuto(r, in.Files, in.Mission, in.IvacCenter); err != nil {
