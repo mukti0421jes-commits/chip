@@ -827,9 +827,25 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			Log:              logSink,
 			OnSignedIn: func(tok, rid string) {
 				updateFlowSession(id, func(s *flowSession) { s.AccessToken = tok; s.RequestID = rid })
+				// signin done → now waiting for OTP: show the manual OTP input for this instance.
+				instancesMu.RLock()
+				if it, ok := instances[id]; ok {
+					it.mu.Lock()
+					it.Data.WaitingOTP = true
+					it.mu.Unlock()
+				}
+				instancesMu.RUnlock()
 			},
 			OnVerified: func() {
 				updateFlowSession(id, func(s *flowSession) { s.Verified = true })
+				// verified → OTP phase over, hide the input.
+				instancesMu.RLock()
+				if it, ok := instances[id]; ok {
+					it.mu.Lock()
+					it.Data.WaitingOTP = false
+					it.mu.Unlock()
+				}
+				instancesMu.RUnlock()
 			},
 			RegisterStop: func(stop func()) {
 				faStopMu.Lock()
@@ -908,6 +924,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 
 		stopped := err != nil && strings.Contains(err.Error(), "stop")
 		inst.mu.Lock()
+		inst.Data.WaitingOTP = false // run finished → hide the OTP input regardless of outcome
 		if stopped {
 			inst.Data.Status = "STOPPED"
 			inst.Data.Step = "⏹ STOPPED"

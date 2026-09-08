@@ -265,6 +265,7 @@ type InstanceData struct {
 	DeviceInfo       *DeviceInfo      `json:"deviceInfo"`
 	ManualOTP        string           `json:"manualOtp"`
 	ManualOTPTime    time.Time        `json:"manualOtpTime"`
+	WaitingOTP       bool             `json:"waitingOtp"` // Full Auto is between signin and verify → show the OTP input
 	HasAppointmentID bool             `json:"hasAppointmentId"`
 	PausedStep       string           `json:"pausedStep"`
 	TokenStatus      string           `json:"tokenStatus"`
@@ -4440,6 +4441,7 @@ func getInstances(w http.ResponseWriter, r *http.Request) {
 			"status":          s,
 			"step":            inst.Data.Step,
 			"otp":             inst.Data.OTP,
+			"waitingOtp":      inst.Data.WaitingOTP,
 			"reservationId":   inst.Data.ReservationID,
 			"appointmentDate": inst.Data.AppointmentDate,
 			"paymentUrl":      inst.Data.PaymentURL,
@@ -6976,7 +6978,7 @@ function refresh() {
             row.insertCell(5).innerHTML = inst.type || (inst.highCom + ' - ' + inst.visaType); 
             row.insertCell(6).innerHTML = getStepBadge(inst.step); 
             
-            if (inst.step === 'WAITING_OTP' || (inst.status === 'RUNNING' && !inst.otp && /otp/i.test(inst.step || ''))) {
+            if (inst.step === 'WAITING_OTP' || (inst.waitingOtp && !inst.otp)) {
                 row.insertCell(7).innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric"><span class="waiting-otp-badge">⏳ Waiting</span></div>';
                 setTimeout(function() { 
                     var inp = document.getElementById('otp_input_' + inst.id); 
