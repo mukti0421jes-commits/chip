@@ -51,6 +51,110 @@ func StartDgEpayResolve(combined string) *dgJob {
 	return j
 }
 
+// ── Shared endpoint+cipher scan (single-flight, process-wide) ─────────────────
+// Like dg-epay, the plain scan (bundle download + endpoint regex + cipher goja) is
+// IDENTICAL for every instance running against the same live bundle. Doing it per
+// instance means N downloads of the same file + N goja cipher runs. So we run it
+// ONCE per TTL window and let every instance share that live result. It stays live:
+// when IVAC redeploys the bundle text differs and (after the TTL) it re-scans.
+
+type sharedScanResult struct {
+	done     chan struct{}
+	combined string
+	ep       EndpointScan
+	cipher   CipherScan
+	cipherOK bool
+}
+
+var (
+	sharedScanMu  sync.Mutex
+	sharedScanCur *sharedScanResult
+	sharedScanAt  time.Time
+)
+
+const sharedScanTTL = 5 * time.Minute
+
+// ClearScanCache drops the shared scan result so the next Scan re-downloads and
+// re-parses the live bundle (used by the dashboard Clean Cache button).
+func ClearScanCache() {
+	sharedScanMu.Lock()
+	sharedScanCur = nil
+	sharedScanMu.Unlock()
+}
+
+// getSharedScan returns a process-wide endpoint+cipher scan, downloading + parsing
+// the live bundle at most once per TTL. The FIRST caller does the work (retrying
+// while the bundle isn't ready); callers arriving while it runs wait on the same
+// job; callers within the TTL after it finished get the cached result instantly.
+// Returns nil if the bundle stayed unreachable (caller falls back to built-ins).
+func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(time.Duration), log func(string)) *sharedScanResult {
+	sharedScanMu.Lock()
+	if sharedScanCur != nil && time.Since(sharedScanAt) < sharedScanTTL {
+		j := sharedScanCur
+		sharedScanMu.Unlock()
+		<-j.done
+		if j.combined == "" {
+			return nil
+		}
+		log("♻ scan: reusing shared live-scan result (same bundle)")
+		return j
+	}
+	j := &sharedScanResult{done: make(chan struct{})}
+	sharedScanCur = j
+	sharedScanAt = time.Now()
+	sharedScanMu.Unlock()
+
+	// FIRST caller does the actual download + parse (RJ SLOT A_E retry loop).
+	const maxTries = 8
+	var combined string
+	for attempt := 1; attempt <= maxTries && !stopped(); attempt++ {
+		urls := FindBundleURLs(f, origin)
+		if len(urls) > 0 {
+			if c, _ := DownloadBundles(f, urls); c != "" {
+				combined = c
+				log("🔍 Bundle found (try " + itoa(attempt) + ", " + itoa(len(urls)) + " chunk) — scanning…")
+				break
+			}
+		}
+		if attempt == 1 {
+			body, err := f.Get(origin + "/")
+			if err != nil {
+				log("🔎 A_E fetch error: " + err.Error())
+			} else {
+				snip := body
+				if len(snip) > 120 {
+					snip = snip[:120]
+				}
+				log("🔎 A_E origin returned " + itoa(len(body)) + " bytes: " + snip)
+			}
+		}
+		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + "/" + itoa(maxTries) + ") — retry in 2s")
+		sleep(2 * time.Second)
+	}
+	j.combined = combined
+	if combined != "" {
+		j.ep = ScanEndpoints(combined) // ~0.3s
+		if cs, err := ScanCipher(combined); err == nil {
+			j.cipher = cs
+			j.cipherOK = true
+		} else {
+			log("⚠ cipher scan failed: " + err.Error() + " — using fallback")
+		}
+	}
+	close(j.done)
+
+	if combined == "" {
+		// don't cache a failure for the whole TTL — clear so the next call retries live.
+		sharedScanMu.Lock()
+		if sharedScanCur == j {
+			sharedScanCur = nil
+		}
+		sharedScanMu.Unlock()
+		return nil
+	}
+	return j
+}
+
 // ensureDgEpay waits (interruptibly, capped) for the background dg-epay job to
 // finish and applies the id to the runner's Config. Safe to call when no job was
 // started (keeps the existing fallback/manual id).

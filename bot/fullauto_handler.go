@@ -88,8 +88,9 @@ func handleCleanCache(w http.ResponseWriter, r *http.Request) {
 	clearAllFlowSessions()
 	captchaMgr.ClearQueues()
 	flow.ClearDgCache()
+	flow.ClearScanCache() // force the next run to re-scan the live bundle from scratch
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"ok":true,"cleared":["resume-sessions","captcha-queues","dg-epay-cache"]}`))
+	_, _ = w.Write([]byte(`{"ok":true,"cleared":["resume-sessions","captcha-queues","dg-epay-cache","scan-cache"]}`))
 }
 
 // stopFullAuto cancels a running Full Auto pipeline for id (no-op if none).

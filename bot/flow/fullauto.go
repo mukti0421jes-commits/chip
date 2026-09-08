@@ -10,46 +10,21 @@ func (r *Runner) Scan() {
 		r.log("⚠ No fetcher — using hardcoded endpoint fallback")
 		return
 	}
-	// RJ SLOT A_E parity: keep looking for the live bundle every 2s (server may be
-	// 403 / index not ready) up to ~30 tries, logging each attempt's status, then
-	// fall back to hardcoded endpoints so the pipeline can still proceed.
-	var combined string
-	const maxTries = 8
-	for attempt := 1; attempt <= maxTries && !r.Stopped(); attempt++ {
-		urls := FindBundleURLs(r.Fetcher, AppointmentOrigin)
-		if len(urls) > 0 {
-			if c, _ := DownloadBundles(r.Fetcher, urls); c != "" {
-				combined = c
-				r.log("🔍 Bundle found (try " + itoa(attempt) + ", " + itoa(len(urls)) + " chunk) — scanning…")
-				break
-			}
-		}
-		// diagnostic on the first miss: show what the origin actually returned.
-		if attempt == 1 {
-			body, err := r.Fetcher.Get(AppointmentOrigin + "/")
-			if err != nil {
-				r.log("🔎 A_E fetch error: " + err.Error())
-			} else {
-				snip := body
-				if len(snip) > 120 {
-					snip = snip[:120]
-				}
-				r.log("🔎 A_E origin returned " + itoa(len(body)) + " bytes: " + snip)
-			}
-		}
-		r.log("⏳ A_E: bundle not ready (try " + itoa(attempt) + "/" + itoa(maxTries) + ") — retry in 2s")
-		r.interruptibleSleep(2 * time.Second)
-	}
-	if combined == "" {
+	// SHARED live scan: the bundle download + endpoint regex + cipher goja are
+	// identical for every instance on the same live bundle, so run them ONCE per TTL
+	// window and share the result across all instances (the first instance scans
+	// live, the rest reuse it instantly). It stays live — a redeployed bundle differs
+	// and, after the TTL, re-scans. The RJ SLOT A_E retry loop lives inside.
+	sc := getSharedScan(r.Fetcher, AppointmentOrigin, r.Stopped, r.interruptibleSleep, r.log)
+	if sc == nil {
 		r.log("⚠ Bundle unreachable — using CURRENT built-in endpoints + cipher fallback (signin will still work)")
 		r.applyForcedIDs()
 		return
 	}
-	r.Config.ApplyEndpointScan(ScanEndpoints(combined)) // ~0.3s
-	if cs, err := ScanCipher(combined); err == nil {    // ~1.3s (goja)
-		r.Config.ApplyCipherScan(cs)
-	} else {
-		r.log("⚠ cipher scan failed: " + err.Error() + " — using fallback")
+	combined := sc.combined
+	r.Config.ApplyEndpointScan(sc.ep)
+	if sc.cipherOK {
+		r.Config.ApplyCipherScan(sc.cipher)
 	}
 	// VERIFY: print the cipher config the flow will actually use per purpose, so a
 	// mismatched Reserve vs Signin cipher (the cause of a constant reserve "Captcha
