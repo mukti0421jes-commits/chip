@@ -59,8 +59,7 @@ func NewConfig() *Config {
 			"/file/file-confirmation_and_slot_status": "/file/file-confirmation-and-slot_status",
 		},
 		SlotID:       "139fd4d2-27c9-4758-a623-368583e830bs",
-		DgepayID:     "20218968-2226-4e28-861f-465bb28337e6",
-		InitiatePath: "/payment/ssl/initiate", // current gateway (SSLCommerz); extractor overrides live
+		DgepayID:     "23228961-2326-3s28-861f-465bb28337a3", // live dg-epay uuid (from a real 2026-09 initiate request)
 		VRequestMeta: "windos.s",
 		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
 		// the server accepts the request but returns {data:null,"Success"} — no
@@ -131,17 +130,23 @@ func (c *Config) ReserveURLFor() string {
 	return c.join("/slots/" + slot + "/reserve-slot")
 }
 
-// InitiateURLFor builds the payment-initiate URL. The path is pulled live from the
-// bundle by the extractor (Config.InitiatePath); it is a FIXED path now that IVAC
-// uses SSLCommerz (/payment/ssl/initiate) — no per-deploy uuid. A manual dg-epay
-// override still forces the legacy uuid path for backward compatibility.
+// InitiateURLFor builds the payment-initiate URL: /payment/<dg-epay uuid>/dg-epay/
+// initiate — confirmed byte-exact against a live browser request. The dg-epay uuid
+// is an obfuscated, non-hex value assembled at runtime (e.g. "23228961-2326-3s28-
+// 861f-465bb28337a3" — note the 's'), so it never appears as plaintext in the
+// bundle. A manual dashboard override (ForcedDgepayID) wins; else the scanned /
+// fallback DgepayID is used.
 func (c *Config) InitiateURLFor() string {
-	if c.ForcedDgepayID != "" { // manual legacy override wins
-		return c.join("/payment/" + c.ForcedDgepayID + "/dg-epay/initiate")
+	id := c.DgepayID
+	if c.ForcedDgepayID != "" {
+		id = c.ForcedDgepayID
 	}
-	path := c.InitiatePath
-	if path == "" {
-		path = "/payment/ssl/initiate"
+	if id != "" {
+		return c.join("/payment/" + id + "/dg-epay/initiate")
 	}
-	return c.join(path)
+	// last resort: whatever initiate path the extractor decoded.
+	if c.InitiatePath != "" {
+		return c.join(c.InitiatePath)
+	}
+	return c.join("/payment/{dgepayId}/dg-epay/initiate")
 }

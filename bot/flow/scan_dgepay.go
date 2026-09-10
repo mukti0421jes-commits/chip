@@ -61,20 +61,16 @@ function require(m){
 }
 `
 
-var dgEpayPathRe = regexp.MustCompile(`/payment/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/dg-epay/initiate`)
-
-// initiatePathRe captures the FULL payment-initiate path the extractor decodes,
-// covering both the legacy dg-epay form (/payment/<uuid>/dg-epay/initiate) and the
-// current SSLCommerz form (/payment/ssl/initiate — fixed, no uuid).
-var initiatePathRe = regexp.MustCompile(`/payment/[0-9a-zA-Z_-]+(?:/dg-epay)?/initiate`)
+// dgEpayPathRe captures the dg-epay UUID from the decoded initiate path. The live
+// uuid is NOT strictly hex (it is obfuscated, e.g. "23228961-2326-3s28-861f-
+// 465bb28337a3" — note the 's'), so allow any alnum in each group.
+var dgEpayPathRe = regexp.MustCompile(`/payment/([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})/dg-epay/initiate`)
 
 // ScanDgEpay runs the embedded extractor on the given bundle text and returns the
-// full payment-INITIATE PATH the current build uses (e.g. "/payment/ssl/initiate"
-// for SSLCommerz, or the legacy "/payment/<uuid>/dg-epay/initiate"). Empty string
-// if not resolvable, so the caller keeps its fallback. The extractor deobfuscates
-// the path out of the bundle's rotated string array — the same run that used to
-// yield the dg-epay uuid. Safe: any goja error / missing match yields "".
-func ScanDgEpay(bundle string) (initiatePath string) {
+// resolved dg-epay gateway UUID (empty string if not resolvable, so the caller keeps
+// its fallback). The uuid is deobfuscated out of the bundle's rotated string array.
+// Safe: any goja error / missing match yields "".
+func ScanDgEpay(bundle string) (uuid string) {
 	defer func() { _ = recover() }()
 
 	h := fnv.New64a()
@@ -89,7 +85,7 @@ func ScanDgEpay(bundle string) (initiatePath string) {
 	dgCacheMu.Unlock()
 	defer func() {
 		dgCacheMu.Lock()
-		dgCache[key] = initiatePath
+		dgCache[key] = uuid
 		dgCacheMu.Unlock()
 	}()
 
@@ -109,16 +105,9 @@ func ScanDgEpay(bundle string) (initiatePath string) {
 	}
 	var logs []string
 	vm.ExportTo(vm.Get("__logs"), &logs)
-	// prefer the legacy dg-epay uuid path (keeps the uuid) if present, else the
-	// current fixed SSL-style initiate path — whichever the bundle actually decodes.
 	for _, l := range logs {
-		if m := dgEpayPathRe.FindString(l); m != "" {
-			return m
-		}
-	}
-	for _, l := range logs {
-		if m := initiatePathRe.FindString(l); m != "" {
-			return m
+		if m := dgEpayPathRe.FindStringSubmatch(l); m != nil {
+			return m[1] // the dg-epay uuid
 		}
 	}
 	return ""

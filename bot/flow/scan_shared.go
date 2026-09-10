@@ -169,13 +169,14 @@ func (r *Runner) ensureDgEpay() {
 		return
 	}
 	apply := func() {
-		// dgJob.id now carries the FULL initiate PATH decoded from the bundle
-		// (SSLCommerz "/payment/ssl/initiate" or legacy dg-epay path).
 		if r.dgJob.id != "" {
-			r.Config.InitiatePath = r.dgJob.id
-			r.log("💳 payment initiate path ready (live scan): " + r.dgJob.id)
+			r.Config.DgepayID = r.dgJob.id
+			r.log("💳 dg-epay id ready (live scan): " + r.dgJob.id)
+			if r.OnScanIDs != nil {
+				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID) // auto-fill dashboard input
+			}
 		} else {
-			r.log("⚠ initiate path not resolved — using fallback (" + r.Config.InitiatePath + ")")
+			r.log("⚠ dg-epay id not resolved — using fallback/manual id (" + r.Config.DgepayID + ")")
 		}
 	}
 	select {

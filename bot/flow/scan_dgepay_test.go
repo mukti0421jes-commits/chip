@@ -10,13 +10,10 @@ func TestScanDgEpayRealBundle(t *testing.T) {
 	if err != nil {
 		t.Skip("testbundle_full.js not present")
 	}
-	// ScanDgEpay now returns the FULL payment-initiate PATH (the gateway switched
-	// from dg-epay to SSLCommerz). For this legacy dg-epay bundle that path still
-	// embeds the uuid.
 	got := ScanDgEpay(string(b))
-	want := "/payment/20218968-2226-4e28-861f-465bb28337e6/dg-epay/initiate"
+	want := "20218968-2226-4e28-861f-465bb28337e6"
 	if got != want {
-		t.Fatalf("initiate path = %q, want %q", got, want)
+		t.Fatalf("dg-epay uuid = %q, want %q", got, want)
 	}
-	t.Logf("✅ initiate path resolved byte-accurately: %s", got)
+	t.Logf("✅ dg-epay UUID resolved byte-accurately: %s", got)
 }
