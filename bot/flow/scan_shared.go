@@ -44,7 +44,14 @@ func StartDgEpayResolve(combined string) *dgJob {
 	dgJobsMu.Unlock()
 	j.once.Do(func() {
 		go func() {
-			j.id = ScanDgEpay(combined) // ScanDgEpay has its own content cache
+			// Decode the live dg-epay uuid straight out of the bundle's obfuscated
+			// fragments (fast, generic). Fall back to the old goja extractor only if
+			// the fast path finds nothing.
+			id := ScanDgEpayUUID(combined)
+			if id == "" {
+				id = ScanDgEpay(combined)
+			}
+			j.id = id
 			close(j.done)
 		}()
 	})
