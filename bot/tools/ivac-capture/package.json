@@ -1,0 +1,13 @@
+{
+  "name": "ivac-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capture live IVAC endpoints/payloads/headers/cipher from a real browser session.",
+  "scripts": {
+    "capture": "node capture.js",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}
