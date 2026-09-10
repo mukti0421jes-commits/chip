@@ -31,8 +31,12 @@ var apiBasePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)baseURL\s*:\s*["'](https?://[^"']+)["']`),
 }
 
-// slotIDRe mirrors /\/slots\/([0-9a-fA-F-]{36})\/reserve-slot/ from rjResolveEndpointsLive.
-var slotIDRe = regexp.MustCompile(`/slots/([0-9a-fA-F-]{36})/reserve-slot`)
+// slotIDRe captures the EXACT slot identifier the bundle puts in the reserve-slot
+// URL literal — sent verbatim to the server. IVAC's current builds use a 36-char
+// id that is NOT strictly hex (e.g. "139fd4d2-27c9-4758-a623-368583e830bs" — note
+// the trailing "bs"), so the old [0-9a-fA-F-]{36} pattern rejected it and the flow
+// fell back to a stale id → reserve hit the wrong slot. Allow any alnum + hyphen.
+var slotIDRe = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve-slot`)
 
 // EndpointScan is the plain-text (non-obfuscated) part of the live scan: API base,
 // per-family endpoint literals, and the reserve slot id. Encryption config and the

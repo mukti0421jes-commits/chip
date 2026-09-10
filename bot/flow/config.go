@@ -47,12 +47,13 @@ func NewConfig() *Config {
 	return &Config{
 		APIBase: "https://api.ivacbd.com/iams/api/v1",
 		Endpoints: map[string]string{
-			"/auth/v2-sign-in":       "/auth/v26-sign-in",
-			"/file/upload_file_v2":   "/file/upload_file_v2117",
-			"/file/over-view-v3":     "/file/over-view-v347",
-			"/otp/verifySigninOtp":   "/otp/verifySigninOtp",
+			"/auth/v2-sign-in":     "/auth/v3-sign-in",
+			"/file/upload_file_v2": "/file/upload_file_v321",
+			"/file/over-view-v3":   "/file/over-view-v421",
+			"/otp/verifySigninOtp": "/otp/verifySigninOtp",
+			"/file/file-confirmation_and_slot_status": "/file/file-confirmation-and-slot_status",
 		},
-		SlotID:       "719fd4d2-27b9-4758-a523-368582e830ba",
+		SlotID:       "139fd4d2-27c9-4758-a623-368583e830bs",
 		DgepayID:     "20218968-2226-4e28-861f-465bb28337e6",
 		VRequestMeta: "windos.s",
 		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
@@ -60,17 +61,17 @@ func NewConfig() *Config {
 		// session — so these must be sent on sign-in / upload.
 		NavState:     "80d51dc5-af20-46fa-a7bb-e6a8f3f80065",
 		RuntimeState: "v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a",
-		// cipher fallback (from live bundle 2026-08) so signin/reserve can still
-		// encrypt the captcha token into body `c` when the bundle is unreachable.
-		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 4, Length: 26, Version: 2},
-		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 4, Length: 26, Version: 2},
-		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 4, Length: 26, Version: 2},
+		// cipher fallback (from live bundle 2026-09: version 10 / skip 8 / len 21)
+		// so signin/reserve can still encrypt the captcha token into body `c` when
+		// the bundle is unreachable.
+		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
+		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
+		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
 	}
 }
 
-// fallbackCipherKey is the current bundle's captcha-token cipher key (double-
-// quoted so the embedded backtick is literal).
-const fallbackCipherKey = "A9kgzd7%If8[]C71Q4$)pp8dYhT<$J62G1qmfj9(Ol0|;I93W6*=vv0jEnZ`*P84"
+// fallbackCipherKey is the current bundle's captcha-token cipher key (live 2026-09).
+const fallbackCipherKey = "Ak*a]5XJI8VhKgXkQwaE$fAQYG2IAYYkGq+g;7DPO0BnQmDqWcgK*lGWEM4OGEEq"
 
 // ApplyEndpointScan merges a plain-regex scan result into the config.
 func (c *Config) ApplyEndpointScan(s EndpointScan) {
