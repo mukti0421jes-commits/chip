@@ -12,7 +12,12 @@ type Config struct {
 	APIBase   string            // detectApiBaseUrl(), default APIBase const
 	Endpoints map[string]string // family code -> current bundle literal (scanned)
 	SlotID    string            // reserve slot uuid (scanned)
-	DgepayID  string            // dg-epay payment-method uuid (scanned, obfuscated)
+	DgepayID  string            // legacy dg-epay payment-method uuid (obsolete after the SSL switch)
+	// InitiatePath is the full payment-initiate path pulled from the bundle by the
+	// extractor. IVAC switched the gateway from dg-epay (/payment/<uuid>/dg-epay/
+	// initiate) to SSLCommerz (/payment/ssl/initiate — a FIXED path, no uuid). The
+	// extractor decodes whichever the current build uses; default is the SSL path.
+	InitiatePath string
 
 	// Manual overrides from the dashboard. When non-empty these WIN over the live
 	// scan (used when the scan can't resolve an id, or to force a specific one).
@@ -55,6 +60,7 @@ func NewConfig() *Config {
 		},
 		SlotID:       "139fd4d2-27c9-4758-a623-368583e830bs",
 		DgepayID:     "20218968-2226-4e28-861f-465bb28337e6",
+		InitiatePath: "/payment/ssl/initiate", // current gateway (SSLCommerz); extractor overrides live
 		VRequestMeta: "windos.s",
 		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
 		// the server accepts the request but returns {data:null,"Success"} — no
@@ -125,11 +131,17 @@ func (c *Config) ReserveURLFor() string {
 	return c.join("/slots/" + slot + "/reserve-slot")
 }
 
-// InitiateURLFor builds the dg-epay initiate URL from the scanned payment id.
+// InitiateURLFor builds the payment-initiate URL. The path is pulled live from the
+// bundle by the extractor (Config.InitiatePath); it is a FIXED path now that IVAC
+// uses SSLCommerz (/payment/ssl/initiate) — no per-deploy uuid. A manual dg-epay
+// override still forces the legacy uuid path for backward compatibility.
 func (c *Config) InitiateURLFor() string {
-	id := c.DgepayID
-	if id == "" {
-		id = "{dgepayId}"
+	if c.ForcedDgepayID != "" { // manual legacy override wins
+		return c.join("/payment/" + c.ForcedDgepayID + "/dg-epay/initiate")
 	}
-	return c.join("/payment/" + id + "/dg-epay/initiate")
+	path := c.InitiatePath
+	if path == "" {
+		path = "/payment/ssl/initiate"
+	}
+	return c.join(path)
 }

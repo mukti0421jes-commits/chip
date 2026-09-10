@@ -159,7 +159,7 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 // finish and applies the id to the runner's Config. Safe to call when no job was
 // started (keeps the existing fallback/manual id).
 func (r *Runner) ensureDgEpay() {
-	// Manual override wins — no need to wait for the background scan.
+	// Manual legacy override wins — force the dg-epay uuid path, skip the scan.
 	if r.Config.ForcedDgepayID != "" {
 		r.Config.DgepayID = r.Config.ForcedDgepayID
 		r.log("📌 dg-epay id (manual): " + r.Config.DgepayID)
@@ -169,14 +169,13 @@ func (r *Runner) ensureDgEpay() {
 		return
 	}
 	apply := func() {
+		// dgJob.id now carries the FULL initiate PATH decoded from the bundle
+		// (SSLCommerz "/payment/ssl/initiate" or legacy dg-epay path).
 		if r.dgJob.id != "" {
-			r.Config.DgepayID = r.dgJob.id
-			r.log("💳 dg-epay id ready (live scan): " + r.dgJob.id)
-			if r.OnScanIDs != nil {
-				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID) // auto-fill dashboard input
-			}
+			r.Config.InitiatePath = r.dgJob.id
+			r.log("💳 payment initiate path ready (live scan): " + r.dgJob.id)
 		} else {
-			r.log("⚠ dg-epay not resolved — using fallback/manual id")
+			r.log("⚠ initiate path not resolved — using fallback (" + r.Config.InitiatePath + ")")
 		}
 	}
 	select {
