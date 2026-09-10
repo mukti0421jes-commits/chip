@@ -47,11 +47,22 @@ func StepInitiate(r *Runner) StepResult {
 	_ = json.Unmarshal(resp.Body, &body2)
 	success := resp.OK() || body2.StatusCode == 201 || body2.SuccessFlag
 	if !success {
+		snip := string(resp.Body)
+		if len(snip) > 300 {
+			snip = snip[:300]
+		}
+		r.log("✗ initiate — HTTP " + itoa(resp.Status) + " • " + r.Config.InitiateURLFor() + " • " + snip)
 		return StepResult{Status: resp.Status}
 	}
 	url := extractPaymentURL(resp.Body)
 	if url == "" {
-		r.log("⚠ Initiate succeeded but no payment URL")
+		// 2xx but we couldn't find a payment-url field — log the RAW body so the
+		// exact field name / shape (SSLCommerz vs dg-epay) is visible and fixable.
+		snip := string(resp.Body)
+		if len(snip) > 500 {
+			snip = snip[:500]
+		}
+		r.log("⚠ Initiate 2xx but no payment URL found — RAW body: " + snip)
 		return StepResult{}
 	}
 	r.mu.Lock()
