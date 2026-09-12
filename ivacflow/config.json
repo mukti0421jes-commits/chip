@@ -1,0 +1,16 @@
+{
+  "url": "https://appointment.ivacbd.com/",
+  "headless": true,
+  "runMs": 20000,
+  "mock": { "phone": "01700000000", "password": "Test@1234", "otp": "123456", "turnstile": "MOCK_TURNSTILE_TOKEN_abc123" },
+  "steps": [
+    { "waitMs": 4000 },
+    { "fill": "input[type=\"tel\"], input[name*=\"phone\" i], input[placeholder*=\"phone\" i], input[placeholder*=\"mobile\" i]", "value": "$phone" },
+    { "fill": "input[type=\"password\"]", "value": "$password" },
+    { "click": "button[type=\"submit\"], button:has-text(\"Sign\"), button:has-text(\"Login\"), button:has-text(\"Continue\")" },
+    { "waitMs": 4000 },
+    { "fill": "input[name*=\"otp\" i], input[maxlength=\"6\"], input[inputmode=\"numeric\"]", "value": "$otp" },
+    { "click": "button[type=\"submit\"], button:has-text(\"Verify\"), button:has-text(\"Continue\")" },
+    { "waitMs": 4000 }
+  ]
+}
