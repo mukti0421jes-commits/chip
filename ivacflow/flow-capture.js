@@ -384,48 +384,64 @@ function findChromeExe() {
       }
     }).catch(() => {});
 
-    // 2. Detect visible inputs and fill them with appropriate mock data
-    const filled = await page.evaluate((mock) => {
-      let count = 0;
+    // 2. Detect visible inputs and fill them with Playwright's .fill()
+    // Playwright's fill() triggers real keyboard events that React picks up —
+    // unlike nativeSetter which bypasses React's synthetic event system.
+    const inputInfos = await page.evaluate(() => {
+      const results = [];
       const visible = (el) => {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
       };
-      const inputs = document.querySelectorAll('input, textarea, select');
-      for (const inp of inputs) {
-        if (!visible(inp)) continue;
+      document.querySelectorAll('input, textarea, select').forEach((inp, idx) => {
+        if (!visible(inp)) return;
         if (inp.tagName === 'SELECT') {
           if (inp.selectedIndex <= 0 && inp.options.length > 1) {
             inp.value = inp.options[1].value;
             inp.dispatchEvent(new Event('change', { bubbles: true }));
-            count++;
           }
-          continue;
+          return;
         }
-        if (inp.value && inp.value.length > 0) continue;
-        if (inp.type === 'hidden' || inp.type === 'checkbox' || inp.type === 'radio' || inp.type === 'file') continue;
-
+        if (inp.value && inp.value.length > 0) return;
+        if (inp.type === 'hidden' || inp.type === 'checkbox' || inp.type === 'radio' || inp.type === 'file') return;
         const hint = (inp.type + ' ' + (inp.name || '') + ' ' + (inp.placeholder || '') + ' ' + (inp.getAttribute('aria-label') || '')).toLowerCase();
-        let val = '';
-        if (/phone|mobile|tel/.test(hint) || inp.type === 'tel') val = mock.phone;
-        else if (/password|pass/.test(hint) || inp.type === 'password') val = mock.password;
-        else if (/otp|verify|code|token/.test(hint) || inp.inputMode === 'numeric' || inp.maxLength == 6 || inp.maxLength == 4) val = mock.otp;
-        else if (/email/.test(hint) || inp.type === 'email') val = 'mock@test.com';
-        else if (/name|full.?name/.test(hint)) val = 'MOCK USER';
-        else if (/passport/.test(hint)) val = 'AB1234567';
-        else if (/date|dob|birth|expir/.test(hint) || inp.type === 'date') val = '2026-09-15';
-        else val = mock.phone;
+        // tag it with a unique data attr so Playwright can find it
+        const tag = '__iflow_' + idx;
+        inp.setAttribute('data-iflow', tag);
+        results.push({ tag, hint, type: inp.type, inputMode: inp.inputMode, maxLength: inp.maxLength });
+      });
+      return results;
+    }).catch(() => []);
 
-        if (val) {
-          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          nativeSetter.call(inp, val);
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
-          inp.dispatchEvent(new Event('change', { bubbles: true }));
-          count++;
+    let filled = 0;
+    for (const info of inputInfos) {
+      const h = info.hint;
+      let val = '';
+      if (/phone|mobile|tel/.test(h) || info.type === 'tel') val = MOCK.phone;
+      else if (/password|pass/.test(h) || info.type === 'password') val = MOCK.password;
+      else if (/otp|verify|code|token/.test(h) || info.inputMode === 'numeric' || info.maxLength == 6 || info.maxLength == 4) val = MOCK.otp;
+      else if (/email/.test(h) || info.type === 'email') val = 'mock@test.com';
+      else if (/name|full.?name/.test(h)) val = 'MOCK USER';
+      else if (/passport/.test(h)) val = 'AB1234567';
+      else if (/date|dob|birth|expir/.test(h) || info.type === 'date') val = '2026-09-15';
+      else val = MOCK.phone;
+
+      if (val) {
+        try {
+          const loc = page.locator(`[data-iflow="${info.tag}"]`);
+          await loc.focus({ timeout: 1000 });
+          await loc.fill(val, { timeout: 2000 });
+          filled++;
+        } catch (_) {
+          // fallback: type character by character (works even when fill() fails)
+          try {
+            await page.locator(`[data-iflow="${info.tag}"]`).click({ timeout: 1000 });
+            await page.keyboard.type(val, { delay: 30 });
+            filled++;
+          } catch (_2) {}
         }
       }
-      return count;
-    }, MOCK).catch(() => 0);
+    }
 
     // 3. Handle file upload inputs
     await page.evaluate(() => {
