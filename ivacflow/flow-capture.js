@@ -53,7 +53,9 @@ const ENDPOINT_RESPONSES = {
       requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
       phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
       expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true },
+      isRegistered: true, registered: true, isNewUser: false, newUser: false,
+      profileCompleted: true, isProfileCompleted: true,
+      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
     },
   },
   '/auth/signup': {
@@ -66,7 +68,9 @@ const ENDPOINT_RESPONSES = {
       verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
       accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
       tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true },
+      isRegistered: true, registered: true, isNewUser: false, newUser: false,
+      profileCompleted: true, isProfileCompleted: true,
+      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
     },
   },
   '/otp/signup': {
@@ -187,7 +191,8 @@ function mockBodyFor(url) {
     successFlag: true, statusCode: 200, message: 'Success',
     data: {
       accessToken: 'MOCK.ACCESS.TOKEN', requestId: 'mock-request-id',
-      verified: true, status: 'SUCCESS', appointmentId: 'mock-appointment-id',
+      verified: true, status: 'SUCCESS', isRegistered: true, isNewUser: false,
+      profileCompleted: true, appointmentId: 'mock-appointment-id',
       fileId: 'mock-file-id', paymentAmount: 8200, amount: 8200,
       reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
       appointmentDate: ['2026-09-15'], webview_url: 'https://mock.gateway/pay',
@@ -493,7 +498,7 @@ function findChromeExe() {
       };
       const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"]')];
       const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter|now/i;
-      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up/i;
+      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up|create.?account|register|sign.?in.?then/i;
       let best = null;
       let bestScore = -1;
       for (const b of btns) {
