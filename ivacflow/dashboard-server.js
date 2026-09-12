@@ -72,6 +72,28 @@ function body(req) { return new Promise((res) => { let d = ''; req.on('data', (c
 // read flow.json → per-call endpoint + payload fields + extra headers + cipher "c"
 function readCaptured(dir) {
   let flow; try { flow = JSON.parse(fs.readFileSync(path.join(dir, 'flow.json'), 'utf8')); } catch (_) { return []; }
+  // merge captured extracted values into snapshot config when bundle extraction missed them
+  if (flow.extracted && snapshot.config) {
+    if (!snapshot.config.dgepayUuid && flow.extracted.dgepayUuid) {
+      snapshot.config.dgepayUuid = flow.extracted.dgepayUuid;
+      snapshot.config.dgepayUuidSource = 'flow-capture';
+    }
+    if (!snapshot.config.initiatePath && flow.extracted.initiatePath) {
+      snapshot.config.initiatePath = flow.extracted.initiatePath;
+      snapshot.config.initiatePathSource = 'flow-capture';
+    }
+    if (!snapshot.config.slotId && flow.extracted.slotId) {
+      snapshot.config.slotId = flow.extracted.slotId;
+      snapshot.config.slotIdSource = 'flow-capture';
+    }
+    if (flow.extracted.endpoints) {
+      if (!snapshot.config.endpoints) snapshot.config.endpoints = {};
+      for (const [k, v] of Object.entries(flow.extracted.endpoints)) {
+        if (!snapshot.config.endpoints[k]) snapshot.config.endpoints[k] = v;
+      }
+    }
+    snapshot.template = buildTemplate(snapshot.config);
+  }
   return (flow.calls || []).map((c) => {
     let fields = null, cipher = ''; try { const j = JSON.parse(c.body || '{}'); fields = Object.keys(j); if (j.c) cipher = j.c; } catch (_) {}
     const H = c.headers || {}; const hdr = {};

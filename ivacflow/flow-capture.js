@@ -104,13 +104,33 @@ const log = [];
 const responsesMap = {};
 function writeResponses() { try { fs.writeFileSync(RESPONSES_OUT, JSON.stringify(responsesMap, null, 2)); } catch (_) {} }
 
+function extractFromCaptured(entries) {
+  const extracted = { dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {} };
+  for (const e of entries) {
+    const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
+    const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(urlPath);
+    if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
+    const slotMatch = /\/slots\/([0-9a-zA-Z_-]{20,40})\/reserve-slot/.exec(urlPath);
+    if (slotMatch) extracted.slotId = slotMatch[1];
+    if (/\/auth\/.*sign-?in/i.test(urlPath)) extracted.endpoints.signin = urlPath;
+    if (/\/otp\/verify/i.test(urlPath)) extracted.endpoints.verifyOtp = urlPath;
+    if (/\/file\/upload/i.test(urlPath)) extracted.endpoints.uploadFile = urlPath;
+    if (/\/file\/over-view/i.test(urlPath)) extracted.endpoints.overView = urlPath;
+    if (/\/file\/file-confirmation/i.test(urlPath)) extracted.endpoints.fileConfirmation = urlPath;
+    if (/\/file\/payment-amount/i.test(urlPath)) extracted.endpoints.paymentAmount = urlPath;
+    if (/\/appointment.*booking-config/i.test(urlPath)) extracted.endpoints.bookingConfig = urlPath;
+  }
+  return extracted;
+}
+
 function writeFlow() {
   const summary = log.map((e) => {
     let fields = null; try { const j = JSON.parse(e.body); fields = Object.keys(j); } catch (_) {}
     const hdr = {}; for (const k of ['x-token', 'x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta', 'authorization', 'content-type']) if (e.headers[k]) hdr[k] = e.headers[k];
     return { method: e.method, url: e.url, payloadFields: fields, headers: hdr };
   });
-  try { fs.writeFileSync(path.join(OUT, 'flow.json'), JSON.stringify({ capturedAt: new Date().toISOString(), calls: log, summary }, null, 2)); } catch (_) {}
+  const captured = extractFromCaptured(log);
+  try { fs.writeFileSync(path.join(OUT, 'flow.json'), JSON.stringify({ capturedAt: new Date().toISOString(), calls: log, summary, extracted: captured }, null, 2)); } catch (_) {}
 }
 
 // If Playwright's own Chromium isn't downloaded (e.g. pinned system build),

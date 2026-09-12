@@ -1,8 +1,8 @@
 {
-  "capturedAt": "2026-09-12T09:30:03.071Z",
+  "capturedAt": "2026-09-12T09:46:43.926Z",
   "calls": [
     {
-      "time": "2026-09-12T09:29:56.509Z",
+      "time": "2026-09-12T09:46:41.807Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/auth/v3-sign-in",
       "headers": {
@@ -19,7 +19,7 @@
       "body": "{\"phone\":\"01700000000\",\"c\":\"TU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsicGhvbmUiOiIwMTcwMDAwMDAwMCIsInBhc3N3b3JkIjoiVGVzdEAxMjM0In0=\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.566Z",
+      "time": "2026-09-12T09:46:43.878Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/otp/verify-otp",
       "headers": {
@@ -36,12 +36,12 @@
       "body": "{\"otp\":\"123456\",\"c\":\"TU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsib3RwIjoiMTIzNDU2In0=\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.582Z",
+      "time": "2026-09-12T09:46:43.893Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/file/upload_file_v321",
       "headers": {
         "accept": "*/*",
-        "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryARmiG1WsbGjIApEl",
+        "content-type": "multipart/form-data; boundary=----WebKitFormBoundarylVtKyFIGrbLmyizb",
         "origin": "null",
         "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.7390.37 Safari/537.36",
         "authorization": "Bearer MOCK.ACCESS.TOKEN",
@@ -50,10 +50,10 @@
         "sec-ch-ua-platform": "\"Linux\"",
         "x-token": "MOCK_TURNSTILE_TOKEN_abc123"
       },
-      "body": "------WebKitFormBoundaryARmiG1WsbGjIApEl\r\nContent-Disposition: form-data; name=\"file\"; filename=\"passport.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4 mock passport\r\n------WebKitFormBoundaryARmiG1WsbGjIApEl\r\nContent-Disposition: form-data; name=\"c\"\r\n\r\nTU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsia2luZCI6InBhc3Nwb3J0In0=\r\n------WebKitFormBoundaryARmiG1WsbGjIApEl--\r\n"
+      "body": "------WebKitFormBoundarylVtKyFIGrbLmyizb\r\nContent-Disposition: form-data; name=\"file\"; filename=\"passport.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4 mock passport\r\n------WebKitFormBoundarylVtKyFIGrbLmyizb\r\nContent-Disposition: form-data; name=\"c\"\r\n\r\nTU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsia2luZCI6InBhc3Nwb3J0In0=\r\n------WebKitFormBoundarylVtKyFIGrbLmyizb--\r\n"
     },
     {
-      "time": "2026-09-12T09:29:58.586Z",
+      "time": "2026-09-12T09:46:43.898Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/file/over-view-v421",
       "headers": {
@@ -69,7 +69,7 @@
       "body": "{\"fileId\":\"mock-file-id\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.590Z",
+      "time": "2026-09-12T09:46:43.903Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config",
       "headers": {
@@ -85,7 +85,7 @@
       "body": "{\"fileId\":\"mock-file-id\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.594Z",
+      "time": "2026-09-12T09:46:43.908Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot_status",
       "headers": {
@@ -102,7 +102,7 @@
       "body": "{\"fileId\":\"mock-file-id\",\"c\":\"TU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsiZmlsZUlkIjoibW9jay1maWxlLWlkIn0=\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.598Z",
+      "time": "2026-09-12T09:46:43.912Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/file/payment-amount",
       "headers": {
@@ -118,7 +118,7 @@
       "body": "{\"fileId\":\"mock-file-id\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.604Z",
+      "time": "2026-09-12T09:46:43.920Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/slots/139fd4d2-27c9-4758-a623-368583e830bs/reserve-slot",
       "headers": {
@@ -135,7 +135,7 @@
       "body": "{\"c\":\"TU9DS19UVVJOU1RJTEVfVE9LRU5fYWJjMTIzfHsic2xvdElkIjoiMTM5ZmQ0ZDItMjdjOS00NzU4LWE2MjMtMzY4NTgzZTgzMGJzIiwiZGF0ZSI6IjIwMjYtMDktMTUifQ==\"}"
     },
     {
-      "time": "2026-09-12T09:29:58.608Z",
+      "time": "2026-09-12T09:46:43.926Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/payment/23228961-2326-3s28-861f-465bb28337a3/dg-epay/initiate",
       "headers": {
@@ -185,7 +185,7 @@
       "headers": {
         "x-token": "MOCK_TURNSTILE_TOKEN_abc123",
         "authorization": "Bearer MOCK.ACCESS.TOKEN",
-        "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryARmiG1WsbGjIApEl"
+        "content-type": "multipart/form-data; boundary=----WebKitFormBoundarylVtKyFIGrbLmyizb"
       }
     },
     {
@@ -258,5 +258,19 @@
         "content-type": "application/json"
       }
     }
-  ]
+  ],
+  "extracted": {
+    "dgepayUuid": "23228961-2326-3s28-861f-465bb28337a3",
+    "initiatePath": "/payment/23228961-2326-3s28-861f-465bb28337a3/dg-epay/initiate",
+    "slotId": "139fd4d2-27c9-4758-a623-368583e830bs",
+    "endpoints": {
+      "signin": "/iams/api/v1/auth/v3-sign-in",
+      "verifyOtp": "/iams/api/v1/otp/verify-otp",
+      "uploadFile": "/iams/api/v1/file/upload_file_v321",
+      "overView": "/iams/api/v1/file/over-view-v421",
+      "bookingConfig": "/iams/api/v1/appointment/appointment-booking-config",
+      "fileConfirmation": "/iams/api/v1/file/file-confirmation-and-slot_status",
+      "paymentAmount": "/iams/api/v1/file/payment-amount"
+    }
+  }
 }
