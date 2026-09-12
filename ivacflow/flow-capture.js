@@ -461,6 +461,30 @@ function findChromeExe() {
 
     await page.waitForTimeout(400);
 
+    // 3b. Ensure Turnstile callback has fired so captcha-gated buttons enable
+    await page.evaluate((token) => {
+      // fire any pending turnstile callbacks
+      if (window.turnstile && window.turnstile.render) {
+        document.querySelectorAll('[data-callback]').forEach(el => {
+          const cbName = el.getAttribute('data-callback');
+          if (cbName && typeof window[cbName] === 'function') try { window[cbName](token); } catch(_){}
+        });
+      }
+      // fill hidden turnstile/captcha response inputs
+      document.querySelectorAll('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"], input[name*="turnstile"], input[name*="captcha"]').forEach(i => {
+        i.value = token;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+        i.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      // force-enable any disabled buttons (Turnstile usually disables submit until token)
+      document.querySelectorAll('button[disabled], input[type="submit"][disabled]').forEach(b => {
+        b.disabled = false;
+        b.removeAttribute('disabled');
+      });
+    }, MOCK.turnstile).catch(() => {});
+
+    await page.waitForTimeout(300);
+
     // 4. Find and click the most likely submit/action button
     const clicked = await page.evaluate(() => {
       const visible = (el) => {
@@ -468,28 +492,35 @@ function findChromeExe() {
         return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
       };
       const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"]')];
-      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter/i;
-      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie/i;
+      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter|now/i;
+      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up/i;
       let best = null;
       let bestScore = -1;
       for (const b of btns) {
         if (!visible(b)) continue;
-        if (b.disabled) continue;
         const txt = (b.textContent || '').trim().toLowerCase();
         const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
         const combined = txt + ' ' + ariaLabel;
-        if (skipWords.test(combined)) continue;
+        if (skipWords.test(combined) && !actionWords.test(combined)) continue;
         let score = 0;
         if (b.type === 'submit') score += 5;
         if (actionWords.test(combined)) score += 10;
         if (b.classList.contains('primary') || /primary|submit|action/.test(b.className)) score += 3;
-        if (/bg-blue|bg-green|bg-primary|btn-primary|btn-success/.test(b.className)) score += 2;
+        if (/bg-blue|bg-green|bg-primary|btn-primary|btn-success|bg-\[/.test(b.className)) score += 2;
         if (txt.length > 0 && txt.length < 30) score += 1;
+        // boost large prominent buttons (like "Sign In Now")
+        const rect = b.getBoundingClientRect();
+        if (rect.width > 200) score += 3;
         if (score > bestScore) { bestScore = score; best = b; }
       }
-      if (best) { best.click(); return true; }
-      return false;
-    }).catch(() => false);
+      if (best) {
+        best.disabled = false;
+        best.removeAttribute('disabled');
+        best.click();
+        return (best.textContent || '').trim().substring(0, 40);
+      }
+      return '';
+    }).catch(() => '');
 
     await page.waitForTimeout(STEP_PAUSE);
     writeFlow();
@@ -500,6 +531,7 @@ function findChromeExe() {
       prevCaptures = log.length;
       console.log(`  ✓ step captured (${log.length} API calls so far)`);
     } else {
+      if (clicked) console.log(`  … clicked "${clicked}" but no new API call`);
       idleRounds++;
     }
 
