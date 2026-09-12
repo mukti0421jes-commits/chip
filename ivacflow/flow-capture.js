@@ -361,43 +361,139 @@ function findChromeExe() {
   console.log('🌐 loading (headless):', URL);
   await page.goto(URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
 
-  // Drive the UI with mock data (steps from config; generic fallback otherwise).
-  const steps = cfg.steps || [
-    { fill: 'input[type="tel"], input[name*="phone" i], input[placeholder*="phone" i]', value: '$phone' },
-    { fill: 'input[type="password"]', value: '$password' },
-    { click: 'button[type="submit"], button:has-text("Sign"), button:has-text("Login"), button:has-text("Continue")' },
-    { waitMs: 2500 },
-    { fill: 'input[name*="otp" i], input[maxlength="6"], input[inputmode="numeric"]', value: '$otp' },
-    { click: 'button[type="submit"], button:has-text("Verify"), button:has-text("Continue")' },
-    { waitMs: 2500 },
-  ];
-  const val = (v) => (typeof v === 'string' && v[0] === '$') ? (MOCK[v.slice(1)] ?? v) : v;
-  for (const st of steps) {
-    try {
-      if (st.waitMs) { await page.waitForTimeout(st.waitMs); continue; }
-      if (st.press) { await page.keyboard.press(st.press).catch(() => {}); continue; }
-      // close stacked modal overlays, topmost first (advisory / notice popups)
-      if (st.closeOverlays) {
-        for (let i = 0; i < (st.closeOverlays || 6); i++) {
-          const n = await page.evaluate(() => {
-            const els = document.querySelectorAll('.fixed.inset-0'); if (!els.length) return 0;
-            const b = els[els.length - 1].querySelector('button'); if (b) b.click(); return els.length;
-          }).catch(() => 0);
-          if (!n) break; await page.waitForTimeout(600);
+  // ── Adaptive UI walker ──
+  // Instead of hardcoded selectors, we scan the visible DOM for inputs and
+  // buttons, classify them by type/name/placeholder, fill with appropriate
+  // mock data, and click submit — repeating until the flow completes or
+  // times out. This works with ANY IVAC bundle version.
+
+  const WALK_TIMEOUT = cfg.walkTimeoutMs || 45000;
+  const STEP_PAUSE = 1800;
+  const walkStart = Date.now();
+  let prevCaptures = 0;
+  let idleRounds = 0;
+  const MAX_IDLE = 8;
+
+  while (Date.now() - walkStart < WALK_TIMEOUT && idleRounds < MAX_IDLE) {
+    // 1. Close any modal/overlay popups
+    await page.evaluate(() => {
+      const overlays = document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="popup"], .fixed.inset-0, [role="dialog"]');
+      for (const o of overlays) {
+        const btn = o.querySelector('button[class*="close"], button[aria-label*="close" i], button:last-child, .close, [data-dismiss]');
+        if (btn) try { btn.click(); } catch (_) {}
+      }
+    }).catch(() => {});
+
+    // 2. Detect visible inputs and fill them with appropriate mock data
+    const filled = await page.evaluate((mock) => {
+      let count = 0;
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+      };
+      const inputs = document.querySelectorAll('input, textarea, select');
+      for (const inp of inputs) {
+        if (!visible(inp)) continue;
+        if (inp.tagName === 'SELECT') {
+          if (inp.selectedIndex <= 0 && inp.options.length > 1) {
+            inp.value = inp.options[1].value;
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            count++;
+          }
+          continue;
         }
-        continue;
+        if (inp.value && inp.value.length > 0) continue;
+        if (inp.type === 'hidden' || inp.type === 'checkbox' || inp.type === 'radio' || inp.type === 'file') continue;
+
+        const hint = (inp.type + ' ' + (inp.name || '') + ' ' + (inp.placeholder || '') + ' ' + (inp.getAttribute('aria-label') || '')).toLowerCase();
+        let val = '';
+        if (/phone|mobile|tel/.test(hint) || inp.type === 'tel') val = mock.phone;
+        else if (/password|pass/.test(hint) || inp.type === 'password') val = mock.password;
+        else if (/otp|verify|code|token/.test(hint) || inp.inputMode === 'numeric' || inp.maxLength == 6 || inp.maxLength == 4) val = mock.otp;
+        else if (/email/.test(hint) || inp.type === 'email') val = 'mock@test.com';
+        else if (/name|full.?name/.test(hint)) val = 'MOCK USER';
+        else if (/passport/.test(hint)) val = 'AB1234567';
+        else if (/date|dob|birth|expir/.test(hint) || inp.type === 'date') val = '2026-09-15';
+        else val = mock.phone;
+
+        if (val) {
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSetter.call(inp, val);
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          count++;
+        }
       }
-      // click an element by its exact visible text (React buttons/links)
-      if (st.clickText) {
-        const el = page.getByText(new RegExp('^\\s*' + st.clickText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$')).first();
-        if (await el.count()) await el.click({ timeout: 3000, force: !!st.force }).catch(() => {});
-        continue;
+      return count;
+    }, MOCK).catch(() => 0);
+
+    // 3. Handle file upload inputs
+    await page.evaluate(() => {
+      const fileInputs = document.querySelectorAll('input[type="file"]');
+      for (const fi of fileInputs) fi.removeAttribute('required');
+    }).catch(() => {});
+    const fileInputs = await page.locator('input[type="file"]').all().catch(() => []);
+    for (const fi of fileInputs) {
+      try {
+        const buf = Buffer.from('%PDF-1.4 mock passport file content');
+        const tmpFile = path.join(OUT, '_mock_passport.pdf');
+        fs.writeFileSync(tmpFile, buf);
+        await fi.setInputFiles(tmpFile, { timeout: 2000 });
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+      } catch (_) {}
+    }
+
+    await page.waitForTimeout(400);
+
+    // 4. Find and click the most likely submit/action button
+    const clicked = await page.evaluate(() => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+      };
+      const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"]')];
+      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter/i;
+      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie/i;
+      let best = null;
+      let bestScore = -1;
+      for (const b of btns) {
+        if (!visible(b)) continue;
+        if (b.disabled) continue;
+        const txt = (b.textContent || '').trim().toLowerCase();
+        const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
+        const combined = txt + ' ' + ariaLabel;
+        if (skipWords.test(combined)) continue;
+        let score = 0;
+        if (b.type === 'submit') score += 5;
+        if (actionWords.test(combined)) score += 10;
+        if (b.classList.contains('primary') || /primary|submit|action/.test(b.className)) score += 3;
+        if (/bg-blue|bg-green|bg-primary|btn-primary|btn-success/.test(b.className)) score += 2;
+        if (txt.length > 0 && txt.length < 30) score += 1;
+        if (score > bestScore) { bestScore = score; best = b; }
       }
-      if (st.fill) { const el = page.locator(st.fill).first(); if (await el.count()) await el.fill(String(val(st.value)), { timeout: 3000 }).catch(() => {}); }
-      if (st.click) { const el = page.locator(st.click).first(); if (await el.count()) await el.click({ timeout: 3000, force: !!st.force }).catch(() => {}); }
-    } catch (_) {}
+      if (best) { best.click(); return true; }
+      return false;
+    }).catch(() => false);
+
+    await page.waitForTimeout(STEP_PAUSE);
+    writeFlow();
+
+    // 5. Check progress
+    if (log.length > prevCaptures) {
+      idleRounds = 0;
+      prevCaptures = log.length;
+      console.log(`  ✓ step captured (${log.length} API calls so far)`);
+    } else {
+      idleRounds++;
+    }
+
+    // If we've captured the payment initiate call, we're done
+    if (log.some(e => /\/payment\/.*\/dg-epay\/initiate/.test(e.url) || /\/payment\/.*initiate/.test(e.url))) {
+      console.log('  ✓ payment initiate captured — flow complete');
+      break;
+    }
   }
-  await page.waitForTimeout(1500);
+
   writeFlow();
 
   // Manual mode: keep the (visible) window open so the user can drive the app by
