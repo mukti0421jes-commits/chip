@@ -45,32 +45,153 @@ const OUT = cfg.out || __dirname;
 const isApi = (u) => /\/iams\/api\/|\/api\/v\d+\/|\/payment\/|\/slots\/|\/invoice\//.test(u);
 const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
 
-// default mock success body (covers most steps); per-endpoint overrides win.
 const ENDPOINT_RESPONSES = {
-  '/auth/': { successFlag: true, statusCode: 200, message: 'Success', data: { accessToken: 'MOCK.ACCESS.TOKEN', requestId: 'mock-request-id', verified: true, status: 'ACTIVE', phone: MOCK.phone } },
-  '/otp/': { successFlag: true, statusCode: 200, message: 'OTP verified', data: { verified: true, requestId: 'mock-request-id', accessToken: 'MOCK.ACCESS.TOKEN', status: 'VERIFIED' } },
-  '/file/upload': { successFlag: true, statusCode: 200, message: 'Success', data: { fileId: 'mock-file-id', fileName: 'passport.pdf', status: 'UPLOADED' } },
-  '/file/over-view': { successFlag: true, statusCode: 200, message: 'Success', data: { fileId: 'mock-file-id', fullName: 'MOCK USER', status: 'CONFIRMED', data: [{ fullName: 'MOCK USER', primary: true }] } },
-  '/file/file-confirmation': { successFlag: true, statusCode: 200, message: 'Success', data: { fileId: 'mock-file-id', confirmed: true, slotAvailable: true, status: 'CONFIRMED' } },
-  '/file/payment-amount': { successFlag: true, statusCode: 200, message: 'Success', data: { paymentAmount: 8200, currency: 'BDT', fileId: 'mock-file-id' } },
-  '/appointment/': { successFlag: true, statusCode: 200, message: 'Success', data: { appointmentId: 'mock-appointment-id', appointmentDate: ['2026-09-15'], status: 'AVAILABLE' } },
-  '/slots/': { successFlag: true, statusCode: 200, message: 'Success', data: { reservationId: 'mock-reservation-id', reserveTtlSeconds: 660, appointmentDate: '2026-09-15', status: 'RESERVED' } },
-  '/payment/': { successFlag: true, statusCode: 200, message: 'Success', data: { webview_url: 'https://mock.gateway/pay', transactionId: 'mock-txn-id', amount: 8200 } },
-  '/high-commissions': { successFlag: true, statusCode: 200, message: 'Success', data: [{ id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' }] },
-  '/ivac-centers': { successFlag: true, statusCode: 200, message: 'Success', data: [{ id: 1, name: 'IVAC Dhaka', center: 'Dhaka' }] },
+  '/auth/v3-sign-in': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
+      requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
+      phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
+      expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
+      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true },
+    },
+  },
+  '/auth/signup': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'PENDING', otpChannel: 'PHONE' },
+  },
+  '/otp/verify': {
+    successFlag: true, statusCode: 200, message: 'OTP verified',
+    data: {
+      verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
+      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
+      tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
+      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true },
+    },
+  },
+  '/otp/signup': {
+    successFlag: true, statusCode: 200, message: 'OTP sent',
+    data: { requestId: 'mock-request-id', phone: MOCK.phone, otpChannel: 'PHONE', status: 'SENT' },
+  },
+  '/file/upload': {
+    successFlag: true, statusCode: 200, message: 'File uploaded',
+    data: {
+      fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT',
+      status: 'UPLOADED', isPrimary: true, uploadedAt: new Date().toISOString(),
+      mimeType: 'application/pdf', size: 1024,
+    },
+  },
+  '/file/over-view': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      fileId: 'mock-file-id', fullName: 'MOCK USER', status: 'CONFIRMED',
+      passportNumber: 'AB1234567', nationality: 'BANGLADESHI', gender: 'MALE',
+      dateOfBirth: '1990-01-01', passportExpiry: '2030-01-01',
+      visaType: 'TOURIST', travelDate: '2026-09-20',
+      isPrimary: true, primary: true,
+      data: [{ fullName: 'MOCK USER', primary: true, fileId: 'mock-file-id', passportNumber: 'AB1234567' }],
+      files: [{ fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT', isPrimary: true }],
+    },
+  },
+  '/file/file-confirmation': {
+    successFlag: true, statusCode: 200, message: 'Confirmed',
+    data: {
+      fileId: 'mock-file-id', confirmed: true, slotAvailable: true,
+      status: 'CONFIRMED', confirmationId: 'mock-confirmation-id',
+      applicantName: 'MOCK USER', passportNumber: 'AB1234567',
+      visaType: 'TOURIST', mission: 'Indian High Commission',
+      ivacCenter: 'IVAC Dhaka', slot_status: 'AVAILABLE',
+    },
+  },
+  '/file/payment-amount': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      paymentAmount: 8200, amount: 8200, currency: 'BDT',
+      fileId: 'mock-file-id', breakdown: [
+        { name: 'Visa Fee', amount: 8000 }, { name: 'Service Charge', amount: 200 },
+      ],
+      totalAmount: 8200, paymentMethod: 'ONLINE',
+    },
+  },
+  '/appointment/appointment-booking-config': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      appointmentId: 'mock-appointment-id', status: 'AVAILABLE',
+      availableDates: ['2026-09-15', '2026-09-16', '2026-09-17'],
+      appointmentDate: ['2026-09-15'],
+      mission: { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' },
+      ivacCenter: { id: 1, name: 'IVAC Dhaka', address: 'Dhaka' },
+      slots: [{ id: 'mock-slot-id', date: '2026-09-15', time: '09:00', available: true }],
+      config: { maxDate: '2026-12-31', minDate: '2026-09-15' },
+    },
+  },
+  '/appointment/get-booking-config': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      amount: 8200, paymentAmount: 8200, currency: 'BDT',
+      config: { maxDate: '2026-12-31', minDate: '2026-09-15' },
+    },
+  },
+  '/high-commissions': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: [
+      { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
+      { id: 2, name: 'Indian High Commission', commissionName: 'Chittagong', country: 'India', status: 'ACTIVE' },
+    ],
+  },
+  '/ivac-centers': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: [
+      { id: 1, name: 'IVAC Dhaka', center: 'Dhaka', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE' },
+      { id: 2, name: 'IVAC Chittagong', center: 'Chittagong', address: 'Chittagong', status: 'ACTIVE' },
+    ],
+  },
+  '/slots/': {
+    successFlag: true, statusCode: 200, message: 'Slot reserved',
+    data: {
+      reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
+      appointmentDate: '2026-09-15', status: 'RESERVED',
+      slotId: 'mock-slot-id', time: '09:00',
+      expiresAt: new Date(Date.now() + 660000).toISOString(),
+    },
+  },
+  '/payment/': {
+    successFlag: true, statusCode: 200, message: 'Payment initiated',
+    data: {
+      webview_url: 'https://mock.gateway/pay', paymentUrl: 'https://mock.gateway/pay',
+      transactionId: 'mock-txn-id', amount: 8200, currency: 'BDT',
+      reservationId: 'mock-reservation-id', status: 'INITIATED',
+      redirectUrl: 'https://mock.gateway/pay', gatewayRef: 'mock-gw-ref',
+    },
+  },
+  '/forgot-password': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'SENT' },
+  },
+  '/profile': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE' },
+  },
+  '/invoice': {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: { invoiceId: 'mock-invoice-id', amount: 8200, status: 'PAID', downloadUrl: 'https://mock/invoice.pdf' },
+  },
 };
 
 function mockBodyFor(url) {
   for (const key of Object.keys(RESPONSES)) if (url.includes(key)) return RESPONSES[key];
-  for (const key of Object.keys(ENDPOINT_RESPONSES)) if (url.includes(key)) return ENDPOINT_RESPONSES[key];
+  // match most specific endpoint first (longer key = more specific)
+  const sorted = Object.keys(ENDPOINT_RESPONSES).sort((a, b) => b.length - a.length);
+  for (const key of sorted) if (url.includes(key)) return ENDPOINT_RESPONSES[key];
   return {
     successFlag: true, statusCode: 200, message: 'Success',
     data: {
       accessToken: 'MOCK.ACCESS.TOKEN', requestId: 'mock-request-id',
-      verified: true, appointmentId: 'mock-appointment-id',
-      fileId: 'mock-file-id', paymentAmount: 8200,
+      verified: true, status: 'SUCCESS', appointmentId: 'mock-appointment-id',
+      fileId: 'mock-file-id', paymentAmount: 8200, amount: 8200,
       reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
       appointmentDate: ['2026-09-15'], webview_url: 'https://mock.gateway/pay',
+      userId: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER',
       data: [{ fullName: 'MOCK USER', primary: true, commissionName: 'Dhaka', ivacCenter: null }],
     },
   };
@@ -83,14 +204,39 @@ function turnstileInitScript(token) {
     const T = ${JSON.stringify(token)};
     window.__mockTurnstile = T;
     const stub = {
-      render: (el, opts) => { try { opts && opts.callback && opts.callback(T); } catch(e){} return 'mock-widget'; },
-      getResponse: () => T, reset: () => {}, remove: () => {}, execute: () => { return T; },
-      isExpired: () => false, ready: (cb) => { try { cb && cb(); } catch(e){} },
+      render: (el, opts) => {
+        try { if (opts && opts.callback) setTimeout(() => opts.callback(T), 50); } catch(e){}
+        return 'mock-widget';
+      },
+      getResponse: (id) => T,
+      reset: () => {},
+      remove: () => {},
+      execute: (container, opts) => {
+        try { if (opts && opts.callback) setTimeout(() => opts.callback(T), 50); } catch(e){}
+        return T;
+      },
+      isExpired: () => false,
+      ready: (cb) => { try { if (cb) setTimeout(cb, 10); } catch(e){} },
     };
-    // re-define on every script load attempt so async Turnstile SDK can't overwrite
     Object.defineProperty(window, 'turnstile', { get: () => stub, set: () => {}, configurable: false });
-    // fill hidden turnstile inputs as they appear
-    const fill = () => document.querySelectorAll('input[name="cf-turnstile-response"],input[name="g-recaptcha-response"]').forEach(i => { i.value = T; });
+    // intercept dynamic Turnstile script injection
+    const origAppend = Element.prototype.appendChild;
+    Element.prototype.appendChild = function(child) {
+      if (child.tagName === 'SCRIPT' && child.src && /challenges\\.cloudflare|turnstile/i.test(child.src)) {
+        const fake = document.createElement('script');
+        fake.textContent = '/* turnstile blocked */';
+        return origAppend.call(this, fake);
+      }
+      return origAppend.call(this, child);
+    };
+    // fill hidden turnstile/recaptcha inputs as they appear
+    const fill = () => {
+      document.querySelectorAll('input[name="cf-turnstile-response"],input[name="g-recaptcha-response"]').forEach(i => { i.value = T; });
+      document.querySelectorAll('[data-callback]').forEach(el => {
+        const cbName = el.getAttribute('data-callback');
+        if (cbName && typeof window[cbName] === 'function') try { window[cbName](T); } catch(e){}
+      });
+    };
     new MutationObserver(fill).observe(document.documentElement, { childList: true, subtree: true });
     fill();
   })();`;
