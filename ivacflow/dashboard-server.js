@@ -230,11 +230,12 @@ $('probe').onclick=async()=>{
     if(pollTimer)clearInterval(pollTimer);
     pollTimer=setInterval(async()=>{
       const f=await fetch('/api/probe-flow').then(x=>x.json()).catch(()=>null);
-      if(f&&f.ok){renderCap(f.captured||[]);if(f.template)renderTpl(f.template);}
+      if(f&&f.ok){renderCap(f.captured||[]);if(f.template)renderTpl(f.template);if(f.config)render(f);}
     },2000);
     return;
   }
   addLog('✅ probe শেষ — '+j.observed.length+' টা request ধরা পড়েছে');
+  if(j.config)render(j);
   if(j.template)renderTpl(j.template);renderCap(j.captured||[]);$('note').textContent='probe done';
 };
 function renderCap(c){
@@ -255,7 +256,7 @@ $('demo').onclick=async()=>{
   addLog('▶ Demo — signin→initiate ৯ ধাপ mock walk, দৃশ্যমান window খুলছে…');$('note').textContent='demo চলছে…';
   const r=await fetch('/api/probe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({demo:true,headless:false})});
   const j=await r.json();
-  if(j.ok){addLog('✅ demo শেষ — '+j.observed.length+' ধাপ ধরা পড়েছে');renderCap(j.captured||[]);$('note').textContent='demo done';}
+  if(j.ok){addLog('✅ demo শেষ — '+j.observed.length+' ধাপ ধরা পড়েছে');if(j.config)render(j);renderCap(j.captured||[]);$('note').textContent='demo done';}
   else{addLog('❌ demo: '+j.error);$('note').textContent='❌ '+j.error;}
 };
 $('save').onclick=async()=>{const r=await fetch('/api/save',{method:'POST'});$('note').textContent=(await r.json()).ok?'✅ saved → values.json':'❌ save ব্যর্থ';};
@@ -463,7 +464,7 @@ const server = http.createServer(async (req, res) => {
         const captured = readCaptured(outDir);
         markProbed(captured);
         res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ ok: true, observed: captured.map((c) => c.url), captured, template: snapshot.template }));
+        return res.end(JSON.stringify({ ok: true, observed: captured.map((c) => c.url), captured, template: snapshot.template, config: snapshot.config, bundleName: snapshot.bundleName, at: snapshot.at }));
       } catch (e) {
         res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
       }
@@ -498,7 +499,7 @@ const server = http.createServer(async (req, res) => {
       const captured = readCaptured(__dirname);
       markProbed(captured);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, captured, template: snapshot.template }));
+      return res.end(JSON.stringify({ ok: true, captured, template: snapshot.template, config: snapshot.config, bundleName: snapshot.bundleName, at: snapshot.at }));
     }
 
     if (u === '/api/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(snapshot)); }
