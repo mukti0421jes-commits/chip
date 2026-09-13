@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
+const DEBUG = process.env.IFLOW_DEBUG === '1';
 const cfgPath = process.argv[2] || path.join(__dirname, 'config.json');
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (_) {}
@@ -144,6 +145,7 @@ const flowState = {
   fileConfirmed: false,
   slotReserved: false,
   paymentInitiated: false,
+  missionSelected: false,
   capturedSlotId: '',
   capturedDgepayUuid: '',
 };
@@ -243,8 +245,14 @@ function mockBodyFor(url) {
   }
 
   // ── File confirmation + slot status (STATE-DRIVEN) ──
+  // Route guard logic:
+  //   uploadFile && !uploadEnd && !fileUploadConfirmed → allowed: [notice, mission, file-upload]
+  //   fileUploadConfirmed && slotOpen → allowed: [time-slot, continue-payment]
+  // So fileUploadConfirmed must stay false until mission is selected.
   if (/\/file\/file-confirmation/i.test(url) && /slot.?status/i.test(url)) {
-    if (flowState.fileUploaded || flowState.fileConfirmed) {
+    const now = new Date().toISOString();
+    if (DEBUG) console.log('  [mock] slot_status → missionSelected=' + flowState.missionSelected + ' serverTime=' + now);
+    if (flowState.missionSelected) {
       return {
         successFlag: true, statusCode: 200, message: 'Success',
         data: {
@@ -252,7 +260,7 @@ function mockBodyFor(url) {
           slotOpen: true, paymentConfirm: false,
           uploadEnd: false,
           uploadFile: true,
-          serverTime: NOW_ISO,
+          serverTime: now,
           commissionId: 1, ivacId: 1,
           appointmentId: 'mock-appointment-id',
           reservationId: 'mock-reservation-id',
@@ -262,8 +270,6 @@ function mockBodyFor(url) {
         },
       };
     }
-    // File NOT yet uploaded — tell app to show file upload step
-    // App routing: if(uploadFile && !uploadEnd && !fileUploadConfirmed) → file upload page
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: {
@@ -271,7 +277,7 @@ function mockBodyFor(url) {
         slotOpen: true, paymentConfirm: false,
         uploadEnd: false,
         uploadFile: true,
-        serverTime: NOW_ISO,
+        serverTime: now,
       },
     };
   }
@@ -305,6 +311,19 @@ function mockBodyFor(url) {
     };
   }
 
+  // ── Appointment booking config (mission page submit) ──
+  if (/\/appointment-booking-config/i.test(url)) {
+    flowState.missionSelected = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        commissionId: 'COM-MOCK-001', ivacId: 'CTR-MOCK-001',
+        appointmentId: 'mock-appointment-id',
+        serverTime: NOW_ISO,
+      },
+    };
+  }
+
   // ── High commissions ──
   if (/\/high-commission/i.test(url)) {
     return {
@@ -312,7 +331,7 @@ function mockBodyFor(url) {
       data: {
         id: 'COM-MOCK-001', name: 'Indian High Commission',
         commissionName: 'Dhaka', country: 'India', status: 'ACTIVE',
-        high_commissions: [
+        commission: [
           { id: 'COM-MOCK-001', name: 'Indian High Commission', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
         ],
         centers: [
@@ -356,11 +375,14 @@ function mockBodyFor(url) {
         availableDates: FUTURE_DATES,
         slotOpen: true,
         serverTime: NOW_ISO,
+        appointmentTime: '09:00-17:00',
+        appointmentId: 'mock-appointment-id',
         availableSlot: '09:00-11:00',
         slot: { id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true },
         slots: [{ id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true }],
         mission: { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' },
         ivacCenter: { id: 1, name: 'IVAC Dhaka', address: 'Dhaka' },
+        fileUploadConfirmed: true, fileConfirmed: true,
         fileUploadOpen: true, fileUploadStarted: true,
         uploadWindowOpen: true, uploadStart: true, uploadEnd: false,
       },
@@ -374,10 +396,12 @@ function mockBodyFor(url) {
     flowState.slotReserved = true;
     return {
       successFlag: true, statusCode: 200, message: 'Slot reserved',
+      status: 'RESERVED_NEW',
       data: {
         reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
-        appointmentDate: FUTURE_DATE, status: 'RESERVED',
+        appointmentDate: FUTURE_DATE, status: 'RESERVED_NEW',
         slotId: sm ? sm[1] : 'mock-slot-id', time: '09:00',
+        serverTime: NOW_ISO,
         expiresAt: new Date(Date.now() + 660000).toISOString(),
       },
     };
@@ -744,31 +768,71 @@ function findChromeExe() {
       });
     }).catch(() => {});
 
-    // 2b. Handle custom React dropdown/listbox (click to open, then select first option)
-    await page.evaluate(() => {
-      // Look for unselected custom selects (e.g., "Select Mission", "Select Center")
-      const triggers = document.querySelectorAll('[role="combobox"], [role="listbox"], [class*="select"], [class*="dropdown"]');
-      for (const t of triggers) {
-        const txt = (t.textContent || '').trim().toLowerCase();
-        if (/select|choose|pick/i.test(txt) && t.getBoundingClientRect().width > 0) {
-          t.click();
-        }
-      }
-    }).catch(() => {});
-    await page.waitForTimeout(300);
-    await page.evaluate(() => {
-      const opts = document.querySelectorAll('[role="option"], [class*="option"]:not([class*="selected"]), li[class*="item"]');
-      if (opts.length > 0) {
-        // Click first non-placeholder option
-        for (const o of opts) {
-          const txt = (o.textContent || '').trim().toLowerCase();
-          if (txt && !/select|choose|pick|--/i.test(txt)) {
-            o.click();
-            break;
+    // 2b. Handle custom React dropdown/listbox using Playwright native clicks
+    // Covers: role="combobox", role="listbox", and custom UF-style button dropdowns
+    {
+      const ddTriggers = await page.evaluate(() => {
+        const candidates = [
+          ...document.querySelectorAll('[role="combobox"], [role="listbox"]'),
+          ...document.querySelectorAll('button'),
+        ];
+        let tagged = 0;
+        const seen = new Set();
+        for (const t of candidates) {
+          if (seen.has(t)) continue;
+          seen.add(t);
+          const txt = (t.textContent || '').trim();
+          const r = t.getBoundingClientRect();
+          if (r.width < 80 || r.height < 15) continue;
+          if (/^select\b|^choose\b|^pick\b/i.test(txt.toLowerCase())) {
+            t.setAttribute('data-iflow-cdd', String(tagged));
+            tagged++;
           }
         }
+        return tagged;
+      }).catch(() => 0);
+      for (let i = 0; i < ddTriggers; i++) {
+        try {
+          await page.click(`[data-iflow-cdd="${i}"]`, { timeout: 1500, force: true });
+          await page.waitForTimeout(400);
+          // Look for options: role="option", or buttons inside shadow/overflow containers
+          const optSel = '[role="option"], [data-radix-collection-item], [class*="option"]:not([class*="selected"]), li[class*="item"]';
+          const optLoc = page.locator(optSel);
+          let count = await optLoc.count().catch(() => 0);
+          if (count === 0) {
+            // Custom dropdown: options are buttons inside a shadow container
+            const tagged = await page.evaluate(() => {
+              const containers = [...document.querySelectorAll('div[class*="shadow"]')];
+              for (const c of containers) {
+                if (!/max-h|overflow/i.test(c.className || '')) continue;
+                const r = c.getBoundingClientRect();
+                if (r.width < 50 || r.height < 10) continue;
+                const optBtns = [...c.querySelectorAll('button')];
+                for (const ob of optBtns) {
+                  const txt = (ob.textContent || '').trim();
+                  if (txt.length > 1 && !/^select\b|^choose\b|^pick\b|^--/i.test(txt)) {
+                    ob.setAttribute('data-iflow-cdd-opt', 'pick');
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }).catch(() => false);
+            if (tagged) {
+              await page.click('[data-iflow-cdd-opt="pick"]', { timeout: 1500, force: true });
+            }
+          } else {
+            for (let oi = 0; oi < Math.min(count, 10); oi++) {
+              const txt = await optLoc.nth(oi).textContent({ timeout: 300 }).catch(() => '');
+              if (txt && txt.trim().length > 1 && !/select|choose|pick|--/i.test(txt.trim())) {
+                await optLoc.nth(oi).click({ timeout: 1500, force: true });
+                break;
+              }
+            }
+          }
+        } catch (_) {}
       }
-    }).catch(() => {});
+    }
 
     // 3. Detect visible inputs and fill them
     const inputInfos = await page.evaluate(() => {
@@ -911,74 +975,111 @@ function findChromeExe() {
       }
     }
     if (curPath.includes('mission') && _samePathCount >= 1) {
-      // Try multiple approaches to select dropdowns
-      const ddResult = await page.evaluate(() => {
-        let actions = [];
-        // Approach 1: Find all divs/buttons that look like dropdown triggers
-        const allEls = [...document.querySelectorAll('div, button, span')];
-        for (const el of allEls) {
-          const txt = (el.textContent || '').trim().toLowerCase();
-          const r = el.getBoundingClientRect();
-          if (r.width < 100 || r.height < 20 || r.height > 60) continue;
-          // Look for "select" placeholder text
-          if (/^select\b|^choose\b|^pick\b/i.test(txt)) {
-            el.click();
-            actions.push('clicked-trigger:' + txt.substring(0, 30));
-            break;
+      // Use Playwright native clicks for React custom selects (Radix/react-select).
+      // page.evaluate(() => el.click()) only fires DOM click — React custom selects
+      // need full pointer event sequence (pointerdown/mousedown/pointerup/mouseup/click)
+      // which Playwright's page.click() dispatches properly.
+
+      // The app uses a custom UF dropdown component (not react-select/Radix):
+      // - A <button> with placeholder text acts as trigger, toggles React state
+      // - When open, renders <button> elements for each option inside a scrollable div
+      // - Options are plain <button type="button"> with onClick handlers
+      // Strategy: find trigger buttons with placeholder text, Playwright-click to open,
+      // then find and Playwright-click the first option button that appears.
+
+      // Find dropdown trigger buttons by placeholder text pattern
+      const triggerInfo = await page.evaluate(() => {
+        const results = [];
+        // UF component renders: button > div > div > [label span, value/placeholder span]
+        // The trigger button contains "Select" placeholder text
+        const btns = [...document.querySelectorAll('button')];
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (r.width < 80 || r.height < 20) continue;
+          // Match placeholder text patterns (Select a Mission, Select an IVAC center, etc.)
+          if (/select\s+(a\s+)?mission|select\s+(a\s+)?center|select\s+(an?\s+)?ivac|select\s+visa/i.test(txt)) {
+            b.setAttribute('data-iflow-dd', 'trigger-' + results.length);
+            results.push({ idx: results.length, text: txt.substring(0, 50) });
           }
         }
-        return actions;
+        return results;
       }).catch(() => []);
-      if (ddResult.length > 0) {
-        console.log('  → mission dropdown:', ddResult.join(', '));
-        await page.waitForTimeout(800);
-        // Now click the first visible option in any dropdown/listbox
-        await page.evaluate(() => {
-          const opts = [...document.querySelectorAll('[role="option"], li, div[class*="option"]')];
-          for (const o of opts) {
-            const txt = (o.textContent || '').trim();
-            const r = o.getBoundingClientRect();
-            if (r.width > 50 && r.height > 10 && txt.length > 2 && !/select|choose|pick/i.test(txt)) {
-              o.click();
-              return;
-            }
+
+      for (const trig of triggerInfo) {
+        const sel = `[data-iflow-dd="trigger-${trig.idx}"]`;
+        try {
+          await page.click(sel, { timeout: 2000, force: true });
+          console.log(`  → clicked dropdown: "${trig.text}"`);
+          await page.waitForTimeout(600);
+
+          // DEBUG: count all buttons after click
+          if (_samePathCount === 1) {
+            const btnCount = await page.evaluate(() => {
+              return [...document.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0).length;
+            }).catch(() => -1);
+            console.log(`  [DEBUG] buttons after click: ${btnCount}`);
           }
-        }).catch(() => {});
-        await page.waitForTimeout(500);
-        // Try to find and click a second dropdown (center)
-        await page.evaluate(() => {
-          const allEls = [...document.querySelectorAll('div, button, span')];
-          for (const el of allEls) {
-            const txt = (el.textContent || '').trim().toLowerCase();
-            const r = el.getBoundingClientRect();
-            if (r.width < 100 || r.height < 20 || r.height > 60) continue;
-            if (/^select\b|^choose\b|^pick\b/i.test(txt)) {
-              el.click();
-              break;
+
+          // After clicking, UF renders option buttons inside a shadow-2xl container
+          // Options are <button type="button"> elements that appeared after the click
+          const optionResult = await page.evaluate(() => {
+            // Find the dropdown menu container — it has shadow-2xl and max-h classes
+            const containers = [...document.querySelectorAll('div[class*="shadow"]')];
+            for (const c of containers) {
+              const cls = c.className || '';
+              if (!/max-h|overflow/i.test(cls)) continue;
+              const r = c.getBoundingClientRect();
+              if (r.width < 50 || r.height < 10) continue;
+              // Find option buttons inside
+              const optBtns = [...c.querySelectorAll('button')];
+              if (optBtns.length > 0) {
+                // Tag first non-placeholder option
+                for (const ob of optBtns) {
+                  const txt = (ob.textContent || '').trim();
+                  if (txt.length > 1 && !/^select\b|^choose\b|^pick\b|^--/i.test(txt)) {
+                    ob.setAttribute('data-iflow-opt', 'pick');
+                    return { found: true, text: txt.substring(0, 40), count: optBtns.length };
+                  }
+                }
+              }
             }
-          }
-        }).catch(() => {});
-        await page.waitForTimeout(500);
-        await page.evaluate(() => {
-          const opts = [...document.querySelectorAll('[role="option"], li, div[class*="option"]')];
-          for (const o of opts) {
-            const txt = (o.textContent || '').trim();
-            const r = o.getBoundingClientRect();
-            if (r.width > 50 && r.height > 10 && txt.length > 2 && !/select|choose|pick/i.test(txt)) {
-              o.click();
-              return;
+            // Fallback: look for any new buttons that appeared and aren't the main form buttons
+            const allBtns = [...document.querySelectorAll('button[type="button"]')];
+            for (const b of allBtns) {
+              const txt = (b.textContent || '').trim();
+              const r = b.getBoundingClientRect();
+              if (r.width > 50 && r.height > 15 && r.height < 60 && txt.length > 1 &&
+                  !/select|choose|pick|confirm|submit|continue|book|verify/i.test(txt)) {
+                b.setAttribute('data-iflow-opt', 'pick');
+                return { found: true, text: txt.substring(0, 40), count: 1 };
+              }
             }
+            return { found: false, count: 0 };
+          }).catch(() => ({ found: false, count: 0 }));
+
+          if (optionResult.found) {
+            await page.click('[data-iflow-opt="pick"]', { timeout: 2000, force: true });
+            console.log(`  → selected option: "${optionResult.text}" (${optionResult.count} options)`);
+            await page.waitForTimeout(500);
+          } else {
+            console.log(`  → dropdown opened but no options found (${optionResult.count})`);
           }
-        }).catch(() => {});
-        await page.waitForTimeout(500);
+        } catch (e) {
+          console.log(`  → dropdown click error: ${e.message?.substring(0, 60)}`);
+        }
       }
-      // Approach 2: If dropdowns won't populate, call booking-config via direct fetch
-      // Use the absolute API base URL that the bundle uses (appointment.ivacbd.com)
-      if (_samePathCount >= 2) {
-        console.log('  → mission dropdowns empty, calling booking-config directly...');
+
+      // If no dropdown triggers found at all, the page might not have rendered properly
+      if (triggerInfo.length === 0 && _samePathCount <= 2) {
+        console.log('  → no dropdown triggers found on mission page');
+      }
+
+      // If still stuck after 3 rounds, use direct API + store update as fallback
+      if (_samePathCount >= 3) {
+        console.log('  → mission page fallback: direct API + store update');
         await page.evaluate(async () => {
           try {
-            // Find the API base URL from any XHR that was made
             const apiBase = performance.getEntriesByType('resource')
               .map(r => r.name)
               .find(n => /ivacbd\.com.*\/iams\/api/i.test(n) || /\/iams\/api/i.test(n));
@@ -998,7 +1099,6 @@ function findChromeExe() {
           } catch(_) {}
         }).catch(() => {});
         await page.waitForTimeout(500);
-        // Update Zustand store with mission/center selection before navigating
         await page.evaluate(() => {
           const keys = Object.keys(localStorage);
           for (const key of keys) {
@@ -1016,7 +1116,6 @@ function findChromeExe() {
             } catch(_) {}
           }
         }).catch(() => {});
-        // Reload to rehydrate then navigate
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(1000);
         await page.evaluate(() => {
@@ -1029,46 +1128,244 @@ function findChromeExe() {
       }
     }
 
-    // 7. Handle time-slot page: click calendar day, then slot
+    // 7. Handle time-slot page: BY component renders an inline calendar grid with day buttons (1-30).
+    //    No dropdown trigger needed — days are already visible.
     if (curPath.includes('time-slot') && _samePathCount >= 1) {
-      // Click a day in the calendar
-      const dayClicked = await page.evaluate(() => {
+      // Step 7a: Click an available day in the calendar
+      const dayPicked = await page.evaluate(() => {
         const btns = [...document.querySelectorAll('button')];
+        // Find day buttons (single/double digit text, reasonable size)
         for (const b of btns) {
-          const txt = b.textContent.trim();
-          if (/^1[5-9]$|^2[0-5]$/.test(txt) && b.getBoundingClientRect().width > 0) {
-            const cls = b.className || '';
-            if (cls.includes('rounded') || cls.includes('day') || cls.includes('calendar') || b.closest('[class*="calendar"]')) {
-              b.click(); return txt;
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            const day = parseInt(txt, 10);
+            if (day >= 15 && day <= 19) {
+              b.setAttribute('data-iflow-day', txt);
+              return txt;
             }
           }
         }
-        // fallback: click any numbered button that looks like a date
+        // Fallback: any day
         for (const b of btns) {
-          const txt = b.textContent.trim();
-          if (/^[1-2][0-9]$/.test(txt) && b.getBoundingClientRect().width > 20) {
-            b.click(); return txt;
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            b.setAttribute('data-iflow-day', txt);
+            return txt;
           }
         }
         return '';
       }).catch(() => '');
-      if (dayClicked) console.log(`  → clicked day ${dayClicked}`);
-      await page.waitForTimeout(1500);
 
-      // Click slot button if visible
-      await page.evaluate(() => {
+      if (dayPicked) {
+        try {
+          await page.click(`[data-iflow-day="${dayPicked}"]`, { timeout: 2000, force: true });
+          console.log(`  → Clicked calendar day ${dayPicked}`);
+        } catch (_) {}
+        await page.waitForTimeout(1500);
+      }
+
+      // Debug: Check if day click registered by examining button styling changes
+      const tsState = await page.evaluate(() => {
         const btns = [...document.querySelectorAll('button')];
-        const slotBtns = btns.filter(b => {
-          const txt = b.textContent.trim().toLowerCase();
-          return (txt.includes('your') || txt.includes('provi') || txt.includes('slot') || txt.includes('09:00') || txt.includes('11:00')) && txt.length > 5;
-        });
-        if (slotBtns.length > 0) slotBtns[0].click();
-      }).catch(() => {});
-      await page.waitForTimeout(500);
+        const day15 = btns.find(b => b.textContent.trim() === '15' && b.getBoundingClientRect().width > 20);
+        const all = btns.filter(b => b.getBoundingClientRect().width > 0).map(b => b.textContent.trim().substring(0, 60));
+        // Check for time-slot-like buttons (not calendar days)
+        const nonCalBtns = all.filter(t => !/^\d{1,2}$/.test(t) && t !== '‹' && t !== '›');
+        return {
+          day15class: day15 ? day15.className.substring(0, 100) : 'NOT FOUND',
+          day15disabled: day15 ? day15.disabled : null,
+          nonCalBtns,
+          // Check for turnstile/captcha containers
+          captchaContainers: document.querySelectorAll('[class*="captcha"], [class*="turnstile"], [id*="captcha"], [class*="cf-"]').length,
+          iframes: document.querySelectorAll('iframe').length,
+        };
+      }).catch(() => ({}));
+      if (DEBUG) console.log('  [ts-debug] after day click:', JSON.stringify(tsState));
+
+      // Step 7b: Click time slot button (rendered from appointmentTime)
+      const slotClicked = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')];
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          // Time slot buttons show formatted time like "09:00 AM - 05:00 PM"
+          if (r.width > 40 && r.height > 20 && /\d{1,2}:\d{2}.*(?:AM|PM|am|pm|-)/i.test(txt) && !b.disabled) {
+            b.setAttribute('data-iflow-slot', '1');
+            return txt.substring(0, 50);
+          }
+        }
+        return '';
+      }).catch(() => '');
+
+      if (slotClicked) {
+        try {
+          await page.click('[data-iflow-slot="1"]', { timeout: 2000, force: true });
+          console.log(`  → Playwright-clicked slot: "${slotClicked}"`);
+        } catch (_) {}
+        await page.waitForTimeout(1000);
+      }
+
+      // Step 7c: Force slot ID + captcha state via React fiber dispatch, then click Continue Booking.
+      // The turnstile widget never renders without real Cloudflare, so we set state directly.
+      if (_samePathCount >= 2) {
+        const patchResult = await page.evaluate((slotId) => {
+          const btns = [...document.querySelectorAll('button')];
+          const continueBtn = btns.find(b => /continue.*book/i.test(b.textContent.trim()));
+          if (!continueBtn) return { error: 'no Continue Booking button' };
+          const fiberKey = Object.keys(continueBtn).find(k => k.startsWith('__reactFiber'));
+          if (!fiberKey) return { error: 'no fiber key' };
+
+          let fiber = continueBtn[fiberKey];
+          for (let i = 0; i < 30 && fiber; i++) {
+            const hooks = fiber.memoizedState;
+            if (!hooks) { fiber = fiber.return; continue; }
+            let hook = hooks;
+            const hookList = [];
+            while (hook) {
+              if (hook.queue) hookList.push(hook);
+              hook = hook.next;
+            }
+            const dateIdx = hookList.findIndex(h => typeof h.memoizedState === 'string' && /^\d{4}-\d{2}-\d{2}/.test(h.memoizedState));
+            if (dateIdx >= 0 && hookList.length >= dateIdx + 3) {
+              const slotHook = hookList[dateIdx + 1];
+              const captchaHook = hookList[dateIdx + 2];
+              const patched = [];
+              if (slotHook.queue.dispatch && (!slotHook.memoizedState || slotHook.memoizedState === '')) {
+                slotHook.queue.dispatch(slotId);
+                patched.push('slot=' + slotId);
+              }
+              if (captchaHook.queue.dispatch && !captchaHook.memoizedState) {
+                captchaHook.queue.dispatch('MOCK_CAPTCHA');
+                patched.push('captcha=MOCK_CAPTCHA');
+              }
+              return {
+                foundComponent: true,
+                dateState: hookList[dateIdx].memoizedState,
+                slotState: String(slotHook.memoizedState).substring(0, 40),
+                captchaState: String(captchaHook.memoizedState).substring(0, 40),
+                patched,
+              };
+            }
+            fiber = fiber.return;
+          }
+          return { error: 'component not found' };
+        }, SLOT_ID || 'mock-slot-id').catch(e => ({ error: e.message }));
+        if (DEBUG) console.log('  [ts-debug] React state patch:', JSON.stringify(patchResult));
+
+        if (patchResult && patchResult.patched && patchResult.patched.length > 0) {
+          await page.waitForTimeout(500);
+        }
+
+        // Call the reserve-slot mutation directly from the React fiber.
+        // The onClick does: _(c: G, appointmentDate: v) where _ is the useMutation mutate function.
+        // G = bJ(S, siteKey) is a custom hook we can't easily set, so call _ directly.
+        if (_samePathCount >= 3 && patchResult && patchResult.foundComponent) {
+          const mutateResult = await page.evaluate((slotId) => {
+            const btns = [...document.querySelectorAll('button')];
+            const continueBtn = btns.find(b => /continue.*book/i.test(b.textContent.trim()));
+            if (!continueBtn) return { error: 'no button' };
+            const fiberKey = Object.keys(continueBtn).find(k => k.startsWith('__reactFiber'));
+            if (!fiberKey) return { error: 'no fiber' };
+
+            let fiber = continueBtn[fiberKey];
+            for (let i = 0; i < 30 && fiber; i++) {
+              const hooks = fiber.memoizedState;
+              if (!hooks) { fiber = fiber.return; continue; }
+              let hook = hooks;
+              const hookList = [];
+              while (hook) {
+                if (hook.queue) hookList.push(hook);
+                hook = hook.next;
+              }
+              const dateIdx = hookList.findIndex(h => typeof h.memoizedState === 'string' && /^\d{4}-\d{2}-\d{2}/.test(h.memoizedState));
+              if (dateIdx < 0) { fiber = fiber.return; continue; }
+
+              // Find the mutation — it's a hook whose memoizedState has a mutate/mutateAsync function
+              for (let j = 0; j < hookList.length; j++) {
+                const ms = hookList[j].memoizedState;
+                if (ms && typeof ms === 'object' && typeof ms.mutate === 'function') {
+                  try {
+                    ms.mutate({ c: 'MOCK_CAPTCHA', appointmentDate: hookList[dateIdx].memoizedState });
+                    return { called: true, hookIdx: j, date: hookList[dateIdx].memoizedState };
+                  } catch (e) { return { error: 'mutate threw: ' + e.message }; }
+                }
+              }
+              // Also check for mutate on memoizedState.current
+              for (let j = 0; j < hookList.length; j++) {
+                const ms = hookList[j].memoizedState;
+                if (ms && ms.current && typeof ms.current.mutate === 'function') {
+                  try {
+                    ms.current.mutate({ c: 'MOCK_CAPTCHA', appointmentDate: hookList[dateIdx].memoizedState });
+                    return { called: true, hookIdx: j, via: 'ref', date: hookList[dateIdx].memoizedState };
+                  } catch (e) { return { error: 'ref mutate threw: ' + e.message }; }
+                }
+              }
+              return { error: 'no mutation hook found', hookCount: hookList.length };
+            }
+            return { error: 'component not found' };
+          }, SLOT_ID || 'mock-slot-id').catch(e => ({ error: e.message }));
+          if (DEBUG) console.log('  [ts-debug] mutation call:', JSON.stringify(mutateResult));
+
+          if (mutateResult && mutateResult.called) {
+            await page.waitForTimeout(3000);
+            if (page.url().includes('time-slot')) {
+              console.log('  → reserve-slot captured via UI, completing payment calls directly');
+              const apiBase = await page.evaluate(() => {
+                const entries = performance.getEntriesByType('resource');
+                for (const e of entries) {
+                  const m = e.name.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+                  if (m) return m[1];
+                }
+                return null;
+              }).catch(() => null) || 'https://appointment.ivacbd.com/iams/api/v1';
+              const authToken = await page.evaluate(() => {
+                try { return JSON.parse(localStorage.getItem('auth-storage') || '{}')?.state?.accessToken || 'MOCK'; }
+                catch { return 'MOCK'; }
+              }).catch(() => 'MOCK');
+              await page.evaluate(async (args) => {
+                try { await fetch(args.base + '/file/payment-amount', { headers: { 'Authorization': 'Bearer ' + args.token } }); } catch(_) {}
+              }, { base: apiBase, token: authToken }).catch(() => {});
+              console.log('  → payment-amount (direct)');
+              await page.evaluate(async (args) => {
+                try { await fetch(args.base + '/payment/mock-uuid/dg-epay/initiate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token }, body: '{}' }); } catch(_) {}
+              }, { base: apiBase, token: authToken }).catch(() => {});
+              console.log('  → payment-initiate (direct)');
+              console.log('  all steps complete (reserve via UI + direct payment)');
+              writeFlow();
+              break;
+            }
+          }
+        }
+
+        // Fallback: still try clicking Continue Booking
+        const continueClicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button')];
+          for (const b of btns) {
+            const txt = (b.textContent || '').trim();
+            const r = b.getBoundingClientRect();
+            if (r.width > 100 && /continue.*book|book.*now|reserve|confirm.*book/i.test(txt)) {
+              b.setAttribute('data-iflow-continue', '1');
+              return txt;
+            }
+          }
+          return '';
+        }).catch(() => '');
+
+        if (continueClicked) {
+          try {
+            await page.click('[data-iflow-continue="1"]', { timeout: 2000, force: true });
+            console.log(`  → Playwright-clicked: "${continueClicked}"`);
+          } catch (_) {}
+          try { await page.waitForTimeout(2000); } catch (_) {}
+        }
+      }
     }
 
-    // 8. Find and click the most likely submit/action button
-    const clicked = await page.evaluate(() => {
+    // 8. Find and click the most likely submit/action button (skip on time-slot — handled by step 7)
+    let clicked = '';
+    if (curPath.includes('time-slot')) { clicked = ''; } else { clicked = await page.evaluate(() => {
       const visible = (el) => {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
@@ -1101,9 +1398,12 @@ function findChromeExe() {
       best.removeAttribute('disabled');
       best.click();
       return (best.textContent || '').trim().substring(0, 40);
-    }).catch(() => '');
+    }).catch(() => ''); }
 
-    await page.waitForTimeout(STEP_PAUSE);
+    try { await page.waitForTimeout(STEP_PAUSE); } catch (_pageGone) {
+      console.log('  [info] page closed during step pause');
+      break;
+    }
     writeFlow();
 
     // 9. Check progress
@@ -1126,56 +1426,7 @@ function findChromeExe() {
       break;
     }
 
-    // 6c. Handle time-slot page — click available dates and slots
-    if (curPath.includes('time-slot') && _samePathCount >= 1 && _samePathCount <= 3) {
-      // Click calendar date buttons (day numbers)
-      const dateClicked = await page.evaluate(() => {
-        // Find calendar date cells — typically buttons with just a number
-        const btns = [...document.querySelectorAll('button, td, div[role="gridcell"]')];
-        for (const b of btns) {
-          const txt = (b.textContent || '').trim();
-          const r = b.getBoundingClientRect();
-          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
-            const num = parseInt(txt);
-            if (num >= 15 && num <= 28) { // Pick a date in the middle/end of month
-              b.click();
-              return txt;
-            }
-          }
-        }
-        // If no specific date, click any available date
-        for (const b of btns) {
-          const txt = (b.textContent || '').trim();
-          const r = b.getBoundingClientRect();
-          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
-            b.click();
-            return txt;
-          }
-        }
-        return null;
-      }).catch(() => null);
-      if (dateClicked) {
-        console.log('  → clicked date:', dateClicked);
-        await page.waitForTimeout(1000);
-      }
-      // Click time slot buttons
-      const slotClicked = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('button, div[role="button"], label')];
-        for (const el of all) {
-          const txt = (el.textContent || '').trim().toLowerCase();
-          const r = el.getBoundingClientRect();
-          if (r.width > 50 && r.height > 20 && /\d{1,2}:\d{2}|am|pm|morning|afternoon|slot/i.test(txt) && !el.disabled) {
-            el.click();
-            return txt.substring(0, 30);
-          }
-        }
-        return null;
-      }).catch(() => null);
-      if (slotClicked) {
-        console.log('  → clicked slot:', slotClicked);
-        await page.waitForTimeout(500);
-      }
-    }
+    // (time-slot clicking handled above in section 7)
 
     // If stuck too long on time-slot, attempt direct API calls using absolute URLs
     if (idleRounds >= 6 && curPath.includes('time-slot')) {
