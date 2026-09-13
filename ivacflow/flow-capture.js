@@ -45,6 +45,120 @@ const OUT = cfg.out || __dirname;
 const isApi = (u) => /\/iams\/api\/|\/api\/v\d+\/|\/payment\/|\/slots\/|\/invoice\/|api\.ivacbd\.com/.test(u);
 const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
 
+// ── Extract slotId and dgepayUuid from any IVAC bundle ──
+function extractBundleIds(bundleSrc) {
+  const ids = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
+  // slotId: appears plaintext as /slots/<uuid>/reserve-slot
+  const slotMatch = bundleSrc.match(/\/slots\/([0-9a-f-]{30,40})\/reserve-slot/);
+  if (slotMatch) ids.slotId = slotMatch[1];
+  // dgepayUuid: obfuscated in payment endpoint. Decode from the bundle's lookup array.
+  // Find the main string array function (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
+  const arrFnMatch = bundleSrc.match(/function (\w{2})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function/);
+  if (!arrFnMatch) return ids;
+  const arr = JSON.parse('[' + arrFnMatch[2] + ']');
+  // Find the two decoder functions that use this array:
+  // base64-only (wV-like): function XX(e,t){e-=NNN; const n=YY(); let r=n[e]; ... DaXktF/tHTyoC/vRhjKv (b64 only, no RC4)
+  // base64+RC4 (SV-like): function XX(e,t){e-=NNN; const n=YY(); let r=n[e]; ... kzMLkg/wgBNkl (b64+RC4)
+  const fnName = arrFnMatch[1];
+  // Find offset from decoders that reference this array function
+  const decoderPattern = new RegExp(`function (\\w{2})\\(e,t\\)\\{e-=(\\d+)\\nconst n=${fnName}\\(\\)`);
+  const decoders = [];
+  let dm;
+  const re = new RegExp(decoderPattern.source, 'g');
+  while ((dm = re.exec(bundleSrc)) !== null) decoders.push({ name: dm[1], offset: parseInt(dm[2]) });
+  if (decoders.length < 2) return ids;
+
+  function b64decode(str) {
+    let t = '', n = '';
+    for (let r, o, i = 0, a = 0; o = str.charAt(a++); ~o && (r = i % 4 ? 64 * r + o : o, i++ % 4) ? t += String.fromCharCode(255 & r >> (-2 * i & 6)) : 0)
+      o = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/='.indexOf(o);
+    for (let r = 0, o = t.length; r < o; r++) n += '%' + ('00' + t.charCodeAt(r).toString(16)).slice(-2);
+    return decodeURIComponent(n);
+  }
+  function rc4(str, key) {
+    let s = [], j = 0, res = '';
+    for (let i = 0; i < 256; i++) s[i] = i;
+    for (let i = 0; i < 256; i++) { j = (j + s[i] + key.charCodeAt(i % key.length)) % 256; [s[i], s[j]] = [s[j], s[i]]; }
+    let ri = 0; j = 0;
+    for (let k = 0; k < str.length; k++) { ri = (ri + 1) % 256; j = (j + s[ri]) % 256; [s[ri], s[j]] = [s[j], s[ri]]; res += String.fromCharCode(str.charCodeAt(k) ^ s[(s[ri] + s[j]) % 256]); }
+    return res;
+  }
+  // Determine which is b64-only vs b64+RC4 by checking if the function body has RC4 logic
+  const b64Fn = decoders[0], rc4Fn = decoders[1];
+  function decodePlain(idx) { return b64decode(arr[idx - b64Fn.offset]); }
+  function decodeRC4(idx, key) { return rc4(b64decode(arr[idx - rc4Fn.offset]), key); }
+
+  // The array needs shuffling first. Find the shuffle IIFE and run it.
+  // Shuffling rotates the array until a checksum matches.
+  // We brute-force: try up to 200 rotations, checking if decoded values make sense.
+  // The payment endpoint starts with "payme" — we look for that pattern.
+  const payLineMatch = bundleSrc.match(/"payme"\+[^\n]{20,300}\+"e"/);
+  if (!payLineMatch) return ids;
+
+  // Try rotations until payment endpoint decodes to something with "payment/"
+  for (let rot = 0; rot < arr.length; rot++) {
+    try {
+      // Quick sanity check: try to decode the first few indices for known patterns
+      const test = decodePlain(b64Fn.offset);
+      if (typeof test === 'string' && test.length > 0 && test.length < 200) {
+        // Try to build payment endpoint by finding "nt/dc" pattern or similar
+        // Search for a decoded value containing UUID-like pattern
+        const allDecoded = [];
+        for (let i = 0; i < arr.length; i++) {
+          try { allDecoded.push(b64decode(arr[i])); } catch(_) { allDecoded.push(''); }
+        }
+        const joined = allDecoded.join('');
+        // Look for payment UUID pattern: payment/XXXXX.../dg-epay/initiate
+        const payMatch = joined.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
+        if (payMatch) {
+          ids.dgepayUuid = payMatch[1];
+          ids.paymentEndpoint = '/payment/' + payMatch[1] + '/dg-epay/initiate';
+          return ids;
+        }
+      }
+    } catch(_) {}
+    arr.push(arr.shift());
+  }
+  return ids;
+}
+
+// Auto-detect bundle file and extract IDs
+let BUNDLE_IDS = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
+const bundlePath = cfg.bundlePath || '';
+if (bundlePath) {
+  try {
+    const src = fs.readFileSync(bundlePath, 'utf8');
+    BUNDLE_IDS = extractBundleIds(src);
+    console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
+  } catch (_) {}
+} else {
+  // Try to find bundle in the host page directory
+  const hostDir = cfg.hostOrigin ? '' : __dirname;
+  try {
+    const files = fs.readdirSync(hostDir || __dirname);
+    for (const f of files) {
+      if (f.endsWith('.js') && !f.startsWith('flow') && !f.startsWith('extract') && !f.startsWith('dashboard') && !f.startsWith('_debug')) {
+        const fp = path.join(hostDir || __dirname, f);
+        const stat = fs.statSync(fp);
+        if (stat.size > 500000) {
+          const src = fs.readFileSync(fp, 'utf8');
+          if (src.includes('reserve-slot') && src.includes('appointment')) {
+            BUNDLE_IDS = extractBundleIds(src);
+            if (BUNDLE_IDS.slotId) {
+              console.log('📦 auto-detected bundle:', f);
+              console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '54ea9f13-f1e2-4cea-9e18-f525e8242ccf';
+const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || 'dcd59a95-d55e-41ad-b57c-60416e01617e';
+const PAYMENT_ENDPOINT = cfg.paymentEndpoint || BUNDLE_IDS.paymentEndpoint || `/payment/${DGEPAY_UUID}/dg-epay/initiate`;
+
 const ENDPOINT_RESPONSES = {
   '/auth/v2-sign-in': {
     successFlag: true, statusCode: 200, message: 'Success',
@@ -225,7 +339,7 @@ let _slotReserved = false;
 function mockBodyFor(url) {
   for (const key of Object.keys(RESPONSES)) if (url.includes(key)) return RESPONSES[key];
   if (url.includes('reserve-slot') || url.includes('/slots/')) _slotReserved = true;
-  if (url.includes('file-confirmation_and_slot_status')) {
+  if (url.includes('file-confirmation') && url.includes('slot_status')) {
     _statusCallCount++;
     if (_slotReserved) {
       return { successFlag: true, statusCode: 200, message: 'Success',
@@ -590,48 +704,72 @@ function findChromeExe() {
           }).catch(() => 'MOCK.ACCESS.TOKEN');
 
           // 1. Reserve slot
-          const reserveResult = await page.evaluate(async (token) => {
+          const reserveResult = await page.evaluate(async (args) => {
             const entries = performance.getEntriesByType('resource').map(e => e.name);
             const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
             const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
             try {
-              const r = await fetch(base + '/iams/api/v1/slots/54ea9f13-f1e2-4cea-9e18-f525e8242ccf/reserve-slot', {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              const r = await fetch(base + '/iams/api/v1/slots/' + args.slotId + '/reserve-slot', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token },
                 body: JSON.stringify({ c: 'MOCK_TURNSTILE_TOKEN', appointmentDate: '2026-09-15' }),
               });
               return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
             } catch (e) { return { ok: false, err: e.message }; }
-          }, authToken).catch(e => ({ ok: false, err: e.message }));
+          }, { token: authToken, slotId: SLOT_ID }).catch(e => ({ ok: false, err: e.message }));
           console.log('  → reserve-slot:', reserveResult.ok ? 'OK' : reserveResult.err);
 
           // 2. GET payment-amount
-          const amountResult = await page.evaluate(async (token) => {
+          const amountResult = await page.evaluate(async (args) => {
             const entries = performance.getEntriesByType('resource').map(e => e.name);
             const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
             const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
             try {
               const r = await fetch(base + '/iams/api/v1/file/payment-amount', {
-                headers: { 'Authorization': 'Bearer ' + token },
+                headers: { 'Authorization': 'Bearer ' + args.token },
               });
               return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
             } catch (e) { return { ok: false, err: e.message }; }
-          }, authToken).catch(e => ({ ok: false, err: e.message }));
+          }, { token: authToken }).catch(e => ({ ok: false, err: e.message }));
           console.log('  → payment-amount:', amountResult.ok ? 'OK' : amountResult.err);
 
           // 3. POST payment initiate (dgepay endpoint decoded from bundle)
-          const payResult = await page.evaluate(async (token) => {
+          // Try runtime extraction of payment endpoint from page scripts if not already known
+          let payEndpoint = PAYMENT_ENDPOINT;
+          if (!cfg.dgepayUuid && !BUNDLE_IDS.dgepayUuid) {
+            const runtimeEndpoint = await page.evaluate(() => {
+              try {
+                for (const s of document.querySelectorAll('script[src]')) {
+                  const src = s.src;
+                  if (!src) continue;
+                }
+                // Search the page's JS source for decoded payment endpoint
+                // All scripts have been executed; search through inline script content
+                for (const s of document.querySelectorAll('script:not([src])')) {
+                  const txt = s.textContent || '';
+                  const m = txt.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
+                  if (m) return '/payment/' + m[1] + '/dg-epay/initiate';
+                }
+              } catch(_) {}
+              return null;
+            }).catch(() => null);
+            if (runtimeEndpoint) {
+              payEndpoint = runtimeEndpoint;
+              console.log('  → runtime-extracted payment endpoint:', payEndpoint);
+            }
+          }
+          const payResult = await page.evaluate(async (args) => {
             const entries = performance.getEntriesByType('resource').map(e => e.name);
             const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
             const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
             try {
-              const r = await fetch(base + '/iams/api/v1/payment/dcd59a95-d55e-41ad-b57c-60416e01617e/dg-epay/initiate', {
+              const r = await fetch(base + '/iams/api/v1' + args.payEndpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'x-token': 'MOCK_TURNSTILE_TOKEN' },
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token, 'x-token': 'MOCK_TURNSTILE_TOKEN' },
                 body: JSON.stringify({ appointmentId: 'mock-appointment-id' }),
               });
               return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
             } catch (e) { return { ok: false, err: e.message }; }
-          }, authToken).catch(e => ({ ok: false, err: e.message }));
+          }, { token: authToken, payEndpoint }).catch(e => ({ ok: false, err: e.message }));
           console.log('  → payment-initiate:', payResult.ok ? 'OK' : payResult.err);
 
           // All direct API calls done — break the walk loop
