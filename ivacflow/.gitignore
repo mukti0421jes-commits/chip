@@ -3,3 +3,8 @@ values.json
 responses.json
 .probe-cfg.json
 .live-cfg.json
+_test_bundle.js
+_test_cfg.json
+_test_host.html
+_debug_flow.js
+_mock_passport.pdf
