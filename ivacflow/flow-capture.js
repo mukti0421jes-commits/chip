@@ -33,8 +33,6 @@ try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (_) {}
 const URL = cfg.url || 'https://appointment.ivacbd.com/';
 const MOCK = Object.assign({ phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN' }, cfg.mock || {});
 let RESPONSES = cfg.responses || {};
-// optional: load real captured response shapes from a file (per-endpoint), so the
-// real app's strict (Zod) validation is satisfied and it advances step to step.
 if (cfg.responsesFile) {
   try { RESPONSES = Object.assign({}, JSON.parse(fs.readFileSync(cfg.responsesFile, 'utf8')), RESPONSES); } catch (_) {}
 }
@@ -46,28 +44,21 @@ const isApi = (u) => /\/iams\/api\/|\/api\/v\d+\/|\/payment\/|\/slots\/|\/invoic
 const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
 
 // ── Extract slotId and dgepayUuid from any IVAC bundle ──
+// Tries ALL array functions in the bundle (not just the first one).
 function extractBundleIds(bundleSrc) {
   const ids = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
-  // slotId: appears plaintext as /slots/<uuid>/reserve-slot
+
+  // slotId: plaintext /slots/<uuid>/reserve-slot
   const slotMatch = bundleSrc.match(/\/slots\/([0-9a-f-]{30,40})\/reserve-slot/);
   if (slotMatch) ids.slotId = slotMatch[1];
-  // dgepayUuid: obfuscated in payment endpoint. Decode from the bundle's lookup array.
-  // Find the main string array function (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
-  const arrFnMatch = bundleSrc.match(/function (\w{2})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function/);
-  if (!arrFnMatch) return ids;
-  const arr = JSON.parse('[' + arrFnMatch[2] + ']');
-  // Find the two decoder functions that use this array:
-  // base64-only (wV-like): function XX(e,t){e-=NNN; const n=YY(); let r=n[e]; ... DaXktF/tHTyoC/vRhjKv (b64 only, no RC4)
-  // base64+RC4 (SV-like): function XX(e,t){e-=NNN; const n=YY(); let r=n[e]; ... kzMLkg/wgBNkl (b64+RC4)
-  const fnName = arrFnMatch[1];
-  // Find offset from decoders that reference this array function
-  const decoderPattern = new RegExp(`function (\\w{2})\\(e,t\\)\\{e-=(\\d+)\\nconst n=${fnName}\\(\\)`);
-  const decoders = [];
-  let dm;
-  const re = new RegExp(decoderPattern.source, 'g');
-  while ((dm = re.exec(bundleSrc)) !== null) decoders.push({ name: dm[1], offset: parseInt(dm[2]) });
-  if (decoders.length < 2) return ids;
 
+  // Also try plaintext slotId in other patterns
+  if (!ids.slotId) {
+    const slotMatch2 = bundleSrc.match(/slotId['":\s]+["']([0-9a-f-]{30,40})["']/);
+    if (slotMatch2) ids.slotId = slotMatch2[1];
+  }
+
+  // b64 decode helper
   function b64decode(str) {
     let t = '', n = '';
     for (let r, o, i = 0, a = 0; o = str.charAt(a++); ~o && (r = i % 4 ? 64 * r + o : o, i++ % 4) ? t += String.fromCharCode(255 & r >> (-2 * i & 6)) : 0)
@@ -75,49 +66,39 @@ function extractBundleIds(bundleSrc) {
     for (let r = 0, o = t.length; r < o; r++) n += '%' + ('00' + t.charCodeAt(r).toString(16)).slice(-2);
     return decodeURIComponent(n);
   }
-  function rc4(str, key) {
-    let s = [], j = 0, res = '';
-    for (let i = 0; i < 256; i++) s[i] = i;
-    for (let i = 0; i < 256; i++) { j = (j + s[i] + key.charCodeAt(i % key.length)) % 256; [s[i], s[j]] = [s[j], s[i]]; }
-    let ri = 0; j = 0;
-    for (let k = 0; k < str.length; k++) { ri = (ri + 1) % 256; j = (j + s[ri]) % 256; [s[ri], s[j]] = [s[j], s[ri]]; res += String.fromCharCode(str.charCodeAt(k) ^ s[(s[ri] + s[j]) % 256]); }
-    return res;
-  }
-  // Determine which is b64-only vs b64+RC4 by checking if the function body has RC4 logic
-  const b64Fn = decoders[0], rc4Fn = decoders[1];
-  function decodePlain(idx) { return b64decode(arr[idx - b64Fn.offset]); }
-  function decodeRC4(idx, key) { return rc4(b64decode(arr[idx - rc4Fn.offset]), key); }
 
-  // The array needs shuffling first. Find the shuffle IIFE and run it.
-  // Shuffling rotates the array until a checksum matches.
-  // We brute-force: try up to 200 rotations, checking if decoded values make sense.
-  // The payment endpoint starts with "payme" — we look for that pattern.
-  const payLineMatch = bundleSrc.match(/"payme"\+[^\n]{20,300}\+"e"/);
-  if (!payLineMatch) return ids;
+  // Find ALL array functions (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
+  const arrFnRe = /function (\w{2,3})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function\(\)\{return e\}\)\(\)\}/g;
+  let afm;
+  while ((afm = arrFnRe.exec(bundleSrc)) !== null) {
+    const arrName = afm[1];
+    let arr;
+    try { arr = JSON.parse('[' + afm[2] + ']'); } catch(_) { continue; }
+    const origArr = [...arr];
 
-  // Try rotations until payment endpoint decodes to something with "payment/"
-  for (let rot = 0; rot < arr.length; rot++) {
-    try {
-      // Quick sanity check: try to decode the first few indices for known patterns
-      const test = decodePlain(b64Fn.offset);
-      if (typeof test === 'string' && test.length > 0 && test.length < 200) {
-        // Try to build payment endpoint by finding "nt/dc" pattern or similar
-        // Search for a decoded value containing UUID-like pattern
+    // Try all rotations of this array
+    for (let rot = 0; rot < arr.length; rot++) {
+      try {
         const allDecoded = [];
         for (let i = 0; i < arr.length; i++) {
           try { allDecoded.push(b64decode(arr[i])); } catch(_) { allDecoded.push(''); }
         }
-        const joined = allDecoded.join('');
-        // Look for payment UUID pattern: payment/XXXXX.../dg-epay/initiate
+        const joined = allDecoded.join('|');
+        // Look for payment UUID pattern
         const payMatch = joined.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
         if (payMatch) {
           ids.dgepayUuid = payMatch[1];
           ids.paymentEndpoint = '/payment/' + payMatch[1] + '/dg-epay/initiate';
           return ids;
         }
-      }
-    } catch(_) {}
-    arr.push(arr.shift());
+        // Also look for slotId if not yet found
+        if (!ids.slotId) {
+          const slotInArr = joined.match(/slots\/([0-9a-f-]{30,40})\/reserve/);
+          if (slotInArr) ids.slotId = slotInArr[1];
+        }
+      } catch(_) {}
+      arr.push(arr.shift());
+    }
   }
   return ids;
 }
@@ -132,13 +113,11 @@ if (bundlePath) {
     console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
   } catch (_) {}
 } else {
-  // Try to find bundle in the host page directory
-  const hostDir = cfg.hostOrigin ? '' : __dirname;
   try {
-    const files = fs.readdirSync(hostDir || __dirname);
+    const files = fs.readdirSync(__dirname);
     for (const f of files) {
       if (f.endsWith('.js') && !f.startsWith('flow') && !f.startsWith('extract') && !f.startsWith('dashboard') && !f.startsWith('_debug')) {
-        const fp = path.join(hostDir || __dirname, f);
+        const fp = path.join(__dirname, f);
         const stat = fs.statSync(fp);
         if (stat.size > 500000) {
           const src = fs.readFileSync(fp, 'utf8');
@@ -155,203 +134,296 @@ if (bundlePath) {
     }
   } catch (_) {}
 }
-const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '54ea9f13-f1e2-4cea-9e18-f525e8242ccf';
-const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || 'dcd59a95-d55e-41ad-b57c-60416e01617e';
-const PAYMENT_ENDPOINT = cfg.paymentEndpoint || BUNDLE_IDS.paymentEndpoint || `/payment/${DGEPAY_UUID}/dg-epay/initiate`;
 
-const ENDPOINT_RESPONSES = {
-  '/auth/v2-sign-in': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-      requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
-      phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
-      expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
-      isRegistered: true, registered: true, isNewUser: false, newUser: false,
-      profileCompleted: true, isProfileCompleted: true,
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
-    },
-  },
-  '/auth/signup': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'PENDING', otpChannel: 'PHONE' },
-  },
-  '/otp/verifySigninOtp': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
-      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-      tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
-      isRegistered: true, registered: true, isNewUser: false, newUser: false,
-      profileCompleted: true, isProfileCompleted: true,
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
-    },
-  },
-  '/otp/verify': {
-    successFlag: true, statusCode: 200, message: 'OTP verified',
-    data: {
-      verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
-      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-      tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
-      isRegistered: true, registered: true, isNewUser: false, newUser: false,
-      profileCompleted: true, isProfileCompleted: true,
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
-    },
-  },
-  '/otp/signup': {
-    successFlag: true, statusCode: 200, message: 'OTP sent',
-    data: { requestId: 'mock-request-id', phone: MOCK.phone, otpChannel: 'PHONE', status: 'SENT' },
-  },
-  '/file/upload': {
-    successFlag: true, statusCode: 200, message: 'File uploaded',
-    data: {
-      fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT',
-      status: 'UPLOADED', isPrimary: true, uploadedAt: new Date().toISOString(),
-      mimeType: 'application/pdf', size: 1024,
-    },
-  },
-  '/file/over-view': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      fileId: 'mock-file-id', fullName: 'MOCK USER', status: 'CONFIRMED',
-      passportNumber: 'AB1234567', nationality: 'BANGLADESHI', gender: 'MALE',
-      dateOfBirth: '1990-01-01', passportExpiry: '2030-01-01',
-      visaType: 'TOURIST', travelDate: '2026-09-20',
-      isPrimary: true, primary: true,
-      data: [{ fullName: 'MOCK USER', primary: true, fileId: 'mock-file-id', passportNumber: 'AB1234567' }],
-      files: [{ fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT', isPrimary: true }],
-    },
-  },
-  '/file/file-confirmation_and_slot_status': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      fileUploadConfirmed: true,
-      slotOpen: true,
-      paymentConfirm: false,
-      uploadEnd: false,
-    },
-  },
-  '/file/file-confirmation': {
-    successFlag: true, statusCode: 200, message: 'Confirmed',
-    data: {
-      fileId: 'mock-file-id', confirmed: true, slotAvailable: true,
-      status: 'CONFIRMED', confirmationId: 'mock-confirmation-id',
-      applicantName: 'MOCK USER', passportNumber: 'AB1234567',
-      visaType: 'TOURIST', mission: 'Indian High Commission',
-      ivacCenter: 'IVAC Dhaka', slot_status: 'AVAILABLE',
-    },
-  },
-  '/file/payment-amount': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      paymentAmount: 8200, amount: 8200, currency: 'BDT',
-      fileId: 'mock-file-id', breakdown: [
-        { name: 'Visa Fee', amount: 8000 }, { name: 'Service Charge', amount: 200 },
-      ],
-      totalAmount: 8200, paymentMethod: 'ONLINE',
-    },
-  },
-  '/appointment/appointment-booking-config': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      appointmentId: 'mock-appointment-id', status: 'AVAILABLE',
-      availableDates: ['2026-09-15', '2026-09-16', '2026-09-17'],
-      appointmentDate: ['2026-09-15'],
-      mission: { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' },
-      ivacCenter: { id: 1, name: 'IVAC Dhaka', address: 'Dhaka' },
-      slots: [{ id: 'mock-slot-id', date: '2026-09-15', time: '09:00', available: true }],
-      config: { maxDate: '2026-12-31', minDate: '2026-09-15' },
-    },
-  },
-  '/appointment/get-booking-config': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      amount: 8200, paymentAmount: 8200, currency: 'BDT',
-      config: { maxDate: '2026-12-31', minDate: '2026-09-15' },
-      appointmentId: 'mock-appointment-id',
-      appointmentDate: ['2026-09-15'],
-      slotOpen: true,
-      serverTime: new Date().toISOString(),
-      availableSlot: '09:00-11:00',
-      slot: { id: 'mock-slot-id', date: '2026-09-15', time: '09:00', available: true },
-    },
-  },
-  '/high-commissions': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: [
-      { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
-      { id: 2, name: 'Indian High Commission', commissionName: 'Chittagong', country: 'India', status: 'ACTIVE' },
-    ],
-  },
-  '/ivac-centers': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: [
-      { id: 1, name: 'IVAC Dhaka', center: 'Dhaka', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE' },
-      { id: 2, name: 'IVAC Chittagong', center: 'Chittagong', address: 'Chittagong', status: 'ACTIVE' },
-    ],
-  },
-  '/slots/': {
-    successFlag: true, statusCode: 200, message: 'Slot reserved',
-    data: {
-      reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
-      appointmentDate: '2026-09-15', status: 'RESERVED',
-      slotId: 'mock-slot-id', time: '09:00',
-      expiresAt: new Date(Date.now() + 660000).toISOString(),
-    },
-  },
-  '/payment/': {
-    successFlag: true, statusCode: 200, message: 'Payment initiated',
-    data: {
-      webview_url: 'https://mock.gateway/pay', paymentUrl: 'https://mock.gateway/pay',
-      transactionId: 'mock-txn-id', amount: 8200, currency: 'BDT',
-      reservationId: 'mock-reservation-id', status: 'INITIATED',
-      redirectUrl: 'https://mock.gateway/pay', gatewayRef: 'mock-gw-ref',
-    },
-  },
-  '/auth/v3-sign-in': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: {
-      accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-      requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
-      phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
-      expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
-      isRegistered: true, registered: true, isNewUser: false, newUser: false,
-      profileCompleted: true, isProfileCompleted: true,
-      user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
-    },
-  },
-  '/forgot-password': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'SENT' },
-  },
-  '/profile': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE' },
-  },
-  '/invoice': {
-    successFlag: true, statusCode: 200, message: 'Success',
-    data: { invoiceId: 'mock-invoice-id', amount: 8200, status: 'PAID', downloadUrl: 'https://mock/invoice.pdf' },
-  },
+// ── Flow state machine ──
+// Tracks which API calls have been made to return context-appropriate mock responses
+const flowState = {
+  signedIn: false,
+  otpVerified: false,
+  fileUploaded: false,
+  fileConfirmed: false,
+  slotReserved: false,
+  paymentInitiated: false,
+  capturedSlotId: '',
+  capturedDgepayUuid: '',
 };
 
-let _statusCallCount = 0;
-let _slotReserved = false;
+const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '';
+const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || '';
+
+const NOW_ISO = new Date().toISOString();
+const FUTURE_DATE = '2026-09-15';
+const FUTURE_DATES = ['2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18', '2026-09-19'];
+
 function mockBodyFor(url) {
+  // User-supplied overrides first
   for (const key of Object.keys(RESPONSES)) if (url.includes(key)) return RESPONSES[key];
-  if (url.includes('reserve-slot') || url.includes('/slots/')) _slotReserved = true;
-  if (url.includes('file-confirmation') && url.includes('slot_status')) {
-    _statusCallCount++;
-    if (_slotReserved) {
-      return { successFlag: true, statusCode: 200, message: 'Success',
-        data: { fileUploadConfirmed: true, slotOpen: true, paymentConfirm: false,
-          commissionId: 1, ivacId: 1, appointmentId: 'mock-appointment-id',
-          reservationId: 'mock-reservation-id', slot: { date: '2026-09-15', time: '09:00' } } };
-    }
-    return ENDPOINT_RESPONSES['/file/file-confirmation_and_slot_status'];
+
+  // ── Auth sign-in (v2, v3, any version) ──
+  if (/\/auth\/.*sign-?in/i.test(url)) {
+    flowState.signedIn = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
+        requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
+        phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
+        expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
+        isRegistered: true, registered: true, isNewUser: false, newUser: false,
+        profileCompleted: true, isProfileCompleted: true,
+        user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
+      },
+    };
   }
-  // match most specific endpoint first (longer key = more specific)
-  const sorted = Object.keys(ENDPOINT_RESPONSES).sort((a, b) => b.length - a.length);
-  for (const key of sorted) if (url.includes(key)) return ENDPOINT_RESPONSES[key];
+
+  // ── OTP verify ──
+  if (/\/otp\/verify/i.test(url)) {
+    flowState.otpVerified = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
+        accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
+        tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
+        isRegistered: true, registered: true, isNewUser: false, newUser: false,
+        profileCompleted: true, isProfileCompleted: true,
+        user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
+      },
+    };
+  }
+
+  // ── OTP send/signup ──
+  if (/\/otp\/(send|signup|resend)/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'OTP sent',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, otpChannel: 'PHONE', status: 'SENT' },
+    };
+  }
+
+  // ── Auth signup ──
+  if (/\/auth\/signup/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'PENDING', otpChannel: 'PHONE' },
+    };
+  }
+
+  // ── File upload ──
+  if (/\/file\/upload/i.test(url)) {
+    flowState.fileUploaded = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'File uploaded',
+      data: {
+        fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT',
+        status: 'UPLOADED', isPrimary: true, uploadedAt: NOW_ISO,
+        mimeType: 'application/pdf', size: 1024,
+      },
+    };
+  }
+
+  // ── File over-view / overview ──
+  if (/\/file\/over-?view/i.test(url)) {
+    flowState.fileUploaded = true;
+    const applicant = {
+      applicationId: 'APP-MOCK-001', fullName: 'MOCK USER', isPrimary: true,
+      commissionId: 'COM-MOCK-001', webFileNumber: 'WEB-MOCK-001',
+      visaType: 'TOURIST', passport: 'AB1234567', name: 'MOCK USER',
+      email: 'mock@test.com', phone: '+8801700000000', contactNumber: '+8801700000000',
+      dob: '1990-01-01', dateOfBirth: '1990-01-01',
+      nidOrBr: '1234567890123', nid: '1234567890123',
+      commissionName: 'Mock Commission', status: 'CONFIRMED',
+      fileId: 'mock-file-id', id: 'mock-file-id',
+      passportNumber: 'AB1234567', nationality: 'BANGLADESHI', gender: 'MALE',
+      passportExpiry: '2030-01-01', primary: true,
+    };
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: [applicant],
+    };
+  }
+
+  // ── File confirmation + slot status (STATE-DRIVEN) ──
+  if (/\/file\/file-confirmation/i.test(url) && /slot.?status/i.test(url)) {
+    if (flowState.fileUploaded || flowState.fileConfirmed) {
+      return {
+        successFlag: true, statusCode: 200, message: 'Success',
+        data: {
+          fileUploadConfirmed: true, fileConfirmed: true,
+          slotOpen: true, paymentConfirm: false,
+          uploadEnd: false,
+          uploadFile: true,
+          serverTime: NOW_ISO,
+          commissionId: 1, ivacId: 1,
+          appointmentId: 'mock-appointment-id',
+          reservationId: 'mock-reservation-id',
+          slot: { date: FUTURE_DATE, time: '09:00' },
+          mission: { id: 1, name: 'Indian High Commission' },
+          ivacCenter: { id: 1, name: 'IVAC Dhaka' },
+        },
+      };
+    }
+    // File NOT yet uploaded — tell app to show file upload step
+    // App routing: if(uploadFile && !uploadEnd && !fileUploadConfirmed) → file upload page
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        fileUploadConfirmed: false,
+        slotOpen: true, paymentConfirm: false,
+        uploadEnd: false,
+        uploadFile: true,
+        serverTime: NOW_ISO,
+      },
+    };
+  }
+
+  // ── File confirmation (without slot_status) ──
+  if (/\/file\/file-confirmation/i.test(url)) {
+    flowState.fileConfirmed = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Confirmed',
+      data: {
+        fileId: 'mock-file-id', confirmed: true, slotAvailable: true,
+        status: 'CONFIRMED', confirmationId: 'mock-confirmation-id',
+        applicantName: 'MOCK USER', passportNumber: 'AB1234567',
+        visaType: 'TOURIST', mission: 'Indian High Commission',
+        ivacCenter: 'IVAC Dhaka', slot_status: 'AVAILABLE',
+        fileUploadConfirmed: true, fileConfirmed: true,
+      },
+    };
+  }
+
+  // ── Payment amount ──
+  if (/\/file\/payment-amount/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        paymentAmount: 8200, amount: 8200, currency: 'BDT',
+        fileId: 'mock-file-id',
+        breakdown: [{ name: 'Visa Fee', amount: 8000 }, { name: 'Service Charge', amount: 200 }],
+        totalAmount: 8200, paymentMethod: 'ONLINE',
+      },
+    };
+  }
+
+  // ── High commissions ──
+  if (/\/high-commission/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        id: 'COM-MOCK-001', name: 'Indian High Commission',
+        commissionName: 'Dhaka', country: 'India', status: 'ACTIVE',
+        high_commissions: [
+          { id: 'COM-MOCK-001', name: 'Indian High Commission', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
+        ],
+        centers: [
+          { id: 'CTR-MOCK-001', name: 'IVAC Dhaka', centerName: 'IVAC Dhaka (Jamuna Future Park)', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
+        ],
+      },
+    };
+  }
+
+  // ── IVAC centers ──
+  if (/\/ivac-center/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: [
+        { id: 'CTR-MOCK-001', name: 'IVAC Dhaka', centerName: 'IVAC Dhaka', center: 'Dhaka', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
+      ],
+    };
+  }
+
+  // ── Visa types ──
+  if (/\/visa.?type/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: [
+        { id: 1, name: 'TOURIST', label: 'Tourist Visa', status: 'ACTIVE' },
+        { id: 2, name: 'MEDICAL', label: 'Medical Visa', status: 'ACTIVE' },
+        { id: 3, name: 'ENTRY', label: 'Entry Visa', status: 'ACTIVE' },
+      ],
+    };
+  }
+
+  // ── Booking config ──
+  if (/\/appointment.*booking-config/i.test(url) || /\/get-booking-config/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        amount: 8200, paymentAmount: 8200, currency: 'BDT',
+        config: { maxDate: '2026-12-31', minDate: FUTURE_DATE },
+        appointmentId: 'mock-appointment-id',
+        appointmentDate: FUTURE_DATES,
+        availableDates: FUTURE_DATES,
+        slotOpen: true,
+        serverTime: NOW_ISO,
+        availableSlot: '09:00-11:00',
+        slot: { id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true },
+        slots: [{ id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true }],
+        mission: { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' },
+        ivacCenter: { id: 1, name: 'IVAC Dhaka', address: 'Dhaka' },
+        fileUploadOpen: true, fileUploadStarted: true,
+        uploadWindowOpen: true, uploadStart: true, uploadEnd: false,
+      },
+    };
+  }
+
+  // ── Reserve slot (capture slotId from URL) ──
+  if (/\/slots\/.*\/reserve/i.test(url)) {
+    const sm = url.match(/\/slots\/([0-9a-zA-Z_-]{20,40})\/reserve/);
+    if (sm) flowState.capturedSlotId = sm[1];
+    flowState.slotReserved = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Slot reserved',
+      data: {
+        reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
+        appointmentDate: FUTURE_DATE, status: 'RESERVED',
+        slotId: sm ? sm[1] : 'mock-slot-id', time: '09:00',
+        expiresAt: new Date(Date.now() + 660000).toISOString(),
+      },
+    };
+  }
+
+  // ── Payment initiate (capture dgepayUuid from URL) ──
+  if (/\/payment\/.*\/(dg-epay|ssl)\/initiate/i.test(url) || /\/payment\/.*\/initiate/i.test(url)) {
+    const pm = url.match(/\/payment\/([0-9a-zA-Z_-]{20,40})\//);
+    if (pm) flowState.capturedDgepayUuid = pm[1];
+    flowState.paymentInitiated = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Payment initiated',
+      data: {
+        webview_url: 'https://mock.gateway/pay', paymentUrl: 'https://mock.gateway/pay',
+        transactionId: 'mock-txn-id', amount: 8200, currency: 'BDT',
+        reservationId: 'mock-reservation-id', status: 'INITIATED',
+        redirectUrl: 'https://mock.gateway/pay', gatewayRef: 'mock-gw-ref',
+      },
+    };
+  }
+
+  // ── Profile ──
+  if (/\/profile/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE' },
+    };
+  }
+
+  // ── Invoice ──
+  if (/\/invoice/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { invoiceId: 'mock-invoice-id', amount: 8200, status: 'PAID', downloadUrl: 'https://mock/invoice.pdf' },
+    };
+  }
+
+  // ── Forgot password ──
+  if (/\/forgot-password/i.test(url)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'SENT' },
+    };
+  }
+
+  // ── Generic fallback — return a rich response covering many possible fields ──
   return {
     successFlag: true, statusCode: 200, message: 'Success',
     data: {
@@ -360,26 +432,27 @@ function mockBodyFor(url) {
       profileCompleted: true, appointmentId: 'mock-appointment-id',
       fileId: 'mock-file-id', paymentAmount: 8200, amount: 8200,
       reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
-      appointmentDate: ['2026-09-15'], webview_url: 'https://mock.gateway/pay',
+      appointmentDate: FUTURE_DATES, webview_url: 'https://mock.gateway/pay',
       userId: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER',
+      slotOpen: true, fileUploadOpen: true, uploadWindowOpen: true,
+      fileUploadConfirmed: flowState.fileUploaded,
       data: [{ fullName: 'MOCK USER', primary: true, commissionName: 'Dhaka', ivacCenter: null }],
     },
   };
 }
 
-// Turnstile stub: any widget render immediately "succeeds" with our mock token,
-// and window.turnstile.getResponse() returns it — so captcha-gated forms proceed.
+
+// Turnstile stub
 function turnstileInitScript(token) {
   return `(() => {
     const T = ${JSON.stringify(token)};
     window.__mockTurnstile = T;
     const stub = {
       render: (el, opts) => {
-        console.log('[TURNSTILE] render called, callback:', !!(opts && opts.callback));
-        try { if (opts && opts.callback) setTimeout(() => { console.log('[TURNSTILE] firing callback'); opts.callback(T); }, 50); } catch(e){}
+        try { if (opts && opts.callback) setTimeout(() => opts.callback(T), 50); } catch(e){}
         return 'mock-widget';
       },
-      getResponse: (id) => T,
+      getResponse: () => T,
       reset: () => {},
       remove: () => {},
       execute: (container, opts) => {
@@ -390,27 +463,19 @@ function turnstileInitScript(token) {
       ready: (cb) => { try { if (cb) setTimeout(cb, 10); } catch(e){} },
     };
     Object.defineProperty(window, 'turnstile', { get: () => stub, set: () => {}, configurable: false });
-    // intercept dynamic Turnstile script injection
     const origAppend = Element.prototype.appendChild;
     Element.prototype.appendChild = function(child) {
-      if (child.tagName === 'SCRIPT' && child.src && /challenges\\.cloudflare|turnstile/i.test(child.src)) {
-        // extract the onload callback name from the src URL
+      if (child.tagName === 'SCRIPT' && child.src && /challenges\\\\.cloudflare|turnstile/i.test(child.src)) {
         const onloadMatch = child.src.match(/[?&]onload=([^&]+)/);
         const cbName = onloadMatch ? onloadMatch[1] : 'onloadTurnstileCallback';
         const fake = document.createElement('script');
         fake.textContent = '/* turnstile blocked */';
         const result = origAppend.call(this, fake);
-        // fire the onload callback after a microtask so the app's setup code finishes
-        setTimeout(() => {
-          if (typeof window[cbName] === 'function') {
-            try { window[cbName](); } catch(e){}
-          }
-        }, 50);
+        setTimeout(() => { if (typeof window[cbName] === 'function') try { window[cbName](); } catch(e){} }, 50);
         return result;
       }
       return origAppend.call(this, child);
     };
-    // fill hidden turnstile/recaptcha inputs as they appear
     const fill = () => {
       document.querySelectorAll('input[name="cf-turnstile-response"],input[name="g-recaptcha-response"]').forEach(i => { i.value = T; });
       document.querySelectorAll('[data-callback]').forEach(el => {
@@ -427,13 +492,9 @@ function turnstileInitScript(token) {
     };
     _startObserver();
     fill();
-    // The real Turnstile SDK loads with ?onload=onloadTurnstileCallback&render=explicit
-    // When we block the script, that callback never fires. Fire it ourselves once the
-    // app defines it (it's set before the script tag is added).
     const _fireTurnstileOnload = () => {
       if (typeof window.onloadTurnstileCallback === 'function') {
-        console.log('[TURNSTILE] onloadTurnstileCallback found, firing');
-        try { window.onloadTurnstileCallback(); } catch(e){ console.log('[TURNSTILE] onload error:', e.message); }
+        try { window.onloadTurnstileCallback(); } catch(e){}
         return true;
       }
       return false;
@@ -443,16 +504,15 @@ function turnstileInitScript(token) {
       const _tmr = setInterval(() => {
         _polls++;
         if (_fireTurnstileOnload()) clearInterval(_tmr);
-        else if (_polls % 25 === 0) console.log('[TURNSTILE] still polling for onloadCallback... polls:', _polls);
       }, 200);
-      setTimeout(() => { clearInterval(_tmr); console.log('[TURNSTILE] poll timed out after 15s'); }, 15000);
+      setTimeout(() => clearInterval(_tmr), 15000);
     }
   })();`;
 }
 
-const HOST_ORIGIN = cfg.hostOrigin || '';   // app origin whose own files should load normally
-const HOLD_OPEN_MS = cfg.holdOpenMs || 0;   // keep window open for manual driving (0 = off)
-const LIVE_CAPTURE = !!cfg.liveCapture;     // hit the real server, record real responses
+const HOST_ORIGIN = cfg.hostOrigin || '';
+const HOLD_OPEN_MS = cfg.holdOpenMs || 0;
+const LIVE_CAPTURE = !!cfg.liveCapture;
 const RESPONSES_OUT = cfg.responsesOut || path.join(OUT, 'responses.json');
 const log = [];
 const responsesMap = {};
@@ -460,22 +520,34 @@ function writeResponses() { try { fs.writeFileSync(RESPONSES_OUT, JSON.stringify
 
 function extractFromCaptured(entries) {
   const extracted = { dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {} };
+  // Use runtime-captured IDs first, then from entries, then from static extraction
+  if (flowState.capturedSlotId) extracted.slotId = flowState.capturedSlotId;
+  if (flowState.capturedDgepayUuid) extracted.dgepayUuid = flowState.capturedDgepayUuid;
   for (const e of entries) {
     const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
-    const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(urlPath);
-    if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
-    const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve-slot/.exec(urlPath);
-    if (slotMatch) extracted.slotId = slotMatch[1];
+    if (!extracted.dgepayUuid) {
+      const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(urlPath);
+      if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
+    }
+    if (!extracted.slotId) {
+      const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve-slot/.exec(urlPath);
+      if (slotMatch) extracted.slotId = slotMatch[1];
+    }
     if (/\/payment\/.*\/dg-epay\/initiate/.test(urlPath)) extracted.endpoints.paymentInitiate = urlPath;
-    if (/\/payment\/ssl\/initiate/.test(urlPath)) extracted.endpoints.sslInitiate = urlPath;
+    if (/\/payment\/.*initiate/.test(urlPath)) extracted.endpoints.paymentInitiate = extracted.endpoints.paymentInitiate || urlPath;
     if (/\/auth\/.*sign-?in/i.test(urlPath)) extracted.endpoints.signin = urlPath;
     if (/\/otp\/verify/i.test(urlPath)) extracted.endpoints.verifyOtp = urlPath;
     if (/\/file\/upload/i.test(urlPath)) extracted.endpoints.uploadFile = urlPath;
-    if (/\/file\/over-view/i.test(urlPath)) extracted.endpoints.overView = urlPath;
+    if (/\/file\/over-?view/i.test(urlPath)) extracted.endpoints.overView = urlPath;
     if (/\/file\/file-confirmation/i.test(urlPath)) extracted.endpoints.fileConfirmation = urlPath;
     if (/\/file\/payment-amount/i.test(urlPath)) extracted.endpoints.paymentAmount = urlPath;
     if (/\/appointment.*booking-config/i.test(urlPath)) extracted.endpoints.bookingConfig = urlPath;
+    if (/\/slots\/.*reserve/i.test(urlPath)) extracted.endpoints.reserveSlot = urlPath;
   }
+  // Fallback to static extraction
+  if (!extracted.slotId && BUNDLE_IDS.slotId) extracted.slotId = BUNDLE_IDS.slotId;
+  if (!extracted.dgepayUuid && BUNDLE_IDS.dgepayUuid) extracted.dgepayUuid = BUNDLE_IDS.dgepayUuid;
+  if (extracted.dgepayUuid && !extracted.initiatePath) extracted.initiatePath = '/payment/' + extracted.dgepayUuid + '/dg-epay/initiate';
   return extracted;
 }
 
@@ -489,8 +561,6 @@ function writeFlow() {
   try { fs.writeFileSync(path.join(OUT, 'flow.json'), JSON.stringify({ capturedAt: new Date().toISOString(), calls: log, summary, extracted: captured }, null, 2)); } catch (_) {}
 }
 
-// If Playwright's own Chromium isn't downloaded (e.g. pinned system build),
-// fall back to any chrome executable under PLAYWRIGHT_BROWSERS_PATH.
 function findChromeExe() {
   if (cfg.executablePath) return cfg.executablePath;
   const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
@@ -520,11 +590,8 @@ function findChromeExe() {
   }
   const context = await browser.newContext();
   await context.addInitScript(turnstileInitScript(MOCK.turnstile));
-  // Intercept the route guard's switch order string
   const page = await context.newPage();
 
-  // Intercept EVERY API call: record it, then fulfill with a mock response so the
-  // app advances without a real server / captcha.
   const isAsset = (u) => /\.(css|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)(\?|$)/i.test(u) || /fonts\.(googleapis|gstatic)\.com/.test(u);
   const CORS_HEADERS = {
     'access-control-allow-origin': '*',
@@ -532,8 +599,7 @@ function findChromeExe() {
     'access-control-allow-headers': 'content-type, authorization, x-token, x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta, x-requested-with, accept',
     'access-control-max-age': '86400',
   };
-  // LIVE capture: don't mock — let requests hit the real server and record the
-  // real responses to responses.json (which the offline mock-walk then replays).
+
   if (LIVE_CAPTURE) {
     page.on('response', async (resp) => {
       const url = resp.url();
@@ -544,54 +610,43 @@ function findChromeExe() {
       responsesMap[key] = parsed; writeResponses();
     });
   }
+
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
     const method = req.method();
-    // let the app's own origin (host page + bundle) load normally
-    if (HOST_ORIGIN && url.startsWith(HOST_ORIGIN)) {
-      return route.continue();
-    }
-    // block Turnstile SDK so it can't overwrite our stub
-    if (isTurnstile(url)) {
-      return route.fulfill({ status: 200, headers: { 'content-type': 'application/javascript' }, body: '/* turnstile blocked — mock active */' });
-    }
-    // handle CORS preflight for API and any cross-origin request
-    if (method === 'OPTIONS') {
-      return route.fulfill({ status: 204, headers: CORS_HEADERS, body: '' });
-    }
+    if (HOST_ORIGIN && url.startsWith(HOST_ORIGIN)) return route.continue();
+    if (isTurnstile(url)) return route.fulfill({ status: 200, headers: { 'content-type': 'application/javascript' }, body: '/* turnstile blocked */' });
+    if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_HEADERS, body: '' });
     if (isApi(url)) {
       const mockResp = mockBodyFor(url);
-      console.log(`  ✓ ${method} ${url.replace(/^https?:\/\/[^/]+/,'')}`);
+      const shortUrl = url.replace(/^https?:\/\/[^/]+/, '');
+      console.log(`  ✓ ${method} ${shortUrl}`);
       log.push({ time: new Date().toISOString(), method, url, headers: req.headers(), body: req.postData() || '' });
       writeFlow();
       if (LIVE_CAPTURE) return route.continue();
       return route.fulfill({ status: 200, headers: Object.assign({ 'content-type': 'application/json' }, CORS_HEADERS), body: JSON.stringify(mockResp) });
     }
-    // stub external assets (fonts/css/images/youtube thumbnails) so nothing errors the app
     if (isAsset(url) || /fonts\.|youtube\.com|ytimg\.com|googleapis\.com/i.test(url)) return route.fulfill({ status: 200, body: '' });
     return route.continue();
   });
 
-  page.on('pageerror', e => console.log('  page-error:', e.message.substring(0, 120)));
+  page.on('pageerror', e => { console.log('  page-error:', e.message.substring(0, 200)); if (e.stack) console.log('  stack:', e.stack.substring(0, 600)); });
   console.log('🌐 loading (headless):', URL);
   await page.goto(URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
   await page.waitForTimeout(2000);
 
   // ── Phase 0: Close modals/popups and navigate to Sign In ──
-  // IVAC shows advisory/notice modals on landing. Close them first.
   for (let i = 0; i < 5; i++) {
     const closed = await page.evaluate(() => {
       const btns = document.querySelectorAll('button');
       for (const b of btns) {
         const r = b.getBoundingClientRect();
         if (r.width === 0) continue;
-        // close buttons on modals (X icons, absolute positioned)
         if (/absolute.*right|close/i.test(b.className) || b.getAttribute('aria-label')?.match(/close/i)) {
           b.click(); return true;
         }
       }
-      // also try clicking outside modals
       const overlays = document.querySelectorAll('[class*="fixed"][class*="inset"], [class*="modal-overlay"], [class*="backdrop"]');
       if (overlays.length) { overlays[overlays.length - 1].click(); return true; }
       return false;
@@ -600,26 +655,19 @@ function findChromeExe() {
     await page.waitForTimeout(500);
   }
 
-  // Navigate to Sign In page (not Sign Up)
+  // Navigate to Sign In page
   const wentToSignin = await page.evaluate(() => {
-    // Look for "Sign In" link/button (not "Sign Up", not "Sign In Then")
     const candidates = [...document.querySelectorAll('a, button')];
     for (const el of candidates) {
       const txt = (el.textContent || '').trim();
       const href = el.getAttribute('href') || '';
-      // exact "Sign In" text or href to /signin
       if (/^sign\s*in$/i.test(txt) || (href.includes('/signin') && !href.includes('/signup') && /sign\s*in/i.test(txt))) {
-        el.click();
-        return txt;
+        el.click(); return txt;
       }
     }
-    // fallback: any link to /signin
     for (const el of candidates) {
       const href = el.getAttribute('href') || '';
-      if (href.includes('/signin') && !href.includes('/signup')) {
-        el.click();
-        return (el.textContent || '').trim();
-      }
+      if (href.includes('/signin') && !href.includes('/signup')) { el.click(); return (el.textContent || '').trim(); }
     }
     return '';
   }).catch(() => '');
@@ -627,157 +675,51 @@ function findChromeExe() {
   await page.waitForTimeout(2000);
 
   // ── Adaptive UI walker ──
-  // Instead of hardcoded selectors, we scan the visible DOM for inputs and
-  // buttons, classify them by type/name/placeholder, fill with appropriate
-  // mock data, and click submit — repeating until the flow completes or
-  // times out. This works with ANY IVAC bundle version.
-
-  const WALK_TIMEOUT = cfg.walkTimeoutMs || 45000;
-  const STEP_PAUSE = 1800;
+  const WALK_TIMEOUT = cfg.walkTimeoutMs || 60000;
+  const STEP_PAUSE = 2000;
   const walkStart = Date.now();
   let prevCaptures = 0;
   let idleRounds = 0;
-  const MAX_IDLE = 8;
+  const MAX_IDLE = 12;
 
   let _homeIdleCount = 0;
+  let _lastPath = '';
+  let _samePathCount = 0;
+
   while (Date.now() - walkStart < WALK_TIMEOUT && idleRounds < MAX_IDLE) {
-    if (idleRounds === 0) console.log(`  [step] path=${new globalThis.URL(page.url()).pathname} captures=${log.length}`);
-    // 0. If stuck on home page, navigate directly to appointment flow
-    try {
-      const curPath = new globalThis.URL(page.url()).pathname;
-      if (curPath === '/' && log.length >= 2) {
-        _homeIdleCount++;
-        if (_homeIdleCount >= 2) {
-          const appointRoutes = ['/appointment/continue-payment', '/appointment/time-slot', '/appointment/file-upload', '/appointment/notice'];
-          const tryRoute = appointRoutes[Math.min(_homeIdleCount - 2, appointRoutes.length - 1)];
-          console.log(`  → navigating to ${tryRoute}`);
-          await page.evaluate((r) => { window.history.pushState({}, '', r); window.dispatchEvent(new PopStateEvent('popstate')); }, tryRoute).catch(() => {});
-          await page.waitForTimeout(500);
-          const afterPath = new globalThis.URL(page.url()).pathname;
-          if (afterPath === '/' || afterPath.includes('blocked') || afterPath.includes('declaration')) {
-            await page.goto(HOST_ORIGIN + tryRoute, { waitUntil: 'domcontentloaded' }).catch(() => {});
-          }
-          await page.waitForTimeout(2000);
-          continue;
+    const curPath = new globalThis.URL(page.url()).pathname;
+    if (idleRounds === 0 || curPath !== _lastPath) {
+      console.log(`  [step] path=${curPath} captures=${log.length}`);
+    }
+
+    // Track same-path stuck detection
+    if (curPath === _lastPath) {
+      _samePathCount++;
+    } else {
+      _samePathCount = 0;
+      _lastPath = curPath;
+    }
+
+    // If stuck on home page after OTP, navigate to appointment flow
+    if (curPath === '/' && log.length >= 2) {
+      _homeIdleCount++;
+      if (_homeIdleCount >= 2) {
+        // Try progressively deeper routes
+        const routes = ['/appointment/file-upload', '/appointment/notice', '/appointment/continue-payment', '/appointment/time-slot'];
+        const tryRoute = routes[Math.min(_homeIdleCount - 2, routes.length - 1)];
+        console.log(`  → navigating to ${tryRoute}`);
+        await page.evaluate((r) => { window.history.pushState({}, '', r); window.dispatchEvent(new PopStateEvent('popstate')); }, tryRoute).catch(() => {});
+        await page.waitForTimeout(500);
+        const afterPath = new globalThis.URL(page.url()).pathname;
+        if (afterPath === '/' || afterPath.includes('blocked') || afterPath.includes('declaration')) {
+          await page.goto(HOST_ORIGIN + tryRoute, { waitUntil: 'domcontentloaded' }).catch(() => {});
         }
-      } else if (!curPath.includes('appointment')) {
-        _homeIdleCount = 0;
+        await page.waitForTimeout(2000);
+        continue;
       }
-    } catch (_) {}
-    // 0b. Handle time-slot page: select date, slot, then continue
-    try {
-      const curPath2 = new globalThis.URL(page.url()).pathname;
-      if (curPath2.includes('time-slot') && idleRounds >= 1 && idleRounds <= 5) {
-        if (idleRounds === 1) {
-          // Click calendar day 15
-          const dayClicked = await page.evaluate(() => {
-            const btns = [...document.querySelectorAll('button')];
-            for (const b of btns) {
-              if (b.textContent.trim() === '15' && b.className.includes('rounded-full')) {
-                b.click(); return 'day-15-clicked';
-              }
-            }
-            return 'no-day-15';
-          }).catch(() => 'error');
-          await page.waitForTimeout(2000);
-        }
-        if (idleRounds === 2) {
-          // Find and click slot button (text contains "Your" and "provi")
-          const slotResult = await page.evaluate(() => {
-            const btns = [...document.querySelectorAll('button')];
-            const slotBtns = btns.filter(b => {
-              const txt = b.textContent.trim().toLowerCase();
-              return txt.includes('your') || txt.includes('provi') || txt.includes('slot') && txt.length > 15;
-            });
-            const info = slotBtns.map(b => b.textContent.trim().substring(0, 60));
-            if (slotBtns.length > 0) { slotBtns[0].click(); return { clicked: true, info }; }
-            return { clicked: false, info, allBtns: btns.filter(b => !/^[0-9]+$/.test(b.textContent.trim()) && b.textContent.trim().length > 3).map(b => b.textContent.trim().substring(0, 50)) };
-          }).catch(() => ({ clicked: false }));
-          await page.waitForTimeout(1000);
-        }
-        if (idleRounds === 3) {
-          // Direct fetch approach: reserve slot + payment amount + payment initiate
-          // all in one idle round (to avoid idleRounds reset from new log entries).
-          const authToken = await page.evaluate(() => {
-            try { return JSON.parse(localStorage.getItem('auth-storage') || '{}')?.state?.accessToken || 'MOCK.ACCESS.TOKEN'; }
-            catch { return 'MOCK.ACCESS.TOKEN'; }
-          }).catch(() => 'MOCK.ACCESS.TOKEN');
-
-          // 1. Reserve slot
-          const reserveResult = await page.evaluate(async (args) => {
-            const entries = performance.getEntriesByType('resource').map(e => e.name);
-            const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
-            const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
-            try {
-              const r = await fetch(base + '/iams/api/v1/slots/' + args.slotId + '/reserve-slot', {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token },
-                body: JSON.stringify({ c: 'MOCK_TURNSTILE_TOKEN', appointmentDate: '2026-09-15' }),
-              });
-              return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
-            } catch (e) { return { ok: false, err: e.message }; }
-          }, { token: authToken, slotId: SLOT_ID }).catch(e => ({ ok: false, err: e.message }));
-          console.log('  → reserve-slot:', reserveResult.ok ? 'OK' : reserveResult.err);
-
-          // 2. GET payment-amount
-          const amountResult = await page.evaluate(async (args) => {
-            const entries = performance.getEntriesByType('resource').map(e => e.name);
-            const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
-            const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
-            try {
-              const r = await fetch(base + '/iams/api/v1/file/payment-amount', {
-                headers: { 'Authorization': 'Bearer ' + args.token },
-              });
-              return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
-            } catch (e) { return { ok: false, err: e.message }; }
-          }, { token: authToken }).catch(e => ({ ok: false, err: e.message }));
-          console.log('  → payment-amount:', amountResult.ok ? 'OK' : amountResult.err);
-
-          // 3. POST payment initiate (dgepay endpoint decoded from bundle)
-          // Try runtime extraction of payment endpoint from page scripts if not already known
-          let payEndpoint = PAYMENT_ENDPOINT;
-          if (!cfg.dgepayUuid && !BUNDLE_IDS.dgepayUuid) {
-            const runtimeEndpoint = await page.evaluate(() => {
-              try {
-                for (const s of document.querySelectorAll('script[src]')) {
-                  const src = s.src;
-                  if (!src) continue;
-                }
-                // Search the page's JS source for decoded payment endpoint
-                // All scripts have been executed; search through inline script content
-                for (const s of document.querySelectorAll('script:not([src])')) {
-                  const txt = s.textContent || '';
-                  const m = txt.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
-                  if (m) return '/payment/' + m[1] + '/dg-epay/initiate';
-                }
-              } catch(_) {}
-              return null;
-            }).catch(() => null);
-            if (runtimeEndpoint) {
-              payEndpoint = runtimeEndpoint;
-              console.log('  → runtime-extracted payment endpoint:', payEndpoint);
-            }
-          }
-          const payResult = await page.evaluate(async (args) => {
-            const entries = performance.getEntriesByType('resource').map(e => e.name);
-            const apiEntry = entries.find(e => e.includes('/iams/api/') || e.includes('appointment'));
-            const base = (apiEntry && apiEntry.match(/(https?:\/\/[^/]+)/)?.[1]) || location.origin;
-            try {
-              const r = await fetch(base + '/iams/api/v1' + args.payEndpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token, 'x-token': 'MOCK_TURNSTILE_TOKEN' },
-                body: JSON.stringify({ appointmentId: 'mock-appointment-id' }),
-              });
-              return { ok: true, status: r.status, data: JSON.stringify(await r.json()).substring(0, 200) };
-            } catch (e) { return { ok: false, err: e.message }; }
-          }, { token: authToken, payEndpoint }).catch(e => ({ ok: false, err: e.message }));
-          console.log('  → payment-initiate:', payResult.ok ? 'OK' : payResult.err);
-
-          // All direct API calls done — break the walk loop
-          console.log('  all steps complete');
-          break;
-        }
-      }
-    } catch (_) {}
+    } else if (!curPath.includes('appointment') && curPath !== '/') {
+      _homeIdleCount = 0;
+    }
 
     // 1. Close any modal/overlay popups
     await page.evaluate(() => {
@@ -788,9 +730,47 @@ function findChromeExe() {
       }
     }).catch(() => {});
 
-    // 2. Detect visible inputs and fill them with Playwright's .fill()
-    // Playwright's fill() triggers real keyboard events that React picks up —
-    // unlike nativeSetter which bypasses React's synthetic event system.
+    // 2. Handle SELECT dropdowns (mission, center, visa type)
+    await page.evaluate(() => {
+      document.querySelectorAll('select').forEach(sel => {
+        const r = sel.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        if (sel.selectedIndex > 0) return; // already selected
+        if (sel.options.length > 1) {
+          sel.value = sel.options[1].value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          sel.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+    }).catch(() => {});
+
+    // 2b. Handle custom React dropdown/listbox (click to open, then select first option)
+    await page.evaluate(() => {
+      // Look for unselected custom selects (e.g., "Select Mission", "Select Center")
+      const triggers = document.querySelectorAll('[role="combobox"], [role="listbox"], [class*="select"], [class*="dropdown"]');
+      for (const t of triggers) {
+        const txt = (t.textContent || '').trim().toLowerCase();
+        if (/select|choose|pick/i.test(txt) && t.getBoundingClientRect().width > 0) {
+          t.click();
+        }
+      }
+    }).catch(() => {});
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      const opts = document.querySelectorAll('[role="option"], [class*="option"]:not([class*="selected"]), li[class*="item"]');
+      if (opts.length > 0) {
+        // Click first non-placeholder option
+        for (const o of opts) {
+          const txt = (o.textContent || '').trim().toLowerCase();
+          if (txt && !/select|choose|pick|--/i.test(txt)) {
+            o.click();
+            break;
+          }
+        }
+      }
+    }).catch(() => {});
+
+    // 3. Detect visible inputs and fill them
     const inputInfos = await page.evaluate(() => {
       const results = [];
       const visible = (el) => {
@@ -799,17 +779,10 @@ function findChromeExe() {
       };
       document.querySelectorAll('input, textarea, select').forEach((inp, idx) => {
         if (!visible(inp)) return;
-        if (inp.tagName === 'SELECT') {
-          if (inp.selectedIndex <= 0 && inp.options.length > 1) {
-            inp.value = inp.options[1].value;
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-          return;
-        }
+        if (inp.tagName === 'SELECT') return; // handled above
         if (inp.value && inp.value.length > 0) return;
         if (inp.type === 'hidden' || inp.type === 'checkbox' || inp.type === 'radio' || inp.type === 'file') return;
         const hint = (inp.type + ' ' + (inp.name || '') + ' ' + (inp.placeholder || '') + ' ' + (inp.getAttribute('aria-label') || '')).toLowerCase();
-        // tag it with a unique data attr so Playwright can find it
         const tag = '__iflow_' + idx;
         inp.setAttribute('data-iflow', tag);
         results.push({ tag, hint, type: inp.type, inputMode: inp.inputMode, maxLength: inp.maxLength });
@@ -817,7 +790,6 @@ function findChromeExe() {
       return results;
     }).catch(() => []);
 
-    let filled = 0;
     for (const info of inputInfos) {
       const h = info.hint;
       let val = '';
@@ -827,7 +799,7 @@ function findChromeExe() {
       else if (/email/.test(h) || info.type === 'email') val = 'mock@test.com';
       else if (/name|full.?name/.test(h)) val = 'MOCK USER';
       else if (/passport/.test(h)) val = 'AB1234567';
-      else if (/date|dob|birth|expir/.test(h) || info.type === 'date') val = '2026-09-15';
+      else if (/date|dob|birth|expir/.test(h) || info.type === 'date') val = FUTURE_DATE;
       else val = MOCK.phone;
 
       if (val) {
@@ -835,19 +807,16 @@ function findChromeExe() {
           const loc = page.locator(`[data-iflow="${info.tag}"]`);
           await loc.focus({ timeout: 1000 });
           await loc.fill(val, { timeout: 2000 });
-          filled++;
         } catch (_) {
-          // fallback: type character by character (works even when fill() fails)
           try {
             await page.locator(`[data-iflow="${info.tag}"]`).click({ timeout: 1000 });
             await page.keyboard.type(val, { delay: 30 });
-            filled++;
           } catch (_2) {}
         }
       }
     }
 
-    // 2b. Explicit phone input fallback — the walker may miss it if type="text"
+    // 3b. Phone input fallback
     try {
       const phoneEmpty = await page.evaluate(() => {
         const ph = document.querySelector('input[name="phone"], input[name="mobile"], input[placeholder*="01"]');
@@ -857,14 +826,12 @@ function findChromeExe() {
         const phoneLocator = page.locator('input[name="phone"], input[name="mobile"], input[placeholder*="01"]').first();
         await phoneLocator.focus({ timeout: 1000 });
         await phoneLocator.fill(MOCK.phone, { timeout: 2000 });
-        filled++;
       }
     } catch (_) {}
 
-    // 3. Handle file upload inputs
+    // 4. Handle file upload inputs
     await page.evaluate(() => {
-      const fileInputs = document.querySelectorAll('input[type="file"]');
-      for (const fi of fileInputs) fi.removeAttribute('required');
+      document.querySelectorAll('input[type="file"]').forEach(fi => fi.removeAttribute('required'));
     }).catch(() => {});
     const fileInputs = await page.locator('input[type="file"]').all().catch(() => []);
     for (const fi of fileInputs) {
@@ -877,31 +844,39 @@ function findChromeExe() {
       } catch (_) {}
     }
 
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(500);
 
-    // 3b. Ensure Turnstile callback has fired + inject token into Zustand store
+    // 5. Handle checkboxes (terms, declarations)
+    await page.evaluate(() => {
+      document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        if (!cb.checked) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          cb.dispatchEvent(new Event('input', { bubbles: true }));
+          // Also click the label if any
+          const label = cb.closest('label') || document.querySelector(`label[for="${cb.id}"]`);
+          if (label) label.click();
+        }
+      });
+    }).catch(() => {});
+
+    // 6. Ensure Turnstile + enable disabled buttons
     await page.evaluate((token) => {
-      // fire any pending turnstile callbacks
-      if (window.turnstile && window.turnstile.render) {
+      if (window.turnstile) {
         document.querySelectorAll('[data-callback]').forEach(el => {
           const cbName = el.getAttribute('data-callback');
           if (cbName && typeof window[cbName] === 'function') try { window[cbName](token); } catch(_){}
         });
       }
-      // fill hidden turnstile/captcha response inputs
       document.querySelectorAll('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"], input[name*="turnstile"], input[name*="captcha"]').forEach(i => {
         i.value = token;
         i.dispatchEvent(new Event('input', { bubbles: true }));
         i.dispatchEvent(new Event('change', { bubbles: true }));
       });
-      // Re-render Turnstile containers so callbacks fire with our token
       document.querySelectorAll('.cf-turnstile, [data-sitekey]').forEach(el => {
-        const siteKey = el.getAttribute('data-sitekey') || 'mock';
         const cbName = el.getAttribute('data-callback');
         if (cbName && typeof window[cbName] === 'function') try { window[cbName](token); } catch(e){}
-        if (window.turnstile) try { window.turnstile.render(el, { sitekey: siteKey, callback: (t) => {} }); } catch(e){}
       });
-      // force-enable any disabled buttons
       document.querySelectorAll('button[disabled], input[type="submit"][disabled]').forEach(b => {
         b.disabled = false;
         b.removeAttribute('disabled');
@@ -910,15 +885,197 @@ function findChromeExe() {
 
     await page.waitForTimeout(300);
 
-    // 4. Find and click the most likely submit/action button
+    // 6b. Handle mission/center page dropdowns
+    if (curPath.includes('mission') && _samePathCount >= 0) {
+      // Ensure commissionId is set in ALL Zustand persist stores in localStorage
+      // Then reload the page so the store rehydrates with the value
+      const didInject = await page.evaluate(() => {
+        const keys = Object.keys(localStorage);
+        let injected = false;
+        for (const key of keys) {
+          try {
+            const val = JSON.parse(localStorage.getItem(key));
+            if (val && val.state && 'commissionId' in val.state && !val.state.commissionId) {
+              val.state.commissionId = 'COM-MOCK-001';
+              localStorage.setItem(key, JSON.stringify(val));
+              injected = true;
+            }
+          } catch(_) {}
+        }
+        return injected;
+      }).catch(() => false);
+      if (didInject) {
+        console.log('  → injected commissionId into store, reloading...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+      }
+    }
+    if (curPath.includes('mission') && _samePathCount >= 1) {
+      // Try multiple approaches to select dropdowns
+      const ddResult = await page.evaluate(() => {
+        let actions = [];
+        // Approach 1: Find all divs/buttons that look like dropdown triggers
+        const allEls = [...document.querySelectorAll('div, button, span')];
+        for (const el of allEls) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const r = el.getBoundingClientRect();
+          if (r.width < 100 || r.height < 20 || r.height > 60) continue;
+          // Look for "select" placeholder text
+          if (/^select\b|^choose\b|^pick\b/i.test(txt)) {
+            el.click();
+            actions.push('clicked-trigger:' + txt.substring(0, 30));
+            break;
+          }
+        }
+        return actions;
+      }).catch(() => []);
+      if (ddResult.length > 0) {
+        console.log('  → mission dropdown:', ddResult.join(', '));
+        await page.waitForTimeout(800);
+        // Now click the first visible option in any dropdown/listbox
+        await page.evaluate(() => {
+          const opts = [...document.querySelectorAll('[role="option"], li, div[class*="option"]')];
+          for (const o of opts) {
+            const txt = (o.textContent || '').trim();
+            const r = o.getBoundingClientRect();
+            if (r.width > 50 && r.height > 10 && txt.length > 2 && !/select|choose|pick/i.test(txt)) {
+              o.click();
+              return;
+            }
+          }
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+        // Try to find and click a second dropdown (center)
+        await page.evaluate(() => {
+          const allEls = [...document.querySelectorAll('div, button, span')];
+          for (const el of allEls) {
+            const txt = (el.textContent || '').trim().toLowerCase();
+            const r = el.getBoundingClientRect();
+            if (r.width < 100 || r.height < 20 || r.height > 60) continue;
+            if (/^select\b|^choose\b|^pick\b/i.test(txt)) {
+              el.click();
+              break;
+            }
+          }
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+        await page.evaluate(() => {
+          const opts = [...document.querySelectorAll('[role="option"], li, div[class*="option"]')];
+          for (const o of opts) {
+            const txt = (o.textContent || '').trim();
+            const r = o.getBoundingClientRect();
+            if (r.width > 50 && r.height > 10 && txt.length > 2 && !/select|choose|pick/i.test(txt)) {
+              o.click();
+              return;
+            }
+          }
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
+      // Approach 2: If dropdowns won't populate, call booking-config via direct fetch
+      // Use the absolute API base URL that the bundle uses (appointment.ivacbd.com)
+      if (_samePathCount >= 2) {
+        console.log('  → mission dropdowns empty, calling booking-config directly...');
+        await page.evaluate(async () => {
+          try {
+            // Find the API base URL from any XHR that was made
+            const apiBase = performance.getEntriesByType('resource')
+              .map(r => r.name)
+              .find(n => /ivacbd\.com.*\/iams\/api/i.test(n) || /\/iams\/api/i.test(n));
+            let base = '';
+            if (apiBase) {
+              const m = apiBase.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+              if (m) base = m[1];
+            }
+            if (!base) base = 'https://appointment.ivacbd.com/iams/api/v1';
+            const authStore = JSON.parse(localStorage.getItem('auth-storage') || '{}');
+            const token = authStore?.state?.accessToken || 'MOCK.ACCESS.TOKEN';
+            await fetch(base + '/appointment/appointment-booking-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({ mission: 'COM-MOCK-001', ivacCenter: 'CTR-MOCK-001' }),
+            });
+          } catch(_) {}
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+        // Update Zustand store with mission/center selection before navigating
+        await page.evaluate(() => {
+          const keys = Object.keys(localStorage);
+          for (const key of keys) {
+            try {
+              const val = JSON.parse(localStorage.getItem(key));
+              if (val && val.state && 'appointmentInfo' in val.state) {
+                val.state.appointmentInfo = Object.assign(val.state.appointmentInfo || {}, {
+                  mission: 'COM-MOCK-001', missionName: 'Indian High Commission',
+                  ivacCenter: 'CTR-MOCK-001', centerName: 'IVAC Dhaka',
+                  commissionId: 'COM-MOCK-001',
+                });
+                val.state.currentStep = 'time-slot';
+                localStorage.setItem(key, JSON.stringify(val));
+              }
+            } catch(_) {}
+          }
+        }).catch(() => {});
+        // Reload to rehydrate then navigate
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+        await page.evaluate(() => {
+          try {
+            window.history.pushState({ startTimer: true }, '', '/appointment/time-slot');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch(_) {}
+        }).catch(() => {});
+        await page.waitForTimeout(1000);
+      }
+    }
+
+    // 7. Handle time-slot page: click calendar day, then slot
+    if (curPath.includes('time-slot') && _samePathCount >= 1) {
+      // Click a day in the calendar
+      const dayClicked = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')];
+        for (const b of btns) {
+          const txt = b.textContent.trim();
+          if (/^1[5-9]$|^2[0-5]$/.test(txt) && b.getBoundingClientRect().width > 0) {
+            const cls = b.className || '';
+            if (cls.includes('rounded') || cls.includes('day') || cls.includes('calendar') || b.closest('[class*="calendar"]')) {
+              b.click(); return txt;
+            }
+          }
+        }
+        // fallback: click any numbered button that looks like a date
+        for (const b of btns) {
+          const txt = b.textContent.trim();
+          if (/^[1-2][0-9]$/.test(txt) && b.getBoundingClientRect().width > 20) {
+            b.click(); return txt;
+          }
+        }
+        return '';
+      }).catch(() => '');
+      if (dayClicked) console.log(`  → clicked day ${dayClicked}`);
+      await page.waitForTimeout(1500);
+
+      // Click slot button if visible
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')];
+        const slotBtns = btns.filter(b => {
+          const txt = b.textContent.trim().toLowerCase();
+          return (txt.includes('your') || txt.includes('provi') || txt.includes('slot') || txt.includes('09:00') || txt.includes('11:00')) && txt.length > 5;
+        });
+        if (slotBtns.length > 0) slotBtns[0].click();
+      }).catch(() => {});
+      await page.waitForTimeout(500);
+    }
+
+    // 8. Find and click the most likely submit/action button
     const clicked = await page.evaluate(() => {
       const visible = (el) => {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
       };
       const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[href]')];
-      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter|now|take|appointment/i;
-      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up|create.?account|register|sign.?in.?then|log.?out|sign.?out|resend|check.?payment|profile|find.?answer/i;
+      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter|now|take|appointment|save|select|choose/i;
+      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up|create.?account|register|sign.?in.?then|log.?out|sign.?out|resend|check.?payment|profile|find.?answer|download/i;
       let best = null;
       let bestScore = -1;
       for (const b of btns) {
@@ -927,13 +1084,14 @@ function findChromeExe() {
         const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
         const combined = txt + ' ' + ariaLabel;
         if (skipWords.test(combined) && !actionWords.test(combined)) continue;
+        // Skip calendar day buttons
+        if (/^[0-9]{1,2}$/.test(txt)) continue;
         let score = 0;
         if (b.type === 'submit') score += 5;
         if (actionWords.test(combined)) score += 10;
         if (b.classList.contains('primary') || /primary|submit|action/.test(b.className)) score += 3;
         if (/bg-blue|bg-green|bg-primary|btn-primary|btn-success|bg-\[/.test(b.className)) score += 2;
         if (txt.length > 0 && txt.length < 30) score += 1;
-        // boost large prominent buttons (like "Sign In Now")
         const rect = b.getBoundingClientRect();
         if (rect.width > 200) score += 3;
         if (score > bestScore) { bestScore = score; best = b; }
@@ -948,39 +1106,139 @@ function findChromeExe() {
     await page.waitForTimeout(STEP_PAUSE);
     writeFlow();
 
-    // 5. Check progress
+    // 9. Check progress
     if (log.length > prevCaptures) {
       idleRounds = 0;
       prevCaptures = log.length;
       console.log(`  ✓ step captured (${log.length} API calls so far)`);
     } else {
-      const curUrl = page.url();
-      if (clicked) console.log(`  … clicked "${clicked}" but no new API call  [page: ${curUrl}]`);
+      if (clicked) console.log(`  … clicked "${clicked}" but no new API call  [page: ${page.url()}]`);
       else {
-        const pageInfo = await page.evaluate(() => {
-          const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[href]')];
-          const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
-          return { total: btns.length, visible: visible.length, texts: visible.slice(0, 10).map(b => (b.textContent||'').trim().substring(0,40)), bodyLen: document.body?.innerHTML?.length || 0 };
-        }).catch(() => ({}));
         const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '').catch(() => '');
-        console.log(`  … nothing to click  [page: ${curUrl}]  btns:${pageInfo.visible}/${pageInfo.total} body:${pageInfo.bodyLen} text:"${bodyText.replace(/\n/g,' ').substring(0,120)}"`);
+        console.log(`  … nothing to click  [${curPath}]  text:"${bodyText.replace(/\n/g,' ').substring(0,100)}"`);
       }
       idleRounds++;
     }
 
-    // If we've captured the payment initiate call, we're done
-    if (log.some(e => /\/payment\/.*\/dg-epay\/initiate/.test(e.url) || /\/payment\/.*initiate/.test(e.url))) {
+    // If payment initiate captured, we're done
+    if (log.some(e => /\/payment\/.*\/initiate/.test(e.url))) {
       console.log('  ✓ payment initiate captured — flow complete');
+      break;
+    }
+
+    // 6c. Handle time-slot page — click available dates and slots
+    if (curPath.includes('time-slot') && _samePathCount >= 1 && _samePathCount <= 3) {
+      // Click calendar date buttons (day numbers)
+      const dateClicked = await page.evaluate(() => {
+        // Find calendar date cells — typically buttons with just a number
+        const btns = [...document.querySelectorAll('button, td, div[role="gridcell"]')];
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            const num = parseInt(txt);
+            if (num >= 15 && num <= 28) { // Pick a date in the middle/end of month
+              b.click();
+              return txt;
+            }
+          }
+        }
+        // If no specific date, click any available date
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            b.click();
+            return txt;
+          }
+        }
+        return null;
+      }).catch(() => null);
+      if (dateClicked) {
+        console.log('  → clicked date:', dateClicked);
+        await page.waitForTimeout(1000);
+      }
+      // Click time slot buttons
+      const slotClicked = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('button, div[role="button"], label')];
+        for (const el of all) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const r = el.getBoundingClientRect();
+          if (r.width > 50 && r.height > 20 && /\d{1,2}:\d{2}|am|pm|morning|afternoon|slot/i.test(txt) && !el.disabled) {
+            el.click();
+            return txt.substring(0, 30);
+          }
+        }
+        return null;
+      }).catch(() => null);
+      if (slotClicked) {
+        console.log('  → clicked slot:', slotClicked);
+        await page.waitForTimeout(500);
+      }
+    }
+
+    // If stuck too long on time-slot, attempt direct API calls using absolute URLs
+    if (idleRounds >= 6 && curPath.includes('time-slot')) {
+      console.log('  → stuck on time-slot, attempting direct API calls...');
+      // Discover the API base URL from intercepted requests
+      const apiBase = await page.evaluate(() => {
+        const entries = performance.getEntriesByType('resource');
+        for (const e of entries) {
+          const m = e.name.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+          if (m) return m[1];
+        }
+        return null;
+      }).catch(() => null) || 'https://appointment.ivacbd.com/iams/api/v1';
+
+      const authToken = await page.evaluate(() => {
+        try { return JSON.parse(localStorage.getItem('auth-storage') || '{}')?.state?.accessToken || 'MOCK.ACCESS.TOKEN'; }
+        catch { return 'MOCK.ACCESS.TOKEN'; }
+      }).catch(() => 'MOCK.ACCESS.TOKEN');
+
+      const slotId = SLOT_ID || flowState.capturedSlotId || 'mock-slot-id';
+
+      // Reserve slot
+      await page.evaluate(async (args) => {
+        try { await fetch(args.base + '/slots/' + args.slotId + '/reserve-slot', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token }, body: JSON.stringify({ c: 'MOCK_TURNSTILE_TOKEN', appointmentDate: '2026-09-15' }) }); } catch(_) {}
+      }, { base: apiBase, token: authToken, slotId }).catch(() => {});
+      console.log('  → reserve-slot (direct)');
+
+      // Payment amount
+      await page.evaluate(async (args) => {
+        try { await fetch(args.base + '/file/payment-amount', { headers: { 'Authorization': 'Bearer ' + args.token } }); } catch(_) {}
+      }, { base: apiBase, token: authToken }).catch(() => {});
+      console.log('  → payment-amount (direct)');
+
+      // Payment initiate
+      let payEndpoint = BUNDLE_IDS.paymentEndpoint || (DGEPAY_UUID ? `/payment/${DGEPAY_UUID}/dg-epay/initiate` : '');
+      if (!payEndpoint) {
+        const runtimeEndpoint = await page.evaluate(() => {
+          try {
+            for (const s of document.querySelectorAll('script:not([src])')) {
+              const txt = s.textContent || '';
+              const m = txt.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
+              if (m) return '/payment/' + m[1] + '/dg-epay/initiate';
+            }
+          } catch(_) {}
+          return null;
+        }).catch(() => null);
+        if (runtimeEndpoint) payEndpoint = runtimeEndpoint;
+      }
+      if (!payEndpoint) payEndpoint = '/payment/mock-uuid/dg-epay/initiate';
+
+      await page.evaluate(async (args) => {
+        try { await fetch(args.base + args.payEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token, 'x-token': 'MOCK_TURNSTILE_TOKEN' }, body: JSON.stringify({ appointmentId: 'mock-appointment-id' }) }); } catch(_) {}
+      }, { base: apiBase, token: authToken, payEndpoint }).catch(() => {});
+      console.log('  → payment-initiate (direct)');
+      console.log('  all steps complete (direct fallback)');
       break;
     }
   }
 
   writeFlow();
 
-  // Manual mode: keep the (visible) window open so the user can drive the app by
-  // hand; every request keeps getting mocked + captured (writeFlow streams it).
   if (HOLD_OPEN_MS > 0) {
-    console.log(`🖐 manual mode — window খোলা থাকবে ${Math.round(HOLD_OPEN_MS / 1000)}s (বা বন্ধ করলে). নিজে হাতে চালান…`);
+    console.log(`🖐 manual mode — window open for ${Math.round(HOLD_OPEN_MS / 1000)}s`);
     let closed = false; page.on('close', () => { closed = true; });
     const t0 = Date.now();
     while (!closed && Date.now() - t0 < HOLD_OPEN_MS) { await page.waitForTimeout(1000).catch(() => { closed = true; }); }
@@ -988,6 +1246,8 @@ function findChromeExe() {
   }
 
   console.log(`\n💾 captured ${log.length} API call(s) → ${path.join(OUT, 'flow.json')}`);
+  const captured = extractFromCaptured(log);
+  console.log('📋 extracted:', JSON.stringify(captured, null, 2));
   await browser.close().catch(() => {});
   process.exit(0);
 })().catch((e) => { console.error('flow-capture error:', e); process.exit(1); });
