@@ -498,7 +498,7 @@ const server = http.createServer(async (req, res) => {
           url: 'http://localhost:' + HOST_PORT + '/',
           hostOrigin: 'http://localhost:' + HOST_PORT,
           headless: true, walkTimeoutMs: 45000, runMs: 60000,
-          speed: 0.3, stepPause: 400,   // fast background extraction
+          speed: 0.2, stepPause: 250,   // fast background extraction (near the safe floor)
           bundlePath: bundleFile, out: outDir,
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
         }));
