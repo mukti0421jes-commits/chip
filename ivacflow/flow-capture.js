@@ -306,13 +306,11 @@ function mockBodyFor(url) {
   // ── Payment amount ──
   if (/\/file\/payment-amount/i.test(url)) {
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
-      data: {
-        paymentAmount: 8200, amount: 8200, currency: 'BDT',
-        fileId: 'mock-file-id',
-        breakdown: [{ name: 'Visa Fee', amount: 8000 }, { name: 'Service Charge', amount: 200 }],
-        totalAmount: 8200, paymentMethod: 'ONLINE',
-      },
+      data: 1500.0,
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
