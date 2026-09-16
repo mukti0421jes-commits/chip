@@ -165,16 +165,17 @@ function mockBodyFor(url) {
   if (/\/auth\/.*sign-?in/i.test(url)) {
     flowState.signedIn = true;
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
       data: {
-        accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-        requestId: 'mock-request-id', verified: true, status: 'ACTIVE',
-        phone: MOCK.phone, userId: 'mock-user-id', tokenType: 'Bearer',
-        expiresIn: 3600, otpRequired: true, otpChannel: 'PHONE',
-        isRegistered: true, registered: true, isNewUser: false, newUser: false,
-        profileCompleted: true, isProfileCompleted: true,
-        user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
+        accessToken: 'MOCK.ACCESS.TOKEN',
+        tokenType: 'Bearer',
+        expiresAt: 899,
+        userId: 'mock-user-id',
+        requestId: 'mock-request-id',
       },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -182,15 +183,15 @@ function mockBodyFor(url) {
   if (/\/otp\/verify/i.test(url)) {
     flowState.otpVerified = true;
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
       data: {
-        verified: true, requestId: 'mock-request-id', status: 'VERIFIED',
-        accessToken: 'MOCK.ACCESS.TOKEN', refreshToken: 'MOCK.REFRESH.TOKEN',
-        tokenType: 'Bearer', expiresIn: 3600, userId: 'mock-user-id',
-        isRegistered: true, registered: true, isNewUser: false, newUser: false,
-        profileCompleted: true, isProfileCompleted: true,
-        user: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE', verified: true, isRegistered: true, profileCompleted: true },
+        verified: true,
+        verificationStatus: 'OTP verified',
+        expiresAt: new Date(Date.now() + 5 * 60000).toISOString(),
       },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -226,21 +227,25 @@ function mockBodyFor(url) {
   // ── File over-view / overview ──
   if (/\/file\/over-?view/i.test(url)) {
     flowState.fileUploaded = true;
-    const applicant = {
-      applicationId: 'APP-MOCK-001', fullName: 'MOCK USER', isPrimary: true,
-      commissionId: 'COM-MOCK-001', webFileNumber: 'WEB-MOCK-001',
-      visaType: 'TOURIST', passport: 'AB1234567', name: 'MOCK USER',
-      email: 'mock@test.com', phone: '+8801700000000', contactNumber: '+8801700000000',
-      dob: '1990-01-01', dateOfBirth: '1990-01-01',
-      nidOrBr: '1234567890123', nid: '1234567890123',
-      commissionName: 'Mock Commission', status: 'CONFIRMED',
-      fileId: 'mock-file-id', id: 'mock-file-id',
-      passportNumber: 'AB1234567', nationality: 'BANGLADESHI', gender: 'MALE',
-      passportExpiry: '2030-01-01', primary: true,
-    };
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
-      data: [applicant],
+      data: [{
+        applicationId: 'BGDRV1MOCK01',
+        commissionId: 'COM-MOCK-001',
+        commissionName: 'Dhaka',
+        dob: '01-JAN-1990',
+        email: 'MOCK@TEST.COM',
+        fullName: 'MOCK USER',
+        ivacCenter: null,
+        nidOrBr: '1234567890123',
+        passport: 'AB1234567',
+        phone: MOCK.phone,
+        primary: true,
+        visaType: 'MISCELLANEOUS_DOUBLE_ENTRY',
+      }],
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -311,16 +316,26 @@ function mockBodyFor(url) {
     };
   }
 
+  // ── Appointment POST (initial appointment creation) ──
+  if (/\/appointment\/?$/i.test(url)) {
+    return {
+      data: null,
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
   // ── Appointment booking config (mission page submit) ──
   if (/\/appointment-booking-config/i.test(url)) {
     flowState.missionSelected = true;
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
-      data: {
-        commissionId: 'COM-MOCK-001', ivacId: 'CTR-MOCK-001',
-        appointmentId: 'mock-appointment-id',
-        serverTime: NOW_ISO,
-      },
+      data: null,
+      statusCode: 204,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -370,7 +385,6 @@ function mockBodyFor(url) {
         appointmentDate: FUTURE_DATES,
         appointmentId: 'mock-appointment-id',
         appointmentSlot: '09:00 AM - 10:00 AM',
-        appointmentTime: '09:00 AM - 10:00 AM',
         fileUploadStatus: 'MISSION_CENTER_SELECTED',
         ivacCenter: 'IVAC, DHAKA',
         mission: 'Dhaka',
