@@ -503,7 +503,7 @@ const server = http.createServer(async (req, res) => {
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
         }));
         const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
-          { cwd: __dirname, env: Object.assign({}, process.env), detached: true, stdio: 'ignore', windowsHide: true });
+          { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
         c.on('error', () => {}); c.unref();
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, started: true }));
@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
               { waitMs: 2500 },
             ] }));
           const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
-            { cwd: __dirname, env: Object.assign({}, process.env), detached: true, stdio: 'ignore', windowsHide: true });
+            { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
           c.on('error', () => {}); c.unref();
           res.writeHead(200, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ ok: true, manual: true, note: 'দৃশ্যমান window খুলছে — popup বন্ধ করে Sign In → নিজে হাতে চালান। ধরা-পড়া ডেটা নিচে live আসবে।' }));
@@ -605,7 +605,7 @@ const server = http.createServer(async (req, res) => {
           out: __dirname, liveCapture: true, holdOpenMs: 1800000,
           responsesOut: path.join(__dirname, 'responses.json'), steps: [{ waitMs: 2000 }] }));
         const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
-          { cwd: __dirname, env: Object.assign({}, process.env), detached: true, stdio: 'ignore', windowsHide: true });
+          { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
         c.on('error', () => {}); c.unref();
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, live: true, note: 'আসল সাইট খুলছে — নিজে login+captcha করে ধাপে ধাপে এগোন; প্রতিটা আসল response responses.json-এ জমা হবে। শেষে এই window বন্ধ করুন।' }));
@@ -645,5 +645,5 @@ server.listen(PORT, () => {
   const cp = require('child_process');
   const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
             : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
-  try { const c = cp.spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true }); c.on('error', () => {}); c.unref(); } catch (_) {}
+  try { const c = cp.spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true, windowsHide: true }); c.on('error', () => {}); c.unref(); } catch (_) {}
 });
