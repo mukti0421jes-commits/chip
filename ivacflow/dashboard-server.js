@@ -135,6 +135,12 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
  .drop:hover,.drop.over{border-color:var(--accent)}
  .badge{font-size:11px;padding:2px 9px;border-radius:99px}.badge.ok{background:rgba(55,201,120,.16)}.badge.bad{background:rgba(255,95,95,.16)}
  .log{font:12px/1.7 ui-monospace,Consolas,monospace;color:var(--dim);max-height:150px;overflow:auto;white-space:pre-wrap;margin-top:8px}
+ .prog{margin-top:12px;display:none}
+ .prog.on{display:block}
+ .prog .plabel{font-size:12.5px;margin-bottom:6px;display:flex;justify-content:space-between;gap:10px}
+ .prog .bar{height:11px;border-radius:99px;background:var(--line);overflow:hidden}
+ .prog .fill{height:100%;width:0;background:var(--accent);transition:width .45s ease;border-radius:99px}
+ .prog .steps{font-size:11px;margin-top:7px;color:var(--dim);line-height:1.9}
  .hide{display:none}
 </style></head><body><div class="wrap">
  <h1>IVAC Node <span class="dim" style="font-size:12px">— ivac-flow edition (offline bundle extractor)</span></h1>
@@ -184,6 +190,11 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
      <label style="cursor:pointer"><input type="checkbox" id="cb-bundle" checked> loaded bundle চালাও (আপলোড করা index.js)</label>
      <label style="cursor:pointer"><input type="checkbox" id="cb-visible" checked> দৃশ্যমান window</label>
    </div>
+   <div class="prog" id="prog">
+     <div class="plabel"><span id="prog-done" class="dim">০/৭ ধাপ সম্পন্ন — ০%</span><span id="prog-rem" class="warn">বাকি ১০০%</span></div>
+     <div class="bar"><div class="fill" id="prog-fill"></div></div>
+     <div class="steps" id="prog-steps"></div>
+   </div>
    <div class="log" id="log"></div>
  </div>
 
@@ -217,6 +228,7 @@ $('fetch').onclick=async()=>{
 };
 let pollTimer=null;
 $('probe').onclick=async()=>{
+  resetProgress();
   const useBundle=$('cb-bundle').checked, visible=$('cb-visible').checked;
   addLog('🖐 browser-এ চালাও — '+(useBundle?'loaded bundle (দৃশ্যমান, নিজে হাতে)':(visible?'সাইট দৃশ্যমান':'সাইট headless'))+'…');
   $('note').textContent='চলছে…';
@@ -238,7 +250,35 @@ $('probe').onclick=async()=>{
   if(j.config)render(j);
   if(j.template)renderTpl(j.template);renderCap(j.captured||[]);$('note').textContent='probe done';
 };
+const FLOW_STEPS=[
+  {label:'Sign-in',re:/sign-?in/i},
+  {label:'OTP verify',re:/otp\/verify/i},
+  {label:'File overview',re:/over-?view/i},
+  {label:'Booking config',re:/get-booking-config/i},
+  {label:'Slot reserve',re:/reserve-slot/i},
+  {label:'Payment amount',re:/payment-amount/i},
+  {label:'Payment initiate',re:/payment\/.*initiate/i},
+];
+function renderProgress(captured){
+  $('prog').classList.add('on');
+  const urls=(captured||[]).map(e=>String((e&&e.url)||''));
+  let done=0,chips='';
+  for(const s of FLOW_STEPS){
+    const hit=urls.some(u=>s.re.test(u));
+    if(hit)done++;
+    chips+='<span style="margin-right:12px;white-space:nowrap">'+(hit?'✅':'⬜')+' '+s.label+'</span>';
+  }
+  const total=FLOW_STEPS.length;
+  const pct=Math.round(done/total*100), rem=100-pct;
+  $('prog-fill').style.width=pct+'%';
+  $('prog-done').textContent=done+'/'+total+' ধাপ সম্পন্ন — '+pct+'%';
+  $('prog-rem').textContent=rem===0?'✅ সম্পূর্ণ':'বাকি '+rem+'%';
+  $('prog-rem').className=rem===0?'ok':'warn';
+  $('prog-steps').innerHTML=chips;
+}
+function resetProgress(){renderProgress([]);}
 function renderCap(c){
+  renderProgress(c);
   if(!c.length){$('cap').innerHTML='<span class="dim">কোনো request ধরা পড়েনি (selector মিলল না, বা সাইট লোড হয়নি)।</span>';return;}
   let h='';
   for(const e of c){
@@ -253,6 +293,7 @@ function renderCap(c){
   $('cap').innerHTML=h;
 }
 $('demo').onclick=async()=>{
+  resetProgress();
   addLog('▶ Demo — signin→initiate ৯ ধাপ mock walk, দৃশ্যমান window খুলছে…');$('note').textContent='demo চলছে…';
   const r=await fetch('/api/probe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({demo:true,headless:false})});
   const j=await r.json();
