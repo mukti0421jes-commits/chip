@@ -16,3 +16,6 @@ _out_*/
 _test_*
 _alltest.log
 _progress.log
+.host-bundle.js
+.auto-cfg.json
+flow.json

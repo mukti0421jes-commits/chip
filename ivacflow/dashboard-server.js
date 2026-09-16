@@ -226,7 +226,27 @@ $('fetch').onclick=async()=>{
   if(j.ok){addLog('✅ নামানো হলো — '+j.bundleName);render(j);$('save').disabled=false;$('note').textContent='done';}
   else{addLog('❌ '+j.error);$('note').textContent='❌ '+j.error+' (এই মেশিনে ইন্টারনেট/সাইট লাগবে)';}
 };
-let pollTimer=null;
+let pollTimer=null,autoTimer=null;
+async function startAutoWalk(){
+  addLog('⚙ background full-extract শুরু (দৃশ্যমান নয়) — dgepayUuid/initiatePath বের করছি…');
+  $('note').textContent='background এ full extract হচ্ছে…';
+  resetProgress();  // switch bar to the 7-step flow tracker at 0%
+  const r=await fetch('/api/auto-walk',{method:'POST'}).then(x=>x.json()).catch(()=>null);
+  if(!r||!r.ok){addLog('⚠ background walk: '+((r&&r.error)||'শুরু করা গেল না')+' — static ফল দেখানো হলো');$('note').textContent='done (static)';return;}
+  if(autoTimer)clearInterval(autoTimer);
+  let ticks=0;
+  autoTimer=setInterval(async()=>{
+    ticks++;
+    const f=await fetch('/api/probe-flow').then(x=>x.json()).catch(()=>null);
+    if(f&&f.ok){
+      renderCap(f.captured||[]);         // updates captured panel + progress bar
+      if(f.config)render(f);             // live-update CONFIG (dgepayUuid/initiatePath fill in)
+      const done=(f.captured||[]).some(c=>String(c.url||'').indexOf('initiate')>=0);
+      if(done){clearInterval(autoTimer);autoTimer=null;addLog('✅ full extract সম্পন্ন — সব field পাওয়া গেছে');$('note').textContent='✅ সম্পূর্ণ';return;}
+    }
+    if(ticks>80){clearInterval(autoTimer);autoTimer=null;addLog('⚠ walk timeout — যা পাওয়া গেছে দেখানো হলো');$('note').textContent='done (partial)';}
+  },1500);
+}
 $('probe').onclick=async()=>{
   resetProgress();
   const useBundle=$('cb-bundle').checked, visible=$('cb-visible').checked;
@@ -335,8 +355,9 @@ function send(f){
       if(window.__decTimer){clearInterval(window.__decTimer);window.__decTimer=null;}
       let j={}; try{j=JSON.parse(xhr.responseText);}catch(_){}
       setBar(100,'✅ ডিকোড সম্পন্ন — ১০০%','✅ সম্পূর্ণ','');
-      addLog('✅ decode শেষ — '+(j.config&&j.config.dgepayUuid?'dgepayUuid পাওয়া গেছে':'dgepayUuid পাওয়া যায়নি'));
-      render(j); $('save').disabled=false; $('note').textContent='done';
+      addLog('✅ decode শেষ — '+(j.config&&j.config.dgepayUuid?'dgepayUuid static-এ পাওয়া গেছে':'dgepayUuid static-এ নেই → background walk চালাচ্ছি'));
+      render(j); $('save').disabled=false;
+      startAutoWalk();   // background headless full-extract; visible browser stays optional
     };
     xhr.onerror=()=>{ if(window.__decTimer){clearInterval(window.__decTimer);window.__decTimer=null;} addLog('❌ আপলোড ব্যর্থ'); $('note').textContent='❌ আপলোড ব্যর্থ'; };
     xhr.send(text);
@@ -458,6 +479,35 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, open: false, error: String(e.message || e) }));
+      }
+    }
+
+    if (u === '/api/auto-walk' && req.method === 'POST') {
+      // BACKGROUND, HEADLESS, AUTOMATIC: run the loaded bundle with no visible
+      // window and no manual steps — flow-capture's built-in fiber-mutation driver
+      // walks signin→initiate on its own, capturing the runtime-only fields
+      // (dgepayUuid, initiatePath, slotId) that static decode can't resolve.
+      if (!lastBundle.src) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'আগে একটা bundle load করুন।' })); }
+      try {
+        const outDir = __dirname;
+        const bundleFile = path.join(outDir, '.host-bundle.js');
+        fs.writeFileSync(bundleFile, lastBundle.src);
+        try { fs.unlinkSync(path.join(outDir, 'flow.json')); } catch (_) {}
+        const cfgFile = path.join(outDir, '.auto-cfg.json');
+        fs.writeFileSync(cfgFile, JSON.stringify({
+          url: 'http://localhost:' + HOST_PORT + '/',
+          hostOrigin: 'http://localhost:' + HOST_PORT,
+          headless: true, walkTimeoutMs: 60000, runMs: 90000,
+          bundlePath: bundleFile, out: outDir,
+          mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
+        }));
+        const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
+          { cwd: __dirname, env: Object.assign({}, process.env), detached: true, stdio: 'ignore' });
+        c.on('error', () => {}); c.unref();
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, started: true }));
+      } catch (e) {
+        res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
       }
     }
 
