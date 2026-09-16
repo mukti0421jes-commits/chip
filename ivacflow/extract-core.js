@@ -7,7 +7,8 @@
 'use strict';
 const vm = require('vm');
 
-function extract(S) {
+function extract(S, opts) {
+  opts = opts || {};
   const first = (re) => { const m = re.exec(S); return m ? (m[1] || m[0]) : ''; };
 
   const out = {
@@ -228,7 +229,10 @@ function extract(S) {
 
   if (!out.apiBase) { out.apiBase = 'https://api.ivacbd.com/iams/api/v1'; out.apiBaseNote = 'default (not plaintext in bundle; this base is stable)'; }
 
-  const ip = decodeInitiatePath();
+  // The static dg-epay/initiate decode is a slow (tens of seconds) sandbox
+  // brute-force that fails on most bundles anyway; the runtime walk captures
+  // dgepayUuid/initiatePath reliably. Skip it when the caller will walk.
+  const ip = opts.skipInitiate ? '' : decodeInitiatePath();
   if (ip) {
     out.initiatePath = '/' + ip.replace(/^\//, '');
     const u = /payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(ip);

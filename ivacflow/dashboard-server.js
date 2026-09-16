@@ -442,7 +442,7 @@ const server = http.createServer(async (req, res) => {
     if (u === '/api/extract' && req.method === 'POST') {
       const src = await body(req);
       const name = decodeURIComponent((req.url.split('name=')[1] || '').split('&')[0] || 'bundle.js');
-      const config = extract(src);
+      const config = extract(src, { skipInitiate: true });
       const template = buildTemplate(config);
       lastBundle = { name, src };   // keep raw source so "browser-এ চালাও" can run THIS bundle
       snapshot = { config, template, allEndpoints: config.allEndpoints || [], bundleName: name, at: new Date().toLocaleString() };
@@ -454,7 +454,7 @@ const server = http.createServer(async (req, res) => {
       try { const b = JSON.parse(raw || '{}'); if (b.site) site = b.site; } catch (_) {}
       try {
         const { name, js } = await fetchBundleFromSite(site);
-        const config = extract(js);
+        const config = extract(js, { skipInitiate: true });
         lastBundle = { name, src: js };   // keep raw so "browser-এ চালাও" can run it
         snapshot = { config, template: buildTemplate(config), allEndpoints: config.allEndpoints || [], bundleName: name, at: new Date().toLocaleString(), source: 'site' };
         res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(Object.assign({ ok: true }, snapshot)));
