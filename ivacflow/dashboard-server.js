@@ -497,7 +497,8 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(cfgFile, JSON.stringify({
           url: 'http://localhost:' + HOST_PORT + '/',
           hostOrigin: 'http://localhost:' + HOST_PORT,
-          headless: true, walkTimeoutMs: 60000, runMs: 90000,
+          headless: true, walkTimeoutMs: 45000, runMs: 60000,
+          speed: 0.3, stepPause: 400,   // fast background extraction
           bundlePath: bundleFile, out: outDir,
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
         }));

@@ -40,6 +40,10 @@ if (cfg.responsesFile) {
 const HEADLESS = cfg.headless !== false;
 const RUN_MS = cfg.runMs || 20000;
 const OUT = cfg.out || __dirname;
+// Speed factor: <1 shortens the walk's pauses (default 1 = unchanged). The
+// dashboard's background auto-walk passes a small value for fast extraction.
+const SPEED = (typeof cfg.speed === 'number' && cfg.speed > 0) ? cfg.speed : 1;
+const sms = (ms) => Math.max(120, Math.round(ms * SPEED));   // scaled milliseconds
 
 const isApi = (u) => /\/iams\/api\/|\/api\/v\d+\/|\/payment\/|\/slots\/|\/invoice\/|api\.ivacbd\.com/.test(u);
 const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
@@ -233,7 +237,7 @@ async function fireMutations(page, payload, onAfterEach) {
     await page.evaluate(({ idx, body }) => {
       try { window.__ivacMutations[idx].mutate(body); } catch (_) {}
     }, { idx: i, body: payload }).catch(() => {});
-    try { await page.waitForTimeout(1200); } catch (_) { break; }
+    try { await page.waitForTimeout(sms(1200)); } catch (_) { break; }
     if (onAfterEach && await onAfterEach()) return { found: count, fired: i + 1, hit: true };
   }
   return { found: count, fired: count, hit: false };
@@ -755,7 +759,7 @@ function findChromeExe() {
   page.on('pageerror', e => { console.log('  page-error:', e.message.substring(0, 200)); if (e.stack) console.log('  stack:', e.stack.substring(0, 600)); });
   console.log('🌐 loading (headless):', URL);
   await page.goto(URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(sms(2000));
 
   // ── Phase 0: Close modals/popups and navigate to Sign In ──
   for (let i = 0; i < 5; i++) {
@@ -773,7 +777,7 @@ function findChromeExe() {
       return false;
     }).catch(() => false);
     if (!closed) break;
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(sms(500));
   }
 
   // Navigate to Sign In page
@@ -793,11 +797,11 @@ function findChromeExe() {
     return '';
   }).catch(() => '');
   if (wentToSignin) console.log(`  → navigated to Sign In ("${wentToSignin}")`);
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(sms(2000));
 
   // ── Adaptive UI walker ──
   const WALK_TIMEOUT = cfg.walkTimeoutMs || 60000;
-  const STEP_PAUSE = 2000;
+  const STEP_PAUSE = cfg.stepPause != null ? cfg.stepPause : sms(2000);
   const walkStart = Date.now();
   let prevCaptures = 0;
   let idleRounds = 0;
@@ -830,12 +834,12 @@ function findChromeExe() {
         const tryRoute = routes[Math.min(_homeIdleCount - 2, routes.length - 1)];
         console.log(`  → navigating to ${tryRoute}`);
         await page.evaluate((r) => { window.history.pushState({}, '', r); window.dispatchEvent(new PopStateEvent('popstate')); }, tryRoute).catch(() => {});
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(sms(500));
         const afterPath = new globalThis.URL(page.url()).pathname;
         if (afterPath === '/' || afterPath.includes('blocked') || afterPath.includes('declaration')) {
           await page.goto(HOST_ORIGIN + tryRoute, { waitUntil: 'domcontentloaded' }).catch(() => {});
         }
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(sms(2000));
         continue;
       }
     } else if (!curPath.includes('appointment') && curPath !== '/') {
@@ -1005,7 +1009,7 @@ function findChromeExe() {
       } catch (_) {}
     }
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(sms(500));
 
     // 5. Handle checkboxes (terms, declarations)
     await page.evaluate(() => {
@@ -1068,7 +1072,7 @@ function findChromeExe() {
       if (didInject) {
         console.log('  → injected commissionId into store, reloading...');
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(sms(2000));
       }
     }
     if (curPath.includes('mission') && _samePathCount >= 1) {
@@ -1108,7 +1112,7 @@ function findChromeExe() {
         try {
           await page.click(sel, { timeout: 2000, force: true });
           console.log(`  → clicked dropdown: "${trig.text}"`);
-          await page.waitForTimeout(600);
+          await page.waitForTimeout(sms(600));
 
           // DEBUG: count all buttons after click
           if (_samePathCount === 1) {
@@ -1158,7 +1162,7 @@ function findChromeExe() {
           if (optionResult.found) {
             await page.click('[data-iflow-opt="pick"]', { timeout: 2000, force: true });
             console.log(`  → selected option: "${optionResult.text}" (${optionResult.count} options)`);
-            await page.waitForTimeout(500);
+            await page.waitForTimeout(sms(500));
           } else {
             console.log(`  → dropdown opened but no options found (${optionResult.count})`);
           }
@@ -1195,7 +1199,7 @@ function findChromeExe() {
             });
           } catch(_) {}
         }).catch(() => {});
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(sms(500));
         await page.evaluate(() => {
           const keys = Object.keys(localStorage);
           for (const key of keys) {
@@ -1214,14 +1218,14 @@ function findChromeExe() {
           }
         }).catch(() => {});
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(sms(1000));
         await page.evaluate(() => {
           try {
             window.history.pushState({ startTimer: true }, '', '/appointment/time-slot');
             window.dispatchEvent(new PopStateEvent('popstate'));
           } catch(_) {}
         }).catch(() => {});
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(sms(1000));
       }
     }
 
@@ -1260,7 +1264,7 @@ function findChromeExe() {
           await page.click(`[data-iflow-day="${dayPicked}"]`, { timeout: 2000, force: true });
           console.log(`  → Clicked calendar day ${dayPicked}`);
         } catch (_) {}
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(sms(1500));
       }
 
       // Debug: Check if day click registered by examining button styling changes
@@ -1301,7 +1305,7 @@ function findChromeExe() {
           await page.click('[data-iflow-slot="1"]', { timeout: 2000, force: true });
           console.log(`  → Playwright-clicked slot: "${slotClicked}"`);
         } catch (_) {}
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(sms(1000));
       }
 
       // Step 7c: Force slot ID + captcha state via React fiber dispatch, then click Continue Booking.
@@ -1352,7 +1356,7 @@ function findChromeExe() {
         if (DEBUG) console.log('  [ts-debug] React state patch:', JSON.stringify(patchResult));
 
         if (patchResult && patchResult.patched && patchResult.patched.length > 0) {
-          await page.waitForTimeout(500);
+          await page.waitForTimeout(sms(500));
         }
 
         // Call the reserve-slot mutation directly from the React fiber.
@@ -1416,7 +1420,7 @@ function findChromeExe() {
           }
 
           if (mutateResult && mutateResult.called) {
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(sms(3000));
             if (page.url().includes('time-slot')) {
               console.log('  → reserve-slot captured via UI, completing payment calls directly');
               const apiBase = await page.evaluate(() => {
@@ -1465,7 +1469,7 @@ function findChromeExe() {
             await page.click('[data-iflow-continue="1"]', { timeout: 2000, force: true });
             console.log(`  → Playwright-clicked: "${continueClicked}"`);
           } catch (_) {}
-          try { await page.waitForTimeout(2000); } catch (_) {}
+          try { await page.waitForTimeout(sms(2000)); } catch (_) {}
         }
       }
     }
@@ -1646,7 +1650,7 @@ function findChromeExe() {
     console.log(`🖐 manual mode — window open for ${Math.round(HOLD_OPEN_MS / 1000)}s`);
     let closed = false; page.on('close', () => { closed = true; });
     const t0 = Date.now();
-    while (!closed && Date.now() - t0 < HOLD_OPEN_MS) { await page.waitForTimeout(1000).catch(() => { closed = true; }); }
+    while (!closed && Date.now() - t0 < HOLD_OPEN_MS) { await page.waitForTimeout(sms(1000)).catch(() => { closed = true; }); }
     writeFlow();
   }
 
