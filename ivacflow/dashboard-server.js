@@ -259,8 +259,16 @@ const FLOW_STEPS=[
   {label:'Payment amount',re:/payment-amount/i},
   {label:'Payment initiate',re:/payment\\/.*initiate/i},
 ];
-function renderProgress(captured){
+function setBar(pct,doneText,remText,stepsHtml){
   $('prog').classList.add('on');
+  pct=Math.max(0,Math.min(100,Math.round(pct)));
+  $('prog-fill').style.width=pct+'%';
+  $('prog-done').textContent=doneText;
+  $('prog-rem').textContent=remText;
+  $('prog-rem').className=(pct>=100)?'ok':'warn';
+  $('prog-steps').innerHTML=stepsHtml||'';
+}
+function renderProgress(captured){
   const urls=(captured||[]).map(e=>String((e&&e.url)||''));
   let done=0,chips='';
   for(const s of FLOW_STEPS){
@@ -270,11 +278,7 @@ function renderProgress(captured){
   }
   const total=FLOW_STEPS.length;
   const pct=Math.round(done/total*100), rem=100-pct;
-  $('prog-fill').style.width=pct+'%';
-  $('prog-done').textContent=done+'/'+total+' ধাপ সম্পন্ন — '+pct+'%';
-  $('prog-rem').textContent=rem===0?'✅ সম্পূর্ণ':'বাকি '+rem+'%';
-  $('prog-rem').className=rem===0?'ok':'warn';
-  $('prog-steps').innerHTML=chips;
+  setBar(pct, done+'/'+total+' ধাপ সম্পন্ন — '+pct+'%', rem===0?'✅ সম্পূর্ণ':'বাকি '+rem+'%', chips);
 }
 function resetProgress(){renderProgress([]);}
 function renderCap(c){
@@ -303,14 +307,41 @@ $('demo').onclick=async()=>{
 $('save').onclick=async()=>{const r=await fetch('/api/save',{method:'POST'});$('note').textContent=(await r.json()).ok?'✅ saved → values.json':'❌ save ব্যর্থ';};
 $('load').onclick=async()=>{const r=await fetch('/api/load');if(!r.ok){$('note').textContent='values.json নেই';return;}render(await r.json());$('note').textContent='loaded values.json';};
 
-async function send(f){
+function send(f){
   addLog('⬆ '+f.name+' ('+(f.size/1048576).toFixed(2)+' MB) পাঠানো হচ্ছে…');
-  $('note').textContent='decoding…';
-  const text=await f.text();
-  const r=await fetch('/api/extract?name='+encodeURIComponent(f.name),{method:'POST',headers:{'content-type':'text/plain'},body:text});
-  const j=await r.json();
-  addLog('✅ decode শেষ — '+(j.config&&j.config.dgepayUuid?'dgepayUuid পাওয়া গেছে':'dgepayUuid পাওয়া যায়নি'));
-  render(j); $('save').disabled=false; $('note').textContent='done';
+  $('note').textContent='আপলোড হচ্ছে…';
+  setBar(0,'পড়া হচ্ছে…','বাকি ১০০%','');
+  const reader=new FileReader();
+  reader.onprogress=(e)=>{ if(e.lengthComputable){const p=Math.round(e.loaded/e.total*15);setBar(p,'ফাইল পড়া হচ্ছে… '+p+'%','বাকি '+(100-p)+'%','');} };
+  reader.onerror=()=>{ addLog('❌ ফাইল পড়া যায়নি'); $('note').textContent='❌ ফাইল পড়া যায়নি'; };
+  reader.onload=()=>{
+    const text=reader.result;
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST','/api/extract?name='+encodeURIComponent(f.name));
+    xhr.setRequestHeader('content-type','text/plain');
+    xhr.upload.onprogress=(e)=>{
+      if(e.lengthComputable){
+        const p=15+Math.round(e.loaded/e.total*70);   // 15%→85% during upload
+        setBar(p,'আপলোড হচ্ছে… '+p+'%','বাকি '+(100-p)+'%','');
+      }
+    };
+    xhr.upload.onload=()=>{
+      let p=85; setBar(p,'ডিকোড হচ্ছে… '+p+'%','বাকি '+(100-p)+'%','');
+      $('note').textContent='decoding…';
+      if(window.__decTimer)clearInterval(window.__decTimer);
+      window.__decTimer=setInterval(()=>{ p=Math.min(97,p+1); setBar(p,'ডিকোড হচ্ছে… '+p+'%','বাকি '+(100-p)+'%',''); },150);
+    };
+    xhr.onload=()=>{
+      if(window.__decTimer){clearInterval(window.__decTimer);window.__decTimer=null;}
+      let j={}; try{j=JSON.parse(xhr.responseText);}catch(_){}
+      setBar(100,'✅ ডিকোড সম্পন্ন — ১০০%','✅ সম্পূর্ণ','');
+      addLog('✅ decode শেষ — '+(j.config&&j.config.dgepayUuid?'dgepayUuid পাওয়া গেছে':'dgepayUuid পাওয়া যায়নি'));
+      render(j); $('save').disabled=false; $('note').textContent='done';
+    };
+    xhr.onerror=()=>{ if(window.__decTimer){clearInterval(window.__decTimer);window.__decTimer=null;} addLog('❌ আপলোড ব্যর্থ'); $('note').textContent='❌ আপলোড ব্যর্থ'; };
+    xhr.send(text);
+  };
+  reader.readAsText(f);
 }
 function chip(f){return f?'<span class="badge ok">যাচাই ✓</span>':'<span class="badge bad">fallback</span>';}
 function val(v){return v?'<span class="ink">'+v+'</span>':'<span class="bad">(not found)</span>';}
