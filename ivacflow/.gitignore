@@ -8,3 +8,11 @@ _test_cfg.json
 _test_host.html
 _debug_flow.js
 _mock_passport.pdf
+
+# multi-bundle test harness artifacts (bundles are large and not ours to commit)
+_b_*.js
+_cfg_*.json
+_out_*/
+_test_*
+_alltest.log
+_progress.log

@@ -148,6 +148,7 @@ const flowState = {
   missionSelected: false,
   capturedSlotId: '',
   capturedDgepayUuid: '',
+  capturedAppointmentId: '',
 };
 
 const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '';
@@ -156,6 +157,87 @@ const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || '';
 const NOW_ISO = new Date().toISOString();
 const FUTURE_DATE = '2026-09-15';
 const FUTURE_DATES = ['2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18', '2026-09-19'];
+
+// Bundles read list data from differently-named properties, and the names are
+// obfuscated so we cannot know which one a given bundle picked. Reading the
+// wrong shape throws ("x.map is not a function") and blanks the page, which
+// stalls the walk. Returning the same items under every plausible alias makes
+// `data.<whicheverField>.map(...)` work regardless of the name.
+const LIST_ALIASES = [
+  'commission', 'commissions', 'centers', 'center', 'ivacCenters',
+  'mission', 'missions', 'highCommission', 'highCommissions',
+  'list', 'items', 'result', 'results', 'content', 'records', 'rows',
+  'options', 'values', 'entries', 'visaTypes', 'types', 'categories',
+];
+
+function polyObject(items, extraProps) {
+  const obj = {};
+  for (const alias of LIST_ALIASES) obj[alias] = items.map(o => ({ ...o }));
+  return Object.assign(obj, extraProps || {});
+}
+
+// When a list endpoint is served with the wrong container shape the page throws
+// and goes blank. SHAPE_PREF lets the walker flip an endpoint between
+// "object of aliased lists" and "bare array" and retry. Keys are endpoint
+// families, not exact URLs, so it works across bundles with different paths.
+const SHAPE_PREF = {};
+function shapeFor(family, fallback) {
+  return SHAPE_PREF[family] || fallback || 'object';
+}
+function flipShape(family) {
+  SHAPE_PREF[family] = shapeFor(family) === 'object' ? 'array' : 'object';
+  return SHAPE_PREF[family];
+}
+
+// Every gated submit in these bundles hides behind a captcha token that only a
+// real Cloudflare challenge can produce, so the button's onClick bails before
+// it ever calls the mutation. The mutation itself is reachable through the
+// React fiber tree, and calling it makes the app build the real request — real
+// path, real headers, real cipher — which is exactly what we want to record.
+// Collecting by shape (an object exposing .mutate) keeps this working across
+// bundles where every identifier is renamed.
+const COLLECT_MUTATIONS = `
+  (function () {
+    const seen = new Set(), out = [];
+    const els = [...document.querySelectorAll('button, form, input, [class]')].slice(0, 600);
+    for (const el of els) {
+      const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+      if (!key) continue;
+      let fiber = el[key];
+      for (let depth = 0; depth < 40 && fiber; depth++) {
+        let hook = fiber.memoizedState, guard = 0;
+        while (hook && guard++ < 120) {
+          const ms = hook.memoizedState;
+          let m = null;
+          if (ms && typeof ms === 'object') {
+            if (typeof ms.mutate === 'function') m = ms;
+            else if (ms.current && typeof ms.current.mutate === 'function') m = ms.current;
+          }
+          if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+          hook = hook.next;
+        }
+        fiber = fiber.return;
+      }
+    }
+    window.__ivacMutations = out;
+    return out.length;
+  })()
+`;
+
+// Fire each mutation found on the page, one at a time, stopping as soon as the
+// caller reports that a new API call landed.
+async function fireMutations(page, payload, onAfterEach) {
+  const count = await page.evaluate(COLLECT_MUTATIONS).catch(() => 0);
+  if (!count) return { found: 0, fired: 0, hit: false };
+  for (let i = 0; i < count; i++) {
+    await page.evaluate(({ idx, body }) => {
+      try { window.__ivacMutations[idx].mutate(body); } catch (_) {}
+    }, { idx: i, body: payload }).catch(() => {});
+    try { await page.waitForTimeout(1200); } catch (_) { break; }
+    if (onAfterEach && await onAfterEach()) return { found: count, fired: i + 1, hit: true };
+  }
+  return { found: count, fired: count, hit: false };
+}
 
 function mockBodyFor(url) {
   // User-supplied overrides first
@@ -337,20 +419,30 @@ function mockBodyFor(url) {
     };
   }
 
-  // ── High commissions ──
+  // ── High commissions (mission + centre pickers) ──
   if (/\/high-commission/i.test(url)) {
+    const missions = [
+      { id: 'COM-MOCK-001', name: 'Dhaka', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
+    ];
+    const centres = [
+      { id: 'CTR-MOCK-001', name: 'IVAC, DHAKA', centerName: 'IVAC, DHAKA', ivacCenter: 'IVAC, DHAKA', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
+    ];
+    // A by-id lookup returns one record; the bare collection returns a list.
+    // Serving the wrong one throws `.map is not a function` and blanks the page.
+    const singular = /by-id|[?&]id=/i.test(url);
+    const defaultShape = singular ? 'object' : 'array';
+    const body = shapeFor('high-commissions', defaultShape) === 'array'
+      ? missions.map(m => ({ ...m }))
+      : polyObject(missions, {
+          id: 'COM-MOCK-001', name: 'Dhaka', commissionName: 'Dhaka',
+          country: 'India', status: 'ACTIVE',
+          centers: centres.map(c => ({ ...c })),
+          ivacCenters: centres.map(c => ({ ...c })),
+        });
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
-      data: {
-        id: 'COM-MOCK-001', name: 'Indian High Commission',
-        commissionName: 'Dhaka', country: 'India', status: 'ACTIVE',
-        commission: [
-          { id: 'COM-MOCK-001', name: 'Indian High Commission', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
-        ],
-        centers: [
-          { id: 'CTR-MOCK-001', name: 'IVAC Dhaka', centerName: 'IVAC Dhaka (Jamuna Future Park)', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
-        ],
-      },
+      data: body,
+      statusCode: 200, message: 'Success', successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -1313,6 +1405,16 @@ function findChromeExe() {
           }, SLOT_ID || 'mock-slot-id').catch(e => ({ error: e.message }));
           if (DEBUG) console.log('  [ts-debug] mutation call:', JSON.stringify(mutateResult));
 
+          // The lookup above keys off English button text. Bundles render Bangla
+          // too, so fall back to scanning the whole fiber tree by shape.
+          if (!(mutateResult && mutateResult.called)) {
+            const dateStr = (patchResult && patchResult.dateState) || FUTURE_DATE;
+            const res = await fireMutations(page, { c: MOCK.turnstile, appointmentDate: dateStr },
+              async () => log.some(e => /reserve-slot/i.test(e.url))).catch(() => null);
+            if (res) console.log(`  → reserve mutation via fiber scan: found=${res.found} hit=${res.hit}`);
+            if (log.some(e => /reserve-slot/i.test(e.url))) { idleRounds = 0; writeFlow(); continue; }
+          }
+
           if (mutateResult && mutateResult.called) {
             await page.waitForTimeout(3000);
             if (page.url().includes('time-slot')) {
@@ -1432,6 +1534,25 @@ function findChromeExe() {
     }
 
     // (time-slot clicking handled above in section 7)
+
+    // Payment submit is captcha-gated, so drive the mutation through the fiber
+    // tree first: that makes the app build the real initiate URL (which carries
+    // the bundle's own payment UUID) instead of us fabricating one.
+    if (idleRounds >= 2 && curPath.includes('continue-payment') && !flowState.paymentInitiated) {
+      const appointmentId = flowState.capturedAppointmentId || 'mock-appointment-id';
+      const before = log.length;
+      const res = await fireMutations(page, {
+        paymentMethod: 'dg-epay', appointmentId,
+        turnstileToken: MOCK.turnstile, c: MOCK.turnstile,
+      }, async () => log.some(e => /\/payment\/.*initiate/i.test(e.url))).catch(() => null);
+      if (res) console.log(`  → payment mutation via fiber: found=${res.found} fired=${res.fired} hit=${res.hit}`);
+      if (log.some(e => /\/payment\/.*initiate/i.test(e.url))) {
+        console.log('  ✓ real payment endpoint captured via UI mutation');
+        writeFlow();
+        break;
+      }
+      if (log.length > before) { idleRounds = 0; continue; }
+    }
 
     // If stuck on continue-payment (page crashes due to obfuscated code), fire payment-initiate directly
     if (idleRounds >= 3 && curPath.includes('continue-payment')) {
