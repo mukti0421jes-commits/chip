@@ -252,12 +252,12 @@ $('probe').onclick=async()=>{
 };
 const FLOW_STEPS=[
   {label:'Sign-in',re:/sign-?in/i},
-  {label:'OTP verify',re:/otp\/verify/i},
+  {label:'OTP verify',re:/otp\\/verify/i},
   {label:'File overview',re:/over-?view/i},
   {label:'Booking config',re:/get-booking-config/i},
   {label:'Slot reserve',re:/reserve-slot/i},
   {label:'Payment amount',re:/payment-amount/i},
-  {label:'Payment initiate',re:/payment\/.*initiate/i},
+  {label:'Payment initiate',re:/payment\\/.*initiate/i},
 ];
 function renderProgress(captured){
   $('prog').classList.add('on');
