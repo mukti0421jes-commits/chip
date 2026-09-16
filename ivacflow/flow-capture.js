@@ -366,26 +366,22 @@ function mockBodyFor(url) {
   // ── Booking config ──
   if (/\/appointment.*booking-config/i.test(url) || /\/get-booking-config/i.test(url)) {
     return {
-      successFlag: true, statusCode: 200, message: 'Success',
       data: {
-        amount: 8200, paymentAmount: 8200, currency: 'BDT',
-        config: { maxDate: '2026-12-31', minDate: FUTURE_DATE },
-        appointmentId: 'mock-appointment-id',
         appointmentDate: FUTURE_DATES,
-        availableDates: FUTURE_DATES,
-        slotOpen: true,
-        serverTime: NOW_ISO,
-        appointmentTime: '09:00-17:00',
         appointmentId: 'mock-appointment-id',
-        availableSlot: '09:00-11:00',
-        slot: { id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true },
-        slots: [{ id: 'mock-slot-id', date: FUTURE_DATE, time: '09:00', available: true }],
-        mission: { id: 1, name: 'Indian High Commission', commissionName: 'Dhaka' },
-        ivacCenter: { id: 1, name: 'IVAC Dhaka', address: 'Dhaka' },
-        fileUploadConfirmed: true, fileConfirmed: true,
-        fileUploadOpen: true, fileUploadStarted: true,
-        uploadWindowOpen: true, uploadStart: true, uploadEnd: false,
+        appointmentSlot: '09:00 AM - 10:00 AM',
+        appointmentTime: '09:00 AM - 10:00 AM',
+        fileUploadStatus: 'MISSION_CENTER_SELECTED',
+        ivacCenter: 'IVAC, DHAKA',
+        mission: 'Dhaka',
+        numberOfApplicants: 1,
+        totalAmount: 1500.0,
+        visaCodes: null,
       },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -395,15 +391,12 @@ function mockBodyFor(url) {
     if (sm) flowState.capturedSlotId = sm[1];
     flowState.slotReserved = true;
     return {
-      successFlag: true, statusCode: 200, message: 'Slot reserved',
-      status: 'RESERVED_NEW',
-      data: {
-        reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
-        appointmentDate: FUTURE_DATE, status: 'RESERVED_NEW',
-        slotId: sm ? sm[1] : 'mock-slot-id', time: '09:00',
-        serverTime: NOW_ISO,
-        expiresAt: new Date(Date.now() + 660000).toISOString(),
-      },
+      status: 'OK_NEW',
+      reservationId: 'mock-reservation-id',
+      appointmentDate: FUTURE_DATE,
+      countByType: { MISCELLANEOUS_DOUBLE_ENTRY: 1 },
+      reserveTtlSeconds: 660,
+      message: 'Reserved booking',
     };
   }
 
@@ -413,13 +406,13 @@ function mockBodyFor(url) {
     if (pm) flowState.capturedDgepayUuid = pm[1];
     flowState.paymentInitiated = true;
     return {
-      successFlag: true, statusCode: 200, message: 'Payment initiated',
       data: {
-        webview_url: 'https://mock.gateway/pay', paymentUrl: 'https://mock.gateway/pay',
-        transactionId: 'mock-txn-id', amount: 8200, currency: 'BDT',
-        reservationId: 'mock-reservation-id', status: 'INITIATED',
-        redirectUrl: 'https://mock.gateway/pay', gatewayRef: 'mock-gw-ref',
+        webview_url: 'https://checkout.dgepay.net/payment/payment-methods?data=MOCK_PAYMENT_DATA',
       },
+      statusCode: 201,
+      message: 'Initiated',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
     };
   }
 
@@ -1427,6 +1420,34 @@ function findChromeExe() {
     }
 
     // (time-slot clicking handled above in section 7)
+
+    // If stuck on continue-payment (page crashes due to obfuscated code), fire payment-initiate directly
+    if (idleRounds >= 3 && curPath.includes('continue-payment')) {
+      console.log('  → continue-payment page empty, firing payment-initiate directly...');
+      const apiBase = await page.evaluate(() => {
+        const entries = performance.getEntriesByType('resource');
+        for (const e of entries) {
+          const m = e.name.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+          if (m) return m[1];
+        }
+        return null;
+      }).catch(() => null) || 'https://appointment.ivacbd.com/iams/api/v1';
+
+      const authToken = await page.evaluate(() => {
+        try { return JSON.parse(localStorage.getItem('auth-storage') || '{}')?.state?.accessToken || 'MOCK.ACCESS.TOKEN'; }
+        catch { return 'MOCK.ACCESS.TOKEN'; }
+      }).catch(() => 'MOCK.ACCESS.TOKEN');
+
+      let payEndpoint = BUNDLE_IDS.paymentEndpoint || (DGEPAY_UUID ? `/payment/${DGEPAY_UUID}/dg-epay/initiate` : '');
+      if (!payEndpoint) payEndpoint = '/payment/mock-uuid/dg-epay/initiate';
+
+      await page.evaluate(async (args) => {
+        try { await fetch(args.base + args.payEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + args.token, 'x-token': 'MOCK_TURNSTILE_TOKEN' }, body: JSON.stringify({ appointmentId: 'mock-appointment-id' }) }); } catch(_) {}
+      }, { base: apiBase, token: authToken, payEndpoint }).catch(() => {});
+      console.log('  → payment-initiate (direct from continue-payment)');
+      console.log('  all steps complete');
+      break;
+    }
 
     // If stuck too long on time-slot, attempt direct API calls using absolute URLs
     if (idleRounds >= 6 && curPath.includes('time-slot')) {

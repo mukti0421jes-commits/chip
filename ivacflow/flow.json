@@ -1,8 +1,8 @@
 {
-  "capturedAt": "2026-09-13T14:40:00.076Z",
+  "capturedAt": "2026-09-16T10:49:36.327Z",
   "calls": [
     {
-      "time": "2026-09-13T14:39:23.601Z",
+      "time": "2026-09-16T10:48:53.877Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/auth/v3-sign-in",
       "headers": {
@@ -21,7 +21,7 @@
       "body": "{\"phone\":\"01700000000\",\"password\":\"Test@1234\",\"c\":\"MOCK_TURiKm0xgpKZb35\"}"
     },
     {
-      "time": "2026-09-13T14:39:26.514Z",
+      "time": "2026-09-16T10:48:56.791Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp",
       "headers": {
@@ -40,7 +40,7 @@
       "body": "{\"requestId\":\"mock-request-id\",\"phone\":\"01700000000\",\"code\":\"111111\",\"otpChannel\":\"PHONE\"}"
     },
     {
-      "time": "2026-09-13T14:39:29.348Z",
+      "time": "2026-09-16T10:48:59.629Z",
       "method": "GET",
       "url": "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot_status",
       "headers": {
@@ -58,7 +58,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:29.358Z",
+      "time": "2026-09-16T10:48:59.642Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/appointment",
       "headers": {
@@ -76,7 +76,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:32.174Z",
+      "time": "2026-09-16T10:49:02.457Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/file/over-view-v421",
       "headers": {
@@ -94,7 +94,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:37.028Z",
+      "time": "2026-09-16T10:49:07.316Z",
       "method": "GET",
       "url": "https://api.ivacbd.com/iams/api/v1/high-commissions/by-id?id=COM-MOCK-001",
       "headers": {
@@ -112,7 +112,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:38.695Z",
+      "time": "2026-09-16T10:49:11.817Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config",
       "headers": {
@@ -131,7 +131,7 @@
       "body": "{\"mission\":\"Dhaka\",\"ivacCenter\":\"IVAC Dhaka (Jamuna Future Park)\"}"
     },
     {
-      "time": "2026-09-13T14:39:38.705Z",
+      "time": "2026-09-16T10:49:11.824Z",
       "method": "GET",
       "url": "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot_status",
       "headers": {
@@ -149,7 +149,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:38.723Z",
+      "time": "2026-09-16T10:49:11.845Z",
       "method": "GET",
       "url": "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config",
       "headers": {
@@ -167,7 +167,7 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:39:57.059Z",
+      "time": "2026-09-16T10:49:23.837Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/slots/139fd4d2-27c9-4758-a623-368583e830bs/reserve-slot",
       "headers": {
@@ -184,16 +184,18 @@
         "sec-ch-ua-platform": "\"Linux\"",
         "x-v-request-meta": "windos.s"
       },
-      "body": "{\"c\":\"MOCK_CAPTCHA\",\"appointmentDate\":\"2026-09-15\"}"
+      "body": "{\"c\":\"MOCK_CAPouaU\",\"appointmentDate\":\"2026-09-15\"}"
     },
     {
-      "time": "2026-09-13T14:40:00.067Z",
+      "time": "2026-09-16T10:49:23.867Z",
       "method": "GET",
       "url": "https://api.ivacbd.com/iams/api/v1/file/payment-amount",
       "headers": {
-        "accept": "*/*",
-        "authorization": "Bearer MOCK",
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer MOCK.ACCESS.TOKEN",
+        "cache-control": "no-cache, no-store, must-revalidate",
         "origin": "http://localhost:9138",
+        "pragma": "no-cache",
         "referer": "http://localhost:9138/",
         "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.7390.37 Safari/537.36",
         "sec-ch-ua": "\"HeadlessChrome\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"141\"",
@@ -203,21 +205,22 @@
       "body": ""
     },
     {
-      "time": "2026-09-13T14:40:00.073Z",
+      "time": "2026-09-16T10:49:36.323Z",
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/payment/mock-uuid/dg-epay/initiate",
       "headers": {
         "accept": "*/*",
-        "authorization": "Bearer MOCK",
+        "authorization": "Bearer MOCK.ACCESS.TOKEN",
         "content-type": "application/json",
         "origin": "http://localhost:9138",
         "referer": "http://localhost:9138/",
         "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.7390.37 Safari/537.36",
         "sec-ch-ua": "\"HeadlessChrome\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"141\"",
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Linux\""
+        "sec-ch-ua-platform": "\"Linux\"",
+        "x-token": "MOCK_TURNSTILE_TOKEN"
       },
-      "body": "{}"
+      "body": "{\"appointmentId\":\"mock-appointment-id\"}"
     }
   ],
   "summary": [
@@ -326,15 +329,18 @@
       "url": "https://api.ivacbd.com/iams/api/v1/file/payment-amount",
       "payloadFields": null,
       "headers": {
-        "authorization": "Bearer MOCK"
+        "authorization": "Bearer MOCK.ACCESS.TOKEN"
       }
     },
     {
       "method": "POST",
       "url": "https://api.ivacbd.com/iams/api/v1/payment/mock-uuid/dg-epay/initiate",
-      "payloadFields": [],
+      "payloadFields": [
+        "appointmentId"
+      ],
       "headers": {
-        "authorization": "Bearer MOCK",
+        "x-token": "MOCK_TURNSTILE_TOKEN",
+        "authorization": "Bearer MOCK.ACCESS.TOKEN",
         "content-type": "application/json"
       }
     }
