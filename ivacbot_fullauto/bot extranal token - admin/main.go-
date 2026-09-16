@@ -1,0 +1,4744 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// ==================== CONSTANTS ====================
+const (
+	API_BASE             = "https://api.ivacbd.com"
+	API_LOGIN_URL        = "https://api.ivacbd.com/iams/api/v1/auth/sign-in-v2"
+	API_VERIFY_OTP_URL   = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp"
+	API_RESERVE_SLOT_URL = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot"
+	API_PAYMENT_URL      = "https://api.ivacbd.com/iams/api/v1/payment/dg-epay/initiate"
+	API_BOOKING_CONFIG   = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config"
+	API_SLOT_STATUS_URL  = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot-status"
+
+	TURNSTILE_SITE_KEY = "0x4AAAAAACghKkJHL1t7UkuZ"
+	WEBSITE_URL        = "https://appointment.ivacbd.com"
+
+	// Login Captcha Encryption Constants (UPDATED - New algorithm)
+	LOGIN_ALPHABET   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"
+	LOGIN_SECRET     = "*3bh)w**&=x9!6t=v&1^&$-077=e-z$3)s2c@(d4y7xpix_%%&"
+	LOGIN_START_POS  = 2
+	LOGIN_ENCODE_LEN = 25
+
+	// Reserve Captcha Encryption Constants (UPDATED - New algorithm)
+	RESERVE_ALPHABET   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"
+	RESERVE_SECRET     = "7=^5m3f$kc=f)egyw^27g%axrw!2ni*2oexs0fjmq5_ni1efq)"
+	RESERVE_START_POS  = 4
+	RESERVE_ENCODE_LEN = 29
+
+	CONFIG_FILE       = "config.json"
+	INSTANCES_FILE    = "instances.json"
+	PROXY_CONFIG_FILE = "proxies.json"
+	OTP_API_URL       = "https://thirdeyesms.shop/sms.php"
+	HOSTS_FILE        = "C:\\Windows\\System32\\drivers\\etc\\hosts"
+	HOSTS_DOMAIN      = "api.ivacbd.com"
+
+	DEFAULT_LOGIN_CAPTCHA_EXPIRY   = 210 // seconds
+	DEFAULT_RESERVE_CAPTCHA_EXPIRY = 90  // seconds
+	
+	REQUEST_MODE_PARALLEL = "parallel"
+	REQUEST_MODE_SINGLE   = "single"
+)
+
+const (
+	CAPTCHA_SERVICE_CAPSOLVER  = "capsolver"
+	CAPTCHA_SERVICE_CAPMONSTER = "capmonster"
+	CAPTCHA_SERVICE_2CAPTCHA   = "2captcha"
+)
+
+var browserHeaders = map[string]string{
+	"accept":             "application/json, text/plain, */*",
+	"accept-language":    "en-US,en;q=0.9",
+	"cache-control":      "no-cache",
+	"pragma":             "no-cache",
+	"priority":           "u=1, i",
+	"sec-ch-ua":          `"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"`,
+	"sec-ch-ua-mobile":   "?0",
+	"sec-ch-ua-platform": `"Windows"`,
+	"sec-fetch-dest":     "empty",
+	"sec-fetch-mode":     "cors",
+	"sec-fetch-site":     "same-site",
+	"referrer":           "https://appointment.ivacbd.com/",
+	"origin":             "https://appointment.ivacbd.com",
+	"content-type":       "application/json",
+	"user-agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+}
+
+type NetworkRequest struct {
+	Endpoint   string    `json:"endpoint"`
+	Method     string    `json:"method"`
+	StatusCode int       `json:"statusCode"`
+	StatusText string    `json:"statusText"`
+	ClientIP   string    `json:"clientIp"`
+	ProxyIP    string    `json:"proxyIp"`
+	HostIP     string    `json:"hostIp"`
+	Timestamp  time.Time `json:"timestamp"`
+	Duration   string    `json:"duration"`
+	RequestID  string    `json:"requestId,omitempty"`
+	RespBody   string    `json:"respBody,omitempty"`
+}
+
+type ParallelRetryItem struct {
+	Enabled      bool   `json:"enabled"`
+	Hits         []int  `json:"hits"`
+	DelayMs      int    `json:"delayMs"`
+	ReuseCaptcha bool   `json:"reuseCaptcha"`
+}
+
+type ParallelRetryConfig struct {
+	Signin  ParallelRetryItem `json:"signin"`
+	Verify  ParallelRetryItem `json:"verify"`
+	Reserve ParallelRetryItem `json:"reserve"`
+	Booking ParallelRetryItem `json:"booking"`
+	Payment ParallelRetryItem `json:"payment"`
+}
+
+type ParallelConfig struct {
+	SigninHits   int `json:"signinHits"`
+	SigninMs     int `json:"signinMs"`
+	VerifyHits   int `json:"verifyHits"`
+	VerifyMs     int `json:"verifyMs"`
+	ReserveHits  int `json:"reserveHits"`
+	ReserveMs    int `json:"reserveMs"`
+	BookingHits  int `json:"bookingHits"`
+	BookingMs    int `json:"bookingMs"`
+	InitiateHits int `json:"initiateHits"`
+	InitiateMs   int `json:"initiateMs"`
+}
+
+type DeviceInfo struct {
+	DeviceID string `json:"deviceId"`
+}
+
+type DeviceGenerator struct {
+	mu          sync.Mutex
+	usedDevices map[string]bool
+}
+
+var globalDeviceGenerator *DeviceGenerator
+var deviceGenOnce sync.Once
+
+func GetDeviceGenerator() *DeviceGenerator {
+	deviceGenOnce.Do(func() {
+		globalDeviceGenerator = &DeviceGenerator{
+			usedDevices: make(map[string]bool),
+		}
+	})
+	return globalDeviceGenerator
+}
+
+func generateDeviceID() string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, 20)
+	for i := range result {
+		result[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(result)
+}
+
+func (dg *DeviceGenerator) GenerateDeviceInfo(instanceID int) *DeviceInfo {
+	dg.mu.Lock()
+	defer dg.mu.Unlock()
+
+	var deviceID string
+	for {
+		deviceID = generateDeviceID()
+		if !dg.usedDevices[deviceID] {
+			break
+		}
+	}
+	dg.usedDevices[deviceID] = true
+
+	return &DeviceInfo{
+		DeviceID: deviceID,
+	}
+}
+
+type EndpointSuccessTracker struct {
+	mu         sync.RWMutex
+	successMap map[string]bool
+	cancelMap  map[string]context.CancelFunc
+	muMap      map[string]*sync.Mutex
+}
+
+func NewEndpointSuccessTracker() *EndpointSuccessTracker {
+	return &EndpointSuccessTracker{
+		successMap: make(map[string]bool),
+		cancelMap:  make(map[string]context.CancelFunc),
+		muMap:      make(map[string]*sync.Mutex),
+	}
+}
+
+func (t *EndpointSuccessTracker) IsSuccess(endpoint string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.successMap[endpoint]
+}
+
+func (t *EndpointSuccessTracker) MarkSuccess(endpoint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.successMap[endpoint] = true
+
+	if cancel, exists := t.cancelMap[endpoint]; exists && cancel != nil {
+		cancel()
+		delete(t.cancelMap, endpoint)
+	}
+}
+
+func (t *EndpointSuccessTracker) RegisterCancel(endpoint string, cancel context.CancelFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.successMap[endpoint] {
+		if cancel != nil {
+			cancel()
+		}
+		return
+	}
+
+	if oldCancel, exists := t.cancelMap[endpoint]; exists && oldCancel != nil {
+		oldCancel()
+	}
+	t.cancelMap[endpoint] = cancel
+}
+
+func (t *EndpointSuccessTracker) Reset(endpoint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.successMap, endpoint)
+	if cancel, exists := t.cancelMap[endpoint]; exists && cancel != nil {
+		cancel()
+	}
+	delete(t.cancelMap, endpoint)
+}
+
+func (t *EndpointSuccessTracker) GetMutex(endpoint string) *sync.Mutex {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, exists := t.muMap[endpoint]; !exists {
+		t.muMap[endpoint] = &sync.Mutex{}
+	}
+	return t.muMap[endpoint]
+}
+
+type Config struct {
+	CaptchaAPIKey        string              `json:"captchaApiKey"`
+	CaptchaService       string              `json:"captchaService"`
+	QueueSize            int                 `json:"queueSize"`
+	ReserveQueueSize     int                 `json:"reserveQueueSize"`
+	LoginCaptchaExpiry   int                 `json:"loginCaptchaExpiry"`
+	ReserveCaptchaExpiry int                 `json:"reserveCaptchaExpiry"`
+	HostIPs              []string            `json:"hostIPs"`
+	ActiveHostIP         string              `json:"activeHostIP"`
+	LoginMode            string              `json:"loginMode"`
+	AutoCaptcha          bool                `json:"autoCaptcha"`
+	AutoOTP              bool                `json:"autoOtp"`
+	OTPRetryDelay        int                 `json:"otpRetryDelay"`
+	SlotMonitor          SlotMonitorConfig   `json:"slotMonitor"`
+	SlotCheckInterval    int                 `json:"slotCheckInterval"`
+	Parallel             ParallelConfig      `json:"parallel"`
+	ParallelRetry        ParallelRetryConfig `json:"parallelRetry"`
+	RequestMode          string              `json:"requestMode"` // "parallel" or "single"
+}
+
+type SlotMonitorConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+type InstanceData struct {
+	ID               int              `json:"id"`
+	ClientName       string           `json:"clientName"`
+	LoginPhone       string           `json:"loginPhone"`
+	Password         string           `json:"password"`
+	OTPPhone         string           `json:"otpPhone"`
+	Type             string           `json:"type"`
+	HighCom          string           `json:"highCom"`
+	VisaType         string           `json:"visaType"`
+	Name             string           `json:"name"`
+	Status           string           `json:"status"`
+	Step             string           `json:"step"`
+	OTP              string           `json:"otp"`
+	ReservationID    string           `json:"reservationId"`
+	AppointmentDate  string           `json:"appointmentDate"`
+	PaymentURL       string           `json:"paymentUrl"`
+	AppointmentID    string           `json:"appointmentId"`
+	StartTime        time.Time        `json:"startTime"`
+	Duration         string           `json:"duration"`
+	Logs             []string         `json:"logs"`
+	NetworkLogs      []NetworkRequest `json:"networkLogs"`
+	CurrentHostIP    string           `json:"currentHostIP"`
+	AssignedHostIP   string           `json:"assignedHostIP"`
+	RetryCount       int              `json:"retryCount"`
+	DeviceInfo       *DeviceInfo      `json:"deviceInfo"`
+	ManualOTP        string           `json:"manualOtp"`
+	ManualOTPTime    time.Time        `json:"manualOtpTime"`
+	HasAppointmentID bool             `json:"hasAppointmentId"`
+	PausedStep       string           `json:"pausedStep"`
+}
+
+type Instance struct {
+	Data   InstanceData
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	client *IVACClient
+}
+
+type CaptchaToken struct {
+	Token     string
+	ExpiresAt time.Time
+	TokenType string
+}
+
+func (t *CaptchaToken) IsExpired() bool {
+	return time.Now().After(t.ExpiresAt)
+}
+
+type ProxyConfig struct {
+	ID         string    `json:"id"`
+	Type       string    `json:"type"`
+	Host       string    `json:"host"`
+	Port       int       `json:"port"`
+	User       string    `json:"user"`
+	Password   string    `json:"password"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastTest   time.Time `json:"lastTest"`
+	TestPass   bool      `json:"testPass"`
+	ResponseMs int       `json:"responseMs"`
+}
+
+type wsClient struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+type parallelResult struct {
+	Success  bool
+	Response *APIResponse
+	Error    error
+	Index    int
+}
+
+var (
+	instances    = make(map[int]*Instance)
+	instanceID   int32 = 1
+	instancesMu  sync.RWMutex
+	globalConfig Config
+	configMu     sync.RWMutex
+	allRunning   = false
+	allRunningMu sync.RWMutex
+	allPaused    = false
+	allPausedMu  sync.RWMutex
+
+	globalProxies []ProxyConfig
+	proxiesMu     sync.RWMutex
+
+	slotMonitorRunning  = false
+	slotMonitorMu       sync.RWMutex
+	slotMonitorStopChan chan bool
+
+	upgrader    = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	wsClients   = make(map[*websocket.Conn]*wsClient)
+	wsClientsMu sync.RWMutex
+
+	globalConfigReloadChan = make(chan bool, 1)
+)
+
+// ==================== LOGIN CAPTCHA ENCRYPTION FUNCTIONS (UPDATED) ====================
+
+func encryptCaptchaForLogin(rawCaptchaToken string) string {
+	if rawCaptchaToken == "" {
+		return rawCaptchaToken
+	}
+	
+	safeStart := max(0, min(LOGIN_START_POS, len(rawCaptchaToken)))
+	safeLength := max(0, min(LOGIN_ENCODE_LEN, len(rawCaptchaToken)-safeStart))
+	
+	if safeLength <= 0 {
+		return rawCaptchaToken
+	}
+	
+	// Initialize LCG (Linear Congruential Generator) with seed
+	seed := uint32(123456789)
+	mul := uint32(1103515245)
+	
+	// Add secret characters to seed
+	for i := 0; i < len(LOGIN_SECRET); i++ {
+		seed = seed + uint32(LOGIN_SECRET[i])
+	}
+	
+	prefix := rawCaptchaToken[:safeStart]
+	middle := rawCaptchaToken[safeStart : safeStart+safeLength]
+	suffix := rawCaptchaToken[safeStart+safeLength:]
+	
+	encodedMid := make([]byte, len(middle))
+	for i := 0; i < len(middle); i++ {
+		// Update LCG state
+		seed = seed * mul
+		seed = seed + 12345
+		
+		// Update multiplier
+		mul = mul + seed
+		mul = mul | 1
+		
+		idx := strings.IndexByte(LOGIN_ALPHABET, middle[i])
+		if idx != -1 {
+			shift := (seed >> 16) % uint32(len(LOGIN_ALPHABET))
+			newIdx := (uint32(idx) + shift) % uint32(len(LOGIN_ALPHABET))
+			encodedMid[i] = LOGIN_ALPHABET[newIdx]
+		} else {
+			encodedMid[i] = middle[i]
+		}
+	}
+	
+	return prefix + string(encodedMid) + suffix
+}
+
+// ==================== RESERVE CAPTCHA ENCRYPTION FUNCTIONS (UPDATED) ====================
+
+func encryptCaptchaForReserve(rawToken string) string {
+	if rawToken == "" {
+		return rawToken
+	}
+	
+	safeStart := max(0, min(RESERVE_START_POS, len(rawToken)))
+	safeLength := max(0, min(RESERVE_ENCODE_LEN, len(rawToken)-safeStart))
+	
+	if safeLength == 0 {
+		return rawToken
+	}
+	
+	// Initialize Fisher-Yates shuffle array
+	s := make([]int, len(RESERVE_ALPHABET))
+	for i := 0; i < len(RESERVE_ALPHABET); i++ {
+		s[i] = i
+	}
+	
+	// Fisher-Yates shuffle using secret as key
+	j := 0
+	for i := 0; i < len(RESERVE_ALPHABET); i++ {
+		j = (j + s[i] + int(RESERVE_SECRET[i%len(RESERVE_SECRET)])) % len(RESERVE_ALPHABET)
+		s[i], s[j] = s[j], s[i]
+	}
+	
+	prefix := rawToken[:safeStart]
+	middle := rawToken[safeStart : safeStart+safeLength]
+	suffix := rawToken[safeStart+safeLength:]
+	
+	// Reverse the middle part first
+	runes := []rune(middle)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	reversedMid := string(runes)
+	
+	encodedMid := make([]byte, len(reversedMid))
+	for i := 0; i < len(reversedMid); i++ {
+		idx := strings.IndexByte(RESERVE_ALPHABET, reversedMid[i])
+		if idx != -1 {
+			encodedMid[i] = RESERVE_ALPHABET[s[idx]]
+		} else {
+			encodedMid[i] = reversedMid[i]
+		}
+	}
+	
+	return prefix + string(encodedMid) + suffix
+}
+
+// ==================== CAPTCHA QUEUE ====================
+
+type SilentCaptchaQueue struct {
+	mu            sync.Mutex
+	tokens        []*CaptchaToken
+	reserveTokens []*CaptchaToken
+	maxSize       int
+	reserveSize   int
+	apiKey        string
+	service       string
+	stopChan      chan bool
+	isRunning     bool
+	logCb         func(string)
+	loginTTL      int
+	reserveTTL    int
+}
+
+func NewSilentCaptchaQueue(apiKey, service string, maxSize, reserveSize int, loginExpiry, reserveExpiry int, logCb func(string)) *SilentCaptchaQueue {
+	q := &SilentCaptchaQueue{
+		tokens:        make([]*CaptchaToken, 0),
+		reserveTokens: make([]*CaptchaToken, 0),
+		maxSize:       maxSize,
+		reserveSize:   reserveSize,
+		apiKey:        apiKey,
+		service:       service,
+		stopChan:      make(chan bool),
+		isRunning:     true,
+		logCb:         logCb,
+		loginTTL:      loginExpiry,
+		reserveTTL:    reserveExpiry,
+	}
+	go q.maintainLoginQueue()
+	go q.maintainReserveQueue()
+	go q.expiryMonitor()
+	return q
+}
+
+func (q *SilentCaptchaQueue) log(msg string) {
+	if q.logCb != nil {
+		q.logCb(msg)
+	}
+}
+
+func (q *SilentCaptchaQueue) expiryMonitor() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for q.isRunning {
+		select {
+		case <-q.stopChan:
+			return
+		case <-ticker.C:
+			q.removeExpiredLoginTokens()
+			q.removeExpiredReserveTokens()
+		}
+	}
+}
+
+func (q *SilentCaptchaQueue) removeExpiredLoginTokens() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	valid := make([]*CaptchaToken, 0)
+	for _, t := range q.tokens {
+		if !t.IsExpired() {
+			valid = append(valid, t)
+		}
+	}
+	q.tokens = valid
+}
+
+func (q *SilentCaptchaQueue) removeExpiredReserveTokens() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	valid := make([]*CaptchaToken, 0)
+	for _, t := range q.reserveTokens {
+		if !t.IsExpired() {
+			valid = append(valid, t)
+		}
+	}
+	q.reserveTokens = valid
+}
+
+func (q *SilentCaptchaQueue) maintainLoginQueue() {
+	for q.isRunning {
+		select {
+		case <-q.stopChan:
+			return
+		default:
+		}
+
+		q.mu.Lock()
+		currentSize := len(q.tokens)
+		need := q.maxSize - currentSize
+		q.mu.Unlock()
+
+		if need > 0 {
+			q.log(fmt.Sprintf("🔄 Maintaining login queue: need %d tokens", need))
+			if token := q.solveCaptcha(); token != "" {
+				q.mu.Lock()
+				q.tokens = append(q.tokens, &CaptchaToken{
+					Token:     token,
+					ExpiresAt: time.Now().Add(time.Duration(q.loginTTL) * time.Second),
+					TokenType: "login",
+				})
+				q.mu.Unlock()
+				q.log(fmt.Sprintf("📦 Login token added to queue (total: %d/%d, expires in %ds)", len(q.tokens), q.maxSize, q.loginTTL))
+			} else {
+				q.log("⚠️ Failed to solve captcha for login queue")
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+func (q *SilentCaptchaQueue) maintainReserveQueue() {
+	for q.isRunning {
+		select {
+		case <-q.stopChan:
+			return
+		default:
+		}
+
+		q.mu.Lock()
+		currentSize := len(q.reserveTokens)
+		need := q.reserveSize - currentSize
+		q.mu.Unlock()
+
+		if need > 0 {
+			q.log(fmt.Sprintf("🔄 Maintaining reserve queue: need %d tokens", need))
+			if token := q.solveCaptcha(); token != "" {
+				q.mu.Lock()
+				q.reserveTokens = append(q.reserveTokens, &CaptchaToken{
+					Token:     token,
+					ExpiresAt: time.Now().Add(time.Duration(q.reserveTTL) * time.Second),
+					TokenType: "reserve",
+				})
+				q.mu.Unlock()
+				q.log(fmt.Sprintf("📦 Reserve token added to queue (total: %d/%d, expires in %ds)", len(q.reserveTokens), q.reserveSize, q.reserveTTL))
+			} else {
+				q.log("⚠️ Failed to solve captcha for reserve queue")
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+func (q *SilentCaptchaQueue) GetLoginToken() (string, error) {
+	for q.isRunning {
+		select {
+		case <-q.stopChan:
+			return "", errors.New("queue stopped")
+		default:
+		}
+
+		q.mu.Lock()
+		var validToken *CaptchaToken
+		for _, t := range q.tokens {
+			if !t.IsExpired() {
+				validToken = t
+				break
+			}
+		}
+		
+		if validToken != nil {
+			// Remove consumed token from slice
+			for i, t := range q.tokens {
+				if t == validToken {
+					q.tokens = append(q.tokens[:i], q.tokens[i+1:]...)
+					break
+				}
+			}
+			q.mu.Unlock()
+			q.log(fmt.Sprintf("🔑 Returning login token (expires in %.0fs)", time.Until(validToken.ExpiresAt).Seconds()))
+			return validToken.Token, nil
+		}
+		q.mu.Unlock()
+
+		q.log("⚠️ Login queue empty! Solving captcha directly...")
+		token := q.solveCaptcha()
+		if token != "" {
+			return token, nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+	return "", errors.New("queue stopped")
+}
+
+func (q *SilentCaptchaQueue) GetReserveToken() (string, error) {
+	for q.isRunning {
+		select {
+		case <-q.stopChan:
+			return "", errors.New("queue stopped")
+		default:
+		}
+
+		q.mu.Lock()
+		var validToken *CaptchaToken
+		for _, t := range q.reserveTokens {
+			if !t.IsExpired() {
+				validToken = t
+				break
+			}
+		}
+		
+		if validToken != nil {
+			// Remove consumed token from slice
+			for i, t := range q.reserveTokens {
+				if t == validToken {
+					q.reserveTokens = append(q.reserveTokens[:i], q.reserveTokens[i+1:]...)
+					break
+				}
+			}
+			q.mu.Unlock()
+			q.log(fmt.Sprintf("🔑 Returning reserve token (expires in %.0fs)", time.Until(validToken.ExpiresAt).Seconds()))
+			return validToken.Token, nil
+		}
+		q.mu.Unlock()
+
+		q.log("⚠️ Reserve queue empty! Solving captcha directly...")
+		token := q.solveCaptcha()
+		if token != "" {
+			return token, nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+	return "", errors.New("queue stopped")
+}
+
+func (q *SilentCaptchaQueue) InvalidateLoginToken(token string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for i, t := range q.tokens {
+		if t.Token == token {
+			q.log("🗑️ Invalidating login token (removing from queue)")
+			q.tokens = append(q.tokens[:i], q.tokens[i+1:]...)
+			break
+		}
+	}
+}
+
+func (q *SilentCaptchaQueue) InvalidateReserveToken(token string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for i, t := range q.reserveTokens {
+		if t.Token == token {
+			q.log("🗑️ Invalidating reserve token (removing from queue)")
+			q.reserveTokens = append(q.reserveTokens[:i], q.reserveTokens[i+1:]...)
+			break
+		}
+	}
+}
+
+func (q *SilentCaptchaQueue) solveCaptcha() string {
+	if q.apiKey == "" {
+		q.log("❌ Captcha API key is empty!")
+		return ""
+	}
+
+	q.log(fmt.Sprintf("🔧 Solving captcha using: %s", q.service))
+
+	switch q.service {
+	case CAPTCHA_SERVICE_CAPMONSTER:
+		return q.solveCapMonster()
+	case CAPTCHA_SERVICE_2CAPTCHA:
+		return q.solve2Captcha()
+	default:
+		return q.solveCapSolver()
+	}
+}
+
+func (q *SilentCaptchaQueue) solveCapSolver() string {
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	for retry := 0; retry < 3; retry++ {
+		if retry > 0 {
+			q.log(fmt.Sprintf("🔄 Capsolver retry %d/3", retry+1))
+			time.Sleep(3 * time.Second)
+		}
+
+		taskData := map[string]interface{}{
+			"clientKey": q.apiKey,
+			"task": map[string]interface{}{
+				"type":       "AntiTurnstileTaskProxyless",
+				"websiteURL": WEBSITE_URL,
+				"websiteKey": TURNSTILE_SITE_KEY,
+			},
+		}
+
+		jsonData, _ := json.Marshal(taskData)
+		resp, err := client.Post("https://api.capsolver.com/createTask", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			q.log(fmt.Sprintf("⚠️ Capsolver createTask error: %v", err))
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var res map[string]interface{}
+		json.Unmarshal(body, &res)
+
+		if errId, ok := res["errorId"]; ok && errId.(float64) > 0 {
+			errDesc := ""
+			if desc, ok := res["errorDescription"].(string); ok {
+				errDesc = desc
+			}
+			q.log(fmt.Sprintf("⚠️ Capsolver error: %s", errDesc))
+			continue
+		}
+
+		taskId, ok := res["taskId"]
+		if !ok {
+			q.log("⚠️ No taskId returned from Capsolver")
+			continue
+		}
+
+		q.log(fmt.Sprintf("📝 Capsolver task created: %v", taskId))
+
+		for attempt := 0; attempt < 30; attempt++ {
+			time.Sleep(3 * time.Second)
+
+			resultData := map[string]interface{}{
+				"clientKey": q.apiKey,
+				"taskId":    taskId,
+			}
+			jsonResult, _ := json.Marshal(resultData)
+
+			resp2, err := client.Post("https://api.capsolver.com/getTaskResult", "application/json", bytes.NewBuffer(jsonResult))
+			if err != nil {
+				continue
+			}
+
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			var tr map[string]interface{}
+			json.Unmarshal(body2, &tr)
+
+			if status, ok := tr["status"].(string); ok && status == "ready" {
+				if solution, ok := tr["solution"].(map[string]interface{}); ok {
+					if token, ok := solution["token"].(string); ok && token != "" {
+						q.log(fmt.Sprintf("✅ Capsolver got token (length: %d)", len(token)))
+						return token
+					}
+				}
+			}
+
+			if status, _ := tr["status"].(string); status == "failed" {
+				q.log("⚠️ Capsolver task failed")
+				break
+			}
+		}
+	}
+
+	return ""
+}
+
+func (q *SilentCaptchaQueue) solveCapMonster() string {
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	for retry := 0; retry < 3; retry++ {
+		if retry > 0 {
+			q.log(fmt.Sprintf("🔄 CapMonster retry %d/3", retry+1))
+			time.Sleep(3 * time.Second)
+		}
+
+		task := map[string]interface{}{
+			"clientKey": q.apiKey,
+			"task": map[string]interface{}{
+				"type":       "TurnstileTaskProxyless",
+				"websiteURL": WEBSITE_URL,
+				"websiteKey": TURNSTILE_SITE_KEY,
+			},
+		}
+
+		jsonData, _ := json.Marshal(task)
+		resp, err := client.Post("https://api.capmonster.cloud/createTask", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			q.log(fmt.Sprintf("⚠️ CapMonster createTask error: %v", err))
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var res map[string]interface{}
+		json.Unmarshal(body, &res)
+
+		if eid, ok := res["errorId"].(float64); ok && eid > 0 {
+			errDesc, _ := res["errorDescription"].(string)
+			q.log(fmt.Sprintf("⚠️ CapMonster error: %s", errDesc))
+			continue
+		}
+
+		tid, ok := res["taskId"].(float64)
+		if !ok {
+			q.log("⚠️ No taskId returned from CapMonster")
+			continue
+		}
+
+		q.log(fmt.Sprintf("📝 CapMonster task created: %.0f", tid))
+
+		for attempt := 0; attempt < 30; attempt++ {
+			time.Sleep(2 * time.Second)
+
+			getTask := map[string]interface{}{
+				"clientKey": q.apiKey,
+				"taskId":    fmt.Sprintf("%.0f", tid),
+			}
+			jsonGet, _ := json.Marshal(getTask)
+
+			resp2, err := client.Post("https://api.capmonster.cloud/getTaskResult", "application/json", bytes.NewBuffer(jsonGet))
+			if err != nil {
+				continue
+			}
+
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			var tr map[string]interface{}
+			json.Unmarshal(body2, &tr)
+
+			if s, ok := tr["status"].(string); ok && s == "ready" {
+				if sol, ok := tr["solution"].(map[string]interface{}); ok {
+					if tok, ok := sol["token"].(string); ok && tok != "" {
+						q.log(fmt.Sprintf("✅ CapMonster got token (length: %d)", len(tok)))
+						return tok
+					}
+				}
+			}
+
+			if s, _ := tr["status"].(string); s == "failed" {
+				q.log("⚠️ CapMonster task failed")
+				break
+			}
+		}
+	}
+
+	return ""
+}
+
+func (q *SilentCaptchaQueue) solve2Captcha() string {
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	for retry := 0; retry < 3; retry++ {
+		if retry > 0 {
+			q.log(fmt.Sprintf("🔄 2Captcha retry %d/3", retry+1))
+			time.Sleep(3 * time.Second)
+		}
+
+		submitURL := fmt.Sprintf("https://2captcha.com/in.php?key=%s&method=turnstile&sitekey=%s&pageurl=%s&json=1",
+			q.apiKey, TURNSTILE_SITE_KEY, WEBSITE_URL)
+
+		resp, err := client.Get(submitURL)
+		if err != nil {
+			q.log(fmt.Sprintf("⚠️ 2Captcha submit error: %v", err))
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var submitRes map[string]interface{}
+		json.Unmarshal(body, &submitRes)
+
+		if status, ok := submitRes["status"].(float64); !ok || status != 1 {
+			errMsg := ""
+			if req, ok := submitRes["request"].(string); ok {
+				errMsg = req
+			}
+			q.log(fmt.Sprintf("⚠️ 2Captcha submit error: %s", errMsg))
+			continue
+		}
+
+		taskId, ok := submitRes["request"].(string)
+		if !ok {
+			q.log("⚠️ No taskId returned from 2Captcha")
+			continue
+		}
+
+		q.log(fmt.Sprintf("📝 2Captcha task created: %s", taskId))
+
+		for attempt := 0; attempt < 60; attempt++ {
+			time.Sleep(3 * time.Second)
+
+			resultURL := fmt.Sprintf("https://2captcha.com/res.php?key=%s&action=get&id=%s&json=1",
+				q.apiKey, taskId)
+
+			resp2, err := client.Get(resultURL)
+			if err != nil {
+				continue
+			}
+
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			var resultData map[string]interface{}
+			json.Unmarshal(body2, &resultData)
+
+			if status, ok := resultData["status"].(float64); ok && status == 1 {
+				if token, ok := resultData["request"].(string); ok && token != "" {
+					q.log(fmt.Sprintf("✅ 2Captcha got token (length: %d)", len(token)))
+					return token
+				}
+			}
+
+			if req, ok := resultData["request"].(string); ok && req == "ERROR_CAPTCHA_UNSOLVABLE" {
+				q.log("⚠️ 2Captcha: Captcha unsolvable")
+				break
+			}
+		}
+	}
+
+	return ""
+}
+
+func (q *SilentCaptchaQueue) Stop() {
+	q.isRunning = false
+	close(q.stopChan)
+}
+
+// ==================== PARALLEL REQUEST FUNCTIONS ====================
+
+func (c *IVACClient) getCurrentParallelRetryConfig() ParallelRetryConfig {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return globalConfig.ParallelRetry
+}
+
+func (c *IVACClient) getCurrentParallelConfig() ParallelConfig {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return globalConfig.Parallel
+}
+
+func (c *IVACClient) shouldUseParallelMode() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return globalConfig.RequestMode == REQUEST_MODE_PARALLEL
+}
+
+func (c *IVACClient) executeParallelRetryWithCaptchaReuse(apiUrl string, body interface{}, token string, endpointName string, retryItem ParallelRetryItem, initialCaptchaToken string, isReserveSlot bool) (*APIResponse, error) {
+	if !retryItem.Enabled || len(retryItem.Hits) == 0 {
+		return c.doRequest(endpointName, endpointName, body, token)
+	}
+
+	currentCaptchaToken := initialCaptchaToken
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return nil, errors.New("context cancelled")
+		default:
+		}
+
+		ctx, cancel := context.WithCancel(c.ctx)
+		results := make(chan parallelResult, 100)
+		var wg sync.WaitGroup
+
+		hitCounter := 0
+		for _, hitCount := range retryItem.Hits {
+			for j := 0; j < hitCount; j++ {
+				wg.Add(1)
+				go func(idx int, captchaToken string) {
+					defer wg.Done()
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+
+					delay := (idx * retryItem.DelayMs)
+					if delay > 0 {
+						time.Sleep(time.Duration(delay) * time.Millisecond)
+					}
+
+					proxyURL := getRandomProxyURL()
+					requestURL := c.buildRequestURL(apiUrl)
+
+					client := getHTTPClient(proxyURL)
+
+					var reqBody io.Reader
+					requestBody := body
+
+					if isReserveSlot && captchaToken != "" {
+						encryptedToken := encryptCaptchaForReserve(captchaToken)
+						if requestBody == nil {
+							requestBody = make(map[string]interface{})
+						}
+						if bodyMap, ok := requestBody.(map[string]interface{}); ok {
+							bodyMap["c"] = encryptedToken
+							requestBody = bodyMap
+						}
+					} else if !isReserveSlot && captchaToken != "" {
+						if requestBody == nil {
+							requestBody = make(map[string]interface{})
+						}
+						if bodyMap, ok := requestBody.(map[string]interface{}); ok {
+							encryptedToken := encryptCaptchaForLogin(captchaToken)
+							bodyMap["c"] = encryptedToken
+							requestBody = bodyMap
+						}
+					}
+
+					if requestBody != nil {
+						jBytes, _ := json.Marshal(requestBody)
+						reqBody = bytes.NewBuffer(jBytes)
+					}
+
+					req, err := http.NewRequest("POST", requestURL, reqBody)
+					if err != nil {
+						results <- parallelResult{Success: false, Error: err, Index: idx}
+						return
+					}
+
+					req.Host = "api.ivacbd.com"
+					setRequestHeaders(req, c.deviceInfo, token)
+
+					resp, err := client.Do(req)
+					if err != nil {
+						results <- parallelResult{Success: false, Error: err, Index: idx}
+						return
+					}
+					defer resp.Body.Close()
+
+					b, _ := io.ReadAll(resp.Body)
+					var apiResp APIResponse
+					json.Unmarshal(b, &apiResp)
+					apiResp.StatusCode = resp.StatusCode
+
+					success := false
+					if isReserveSlot {
+						success = (apiResp.Status == "OK_NEW" || apiResp.Status == "RESERVED") && apiResp.Data != nil && apiResp.Data["reservationId"] != nil
+					} else {
+						success = (resp.StatusCode >= 200 && resp.StatusCode < 300) || apiResp.SuccessFlag
+					}
+
+					results <- parallelResult{
+						Success:  success,
+						Response: &apiResp,
+						Error:    nil,
+						Index:    idx,
+					}
+				}(hitCounter, currentCaptchaToken)
+				hitCounter++
+			}
+		}
+
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		var lastResponse *APIResponse
+		for res := range results {
+			if res.Success {
+				cancel()
+				return res.Response, nil
+			}
+			if res.Response != nil {
+				lastResponse = res.Response
+			}
+		}
+		cancel()
+
+		if lastResponse != nil && lastResponse.StatusCode == 400 && (strings.Contains(strings.ToLower(lastResponse.Message), "captcha") ||
+			strings.Contains(strings.ToLower(lastResponse.Message), "verification") ||
+			strings.Contains(strings.ToLower(lastResponse.Message), "expired") ||
+			strings.Contains(strings.ToLower(lastResponse.Message), "invalid")) {
+
+			if isReserveSlot {
+				c.captchaQueue.InvalidateReserveToken(currentCaptchaToken)
+				newToken, err := c.getFreshReserveCaptchaToken(true)
+				if err == nil && newToken != "" {
+					currentCaptchaToken = newToken
+					continue
+				}
+			} else {
+				c.captchaQueue.InvalidateLoginToken(currentCaptchaToken)
+				newToken, err := c.getLoginCaptchaToken()
+				if err == nil && newToken != "" {
+					currentCaptchaToken = newToken
+					continue
+				}
+			}
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// ==================== SINGLE HIT RETRY FUNCTIONS ====================
+
+func (c *IVACClient) executeSingleRetryWithCaptchaReuse(apiUrl string, body interface{}, token string, endpointName string, initialCaptchaToken string, isReserveSlot bool) (*APIResponse, error) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return nil, errors.New("context cancelled")
+		default:
+		}
+
+		proxyURL := getRandomProxyURL()
+		requestURL := c.buildRequestURL(apiUrl)
+
+		client := getHTTPClient(proxyURL)
+
+		var reqBody io.Reader
+		requestBody := body
+
+		if isReserveSlot && initialCaptchaToken != "" {
+			encryptedToken := encryptCaptchaForReserve(initialCaptchaToken)
+			if requestBody == nil {
+				requestBody = make(map[string]interface{})
+			}
+			if bodyMap, ok := requestBody.(map[string]interface{}); ok {
+				bodyMap["c"] = encryptedToken
+				requestBody = bodyMap
+			}
+		} else if !isReserveSlot && initialCaptchaToken != "" {
+			if requestBody == nil {
+				requestBody = make(map[string]interface{})
+			}
+			if bodyMap, ok := requestBody.(map[string]interface{}); ok {
+				encryptedToken := encryptCaptchaForLogin(initialCaptchaToken)
+				bodyMap["c"] = encryptedToken
+				requestBody = bodyMap
+			}
+		}
+
+		if requestBody != nil {
+			jBytes, _ := json.Marshal(requestBody)
+			reqBody = bytes.NewBuffer(jBytes)
+		}
+
+		req, err := http.NewRequest("POST", requestURL, reqBody)
+		if err != nil {
+			c.log(fmt.Sprintf("❌ Request creation error: %v", err))
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		req.Host = "api.ivacbd.com"
+		setRequestHeaders(req, c.deviceInfo, token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			c.log(fmt.Sprintf("❌ Request error: %v", err))
+			time.Sleep(1 * time.Second)
+			c.rotateHostIP()
+			continue
+		}
+
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var apiResp APIResponse
+		json.Unmarshal(b, &apiResp)
+		apiResp.StatusCode = resp.StatusCode
+
+		success := false
+		if isReserveSlot {
+			success = (apiResp.Status == "OK_NEW" || apiResp.Status == "RESERVED") && apiResp.Data != nil && apiResp.Data["reservationId"] != nil
+		} else {
+			success = (resp.StatusCode >= 200 && resp.StatusCode < 300) || apiResp.SuccessFlag
+		}
+
+		if success {
+			c.log(fmt.Sprintf("✅ Single request succeeded for %s", endpointName))
+			return &apiResp, nil
+		}
+
+		// Check if we need to refresh captcha
+		if apiResp.StatusCode == 400 && (strings.Contains(strings.ToLower(apiResp.Message), "captcha") ||
+			strings.Contains(strings.ToLower(apiResp.Message), "verification") ||
+			strings.Contains(strings.ToLower(apiResp.Message), "expired") ||
+			strings.Contains(strings.ToLower(apiResp.Message), "invalid")) {
+
+			if isReserveSlot {
+				c.captchaQueue.InvalidateReserveToken(initialCaptchaToken)
+				newToken, err := c.getFreshReserveCaptchaToken(true)
+				if err == nil && newToken != "" {
+					initialCaptchaToken = newToken
+					c.log("🔄 Captcha invalid/expired, got fresh token, retrying...")
+					continue
+				}
+			} else {
+				c.captchaQueue.InvalidateLoginToken(initialCaptchaToken)
+				newToken, err := c.getLoginCaptchaToken()
+				if err == nil && newToken != "" {
+					initialCaptchaToken = newToken
+					c.log("🔄 Captcha invalid/expired, got fresh token, retrying...")
+					continue
+				}
+			}
+		}
+
+		c.log(fmt.Sprintf("⚠️ Single request failed for %s: %s, retrying...", endpointName, apiResp.Message))
+		time.Sleep(2 * time.Second)
+		c.rotateHostIP()
+	}
+}
+
+func setRequestHeaders(req *http.Request, deviceInfo *DeviceInfo, token string) {
+	for k, v := range browserHeaders {
+		req.Header.Set(k, v)
+	}
+	if deviceInfo != nil && deviceInfo.DeviceID != "" {
+		req.Header.Set("x-device-id", deviceInfo.DeviceID)
+	}
+	if token != "" {
+		req.Header.Set("authorization", "Bearer "+token)
+	}
+}
+
+func loadProxies() error {
+	proxiesMu.Lock()
+	defer proxiesMu.Unlock()
+	data, err := os.ReadFile(PROXY_CONFIG_FILE)
+	if err != nil {
+		globalProxies = []ProxyConfig{}
+		return saveProxiesFile()
+	}
+	return json.Unmarshal(data, &globalProxies)
+}
+
+func saveProxiesFile() error {
+	data, _ := json.MarshalIndent(globalProxies, "", "  ")
+	return os.WriteFile(PROXY_CONFIG_FILE, data, 0644)
+}
+
+func addProxy(proxy ProxyConfig) {
+	proxiesMu.Lock()
+	defer proxiesMu.Unlock()
+	proxy.ID = fmt.Sprintf("%d", time.Now().UnixNano())
+	proxy.CreatedAt = time.Now()
+	globalProxies = append(globalProxies, proxy)
+	saveProxiesFile()
+}
+
+func updateProxy(id string, proxy ProxyConfig) {
+	proxiesMu.Lock()
+	defer proxiesMu.Unlock()
+	for i, p := range globalProxies {
+		if p.ID == id {
+			proxy.ID = id
+			proxy.CreatedAt = p.CreatedAt
+			globalProxies[i] = proxy
+			break
+		}
+	}
+	saveProxiesFile()
+}
+
+func deleteProxy(id string) {
+	proxiesMu.Lock()
+	defer proxiesMu.Unlock()
+	for i, p := range globalProxies {
+		if p.ID == id {
+			globalProxies = append(globalProxies[:i], globalProxies[i+1:]...)
+			break
+		}
+	}
+	saveProxiesFile()
+}
+
+func getEnabledProxies() []ProxyConfig {
+	proxiesMu.RLock()
+	defer proxiesMu.RUnlock()
+	var enabled []ProxyConfig
+	for _, p := range globalProxies {
+		if p.Enabled {
+			enabled = append(enabled, p)
+		}
+	}
+	return enabled
+}
+
+func getProxyURL(proxy ProxyConfig) string {
+	if !proxy.Enabled {
+		return ""
+	}
+	auth := ""
+	if proxy.User != "" && proxy.Password != "" {
+		auth = fmt.Sprintf("%s:%s@", proxy.User, proxy.Password)
+	}
+	return fmt.Sprintf("%s://%s%s:%d", proxy.Type, auth, proxy.Host, proxy.Port)
+}
+
+func detectProxyType(host string, port int) string {
+	testURL := fmt.Sprintf("http://%s:%d", host, port)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(testURL)
+	if err == nil && resp != nil {
+		resp.Body.Close()
+		return "http"
+	}
+	testURL = fmt.Sprintf("https://%s:%d", host, port)
+	resp, err = client.Get(testURL)
+	if err == nil && resp != nil {
+		resp.Body.Close()
+		return "https"
+	}
+	return "http"
+}
+
+func testProxy(proxy *ProxyConfig) bool {
+	proxyURL := getProxyURL(*proxy)
+	if proxyURL == "" {
+		return false
+	}
+	start := time.Now()
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	if parsedURL, err := url.Parse(proxyURL); err == nil {
+		transport.Proxy = http.ProxyURL(parsedURL)
+	}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: transport}
+	resp, err := client.Get("https://api.ipify.org?format=json")
+	if err != nil {
+		proxy.TestPass = false
+		proxy.ResponseMs = int(time.Since(start).Milliseconds())
+		return false
+	}
+	defer resp.Body.Close()
+	proxy.TestPass = resp.StatusCode == 200
+	proxy.ResponseMs = int(time.Since(start).Milliseconds())
+	proxy.LastTest = time.Now()
+	return proxy.TestPass
+}
+
+func testAllProxies() {
+	proxiesMu.Lock()
+	defer proxiesMu.Unlock()
+	for i := range globalProxies {
+		testProxy(&globalProxies[i])
+	}
+	saveProxiesFile()
+}
+
+func getRandomProxyURL() string {
+	proxies := getEnabledProxies()
+	if len(proxies) == 0 {
+		return ""
+	}
+	var workingProxies []ProxyConfig
+	for _, p := range proxies {
+		if p.TestPass {
+			workingProxies = append(workingProxies, p)
+		}
+	}
+	if len(workingProxies) > 0 {
+		return getProxyURL(workingProxies[rand.Intn(len(workingProxies))])
+	}
+	return getProxyURL(proxies[rand.Intn(len(proxies))])
+}
+
+func getHTTPClient(proxyURL string) *http.Client {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         "api.ivacbd.com",
+		},
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConnsPerHost: 100,
+		ForceAttemptHTTP2:   true,
+	}
+
+	if proxyURL != "" && proxyURL != "none" {
+		if p, e := url.Parse(proxyURL); e == nil {
+			transport.Proxy = http.ProxyURL(p)
+			if transport.DialContext == nil {
+				transport.DialContext = (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext
+			}
+		}
+	}
+
+	return &http.Client{
+		Timeout: 0,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func websocketHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	client := &wsClient{conn: conn, mu: sync.Mutex{}}
+	wsClientsMu.Lock()
+	wsClients[conn] = client
+	wsClientsMu.Unlock()
+	defer func() {
+		wsClientsMu.Lock()
+		delete(wsClients, conn)
+		wsClientsMu.Unlock()
+	}()
+	client.mu.Lock()
+	conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connected","timestamp":"`+time.Now().Format(time.RFC3339)+`"}`))
+	client.mu.Unlock()
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	go func() {
+		for range ticker.C {
+			wsClientsMu.RLock()
+			_, exists := wsClients[conn]
+			wsClientsMu.RUnlock()
+			if !exists {
+				return
+			}
+			client.mu.Lock()
+			conn.WriteMessage(websocket.PingMessage, nil)
+			client.mu.Unlock()
+		}
+	}()
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		client.mu.Lock()
+		conn.WriteMessage(websocket.TextMessage, msg)
+		client.mu.Unlock()
+	}
+}
+
+func broadcastUpdate(update interface{}) {
+	wsClientsMu.RLock()
+	clients := make([]*wsClient, 0, len(wsClients))
+	for _, client := range wsClients {
+		clients = append(clients, client)
+	}
+	wsClientsMu.RUnlock()
+	if len(clients) == 0 {
+		return
+	}
+	data, _ := json.Marshal(update)
+	for _, client := range clients {
+		go func(c *wsClient) {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				wsClientsMu.Lock()
+				delete(wsClients, c.conn)
+				wsClientsMu.Unlock()
+				c.conn.Close()
+			}
+		}(client)
+	}
+}
+
+func writeHostsEntry(ip string) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("hosts file modification is only supported on Windows")
+	}
+	data, err := os.ReadFile(HOSTS_FILE)
+	if err != nil {
+		return fmt.Errorf("cannot read hosts file (Run as Administrator!): %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			newLines = append(newLines, line)
+			continue
+		}
+		if strings.Contains(trimmed, HOSTS_DOMAIN) {
+			newLines = append(newLines, ip+" "+HOSTS_DOMAIN)
+			found = true
+		} else {
+			newLines = append(newLines, line)
+		}
+	}
+	if !found {
+		newLines = append(newLines, "", ip+" "+HOSTS_DOMAIN)
+	}
+	if err := os.WriteFile(HOSTS_FILE, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
+		return fmt.Errorf("failed to write hosts file (Run as Administrator): %v", err)
+	}
+	exec.Command("cmd", "/C", "ipconfig", "/flushdns").Run()
+	return nil
+}
+
+func removeHostsEntry() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	data, err := os.ReadFile(HOSTS_FILE)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, HOSTS_DOMAIN) && !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	if err := os.WriteFile(HOSTS_FILE, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
+		return err
+	}
+	exec.Command("cmd", "/C", "ipconfig", "/flushdns").Run()
+	return nil
+}
+
+type HostStats struct {
+	IP           string        `json:"ip"`
+	SuccessCount int           `json:"successCount"`
+	FailedCount  int           `json:"failedCount"`
+	LastUsed     time.Time     `json:"lastUsed"`
+	ResponseTime time.Duration `json:"responseTime"`
+	IsHealthy    bool          `json:"isHealthy"`
+	SuccessRate  float64       `json:"successRate"`
+}
+
+type HostRouter struct {
+	mu             sync.RWMutex
+	hostIPs        []string
+	stats          map[string]*HostStats
+	bestHostIP     string
+	minSuccessRate float64
+	roundRobinIdx  int
+}
+
+var globalHostRouter *HostRouter
+var hostRouterOnce sync.Once
+
+func GetHostRouter() *HostRouter {
+	hostRouterOnce.Do(func() {
+		configMu.RLock()
+		hostIPs := make([]string, len(globalConfig.HostIPs))
+		copy(hostIPs, globalConfig.HostIPs)
+		configMu.RUnlock()
+		globalHostRouter = &HostRouter{
+			hostIPs:        hostIPs,
+			stats:          make(map[string]*HostStats),
+			bestHostIP:     "",
+			minSuccessRate: 0.7,
+			roundRobinIdx:  0,
+		}
+		for _, ip := range hostIPs {
+			globalHostRouter.stats[ip] = &HostStats{
+				IP:           ip,
+				SuccessCount: 0,
+				FailedCount:  0,
+				IsHealthy:    true,
+				SuccessRate:  0,
+			}
+		}
+	})
+	return globalHostRouter
+}
+
+func (hr *HostRouter) UpdateHostIPs(ips []string) {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	hr.hostIPs = ips
+	for _, ip := range ips {
+		if _, exists := hr.stats[ip]; !exists {
+			hr.stats[ip] = &HostStats{
+				IP:           ip,
+				SuccessCount: 0,
+				FailedCount:  0,
+				IsHealthy:    true,
+				SuccessRate:  0,
+			}
+		}
+	}
+	for ip := range hr.stats {
+		found := false
+		for _, hip := range ips {
+			if hip == ip {
+				found = true
+				break
+			}
+		}
+		if !found && ip != hr.bestHostIP {
+			delete(hr.stats, ip)
+		}
+	}
+	if hr.bestHostIP != "" {
+		found := false
+		for _, hip := range ips {
+			if hip == hr.bestHostIP {
+				found = true
+				break
+			}
+		}
+		if !found {
+			hr.bestHostIP = ""
+		}
+	}
+}
+
+func (hr *HostRouter) GetInstanceHostIP(instanceID int) string {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	if len(hr.hostIPs) == 0 {
+		return ""
+	}
+	idx := instanceID % len(hr.hostIPs)
+	return hr.hostIPs[idx]
+}
+
+func (hr *HostRouter) GetRandomHostIP() string {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+	if len(hr.hostIPs) == 0 {
+		return ""
+	}
+	if hr.bestHostIP != "" {
+		return hr.bestHostIP
+	}
+	idx := rand.Intn(len(hr.hostIPs))
+	return hr.hostIPs[idx]
+}
+
+func (hr *HostRouter) GetRandomDifferentHostIP(currentIP string) string {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+	if len(hr.hostIPs) == 0 {
+		return ""
+	}
+	if len(hr.hostIPs) == 1 {
+		return hr.hostIPs[0]
+	}
+	var availableIPs []string
+	for _, ip := range hr.hostIPs {
+		if ip != currentIP {
+			availableIPs = append(availableIPs, ip)
+		}
+	}
+	if len(availableIPs) == 0 {
+		availableIPs = hr.hostIPs
+	}
+	idx := rand.Intn(len(availableIPs))
+	return availableIPs[idx]
+}
+
+func (hr *HostRouter) GetBestHostIP() string {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+	return hr.bestHostIP
+}
+
+func (hr *HostRouter) RecordResult(ip string, success bool, responseTime time.Duration) {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	stats, exists := hr.stats[ip]
+	if !exists {
+		stats = &HostStats{IP: ip, SuccessCount: 0, FailedCount: 0, IsHealthy: true}
+		hr.stats[ip] = stats
+	}
+	stats.LastUsed = time.Now()
+	if success {
+		stats.SuccessCount++
+		stats.ResponseTime = responseTime
+	} else {
+		stats.FailedCount++
+	}
+	total := stats.SuccessCount + stats.FailedCount
+	if total > 0 {
+		stats.SuccessRate = float64(stats.SuccessCount) / float64(total)
+		if total > 5 {
+			stats.IsHealthy = stats.SuccessRate >= hr.minSuccessRate
+		}
+	}
+	hr.evaluateBestHost()
+}
+
+func (hr *HostRouter) evaluateBestHost() {
+	if len(hr.hostIPs) == 0 {
+		return
+	}
+	var bestIP string
+	var bestScore float64
+	for ip, stats := range hr.stats {
+		total := stats.SuccessCount + stats.FailedCount
+		if total < 3 {
+			continue
+		}
+		successRate := float64(stats.SuccessCount) / float64(total)
+		score := successRate
+		if stats.ResponseTime < time.Second {
+			score += 0.1
+		}
+		if score > bestScore && successRate >= hr.minSuccessRate {
+			bestScore = score
+			bestIP = ip
+		}
+	}
+	if bestIP != "" && bestIP != hr.bestHostIP {
+		hr.bestHostIP = bestIP
+	}
+}
+
+func (hr *HostRouter) ResetBestHost() {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	hr.bestHostIP = ""
+}
+
+func (hr *HostRouter) GetAllHostStats() []HostStats {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+	stats := make([]HostStats, 0, len(hr.stats))
+	for _, s := range hr.stats {
+		stats = append(stats, *s)
+	}
+	return stats
+}
+
+func (c *IVACClient) buildRequestURL(apiURL string) string {
+	if c.currentHostIP == "" || c.config.HostIPs == nil || len(c.config.HostIPs) == 0 {
+		return apiURL
+	}
+
+	parsedURL, err := url.Parse(apiURL)
+	if err != nil {
+		return apiURL
+	}
+
+	scheme := "https"
+	if parsedURL.Scheme == "http" {
+		scheme = "http"
+	}
+
+	newURL := fmt.Sprintf("%s://%s%s", scheme, c.currentHostIP, parsedURL.Path)
+	if parsedURL.RawQuery != "" {
+		newURL = newURL + "?" + parsedURL.RawQuery
+	}
+
+	return newURL
+}
+
+func (c *IVACClient) getLoginCaptchaToken() (string, error) {
+	if !c.config.AutoCaptcha {
+		c.log("⚠️ Auto captcha is disabled in config")
+		return "", errors.New("auto captcha disabled")
+	}
+
+	if c.config.CaptchaAPIKey == "" {
+		c.log("❌ Captcha API key is empty! Please add your API key in Config tab")
+		return "", errors.New("captcha API key is empty")
+	}
+
+	c.log(fmt.Sprintf("🔑 Getting login captcha token from queue (Service: %s)", c.config.CaptchaService))
+
+	token, err := c.captchaQueue.GetLoginToken()
+	if err == nil && token != "" {
+		c.log(fmt.Sprintf("✅ Got login token from queue (length: %d)", len(token)))
+		return token, nil
+	}
+
+	c.log("⚠️ Login queue empty, solving captcha directly...")
+	return c.solveCaptchaDirect("Solving captcha directly for login...")
+}
+
+func (c *IVACClient) getReserveCaptchaToken() (string, error) {
+	if !c.config.AutoCaptcha {
+		c.log("⚠️ Auto captcha is disabled in config")
+		return "", errors.New("auto captcha disabled")
+	}
+
+	if c.config.CaptchaAPIKey == "" {
+		c.log("❌ Captcha API key is empty! Please add your API key in Config tab")
+		return "", errors.New("captcha API key is empty")
+	}
+
+	c.log(fmt.Sprintf("🔑 Getting reserve captcha token from queue (Service: %s)", c.config.CaptchaService))
+
+	token, err := c.captchaQueue.GetReserveToken()
+	if err == nil && token != "" {
+		c.log(fmt.Sprintf("✅ Got reserve token from queue (length: %d)", len(token)))
+		return token, nil
+	}
+
+	c.log("⚠️ Reserve queue empty, solving captcha directly...")
+	return c.solveCaptchaDirect("Solving captcha directly for reserve slot...")
+}
+
+func (c *IVACClient) getFreshReserveCaptchaToken(forceRefresh bool) (string, error) {
+	if !c.config.AutoCaptcha {
+		return "", errors.New("auto captcha disabled")
+	}
+	if forceRefresh {
+		return c.solveCaptchaDirect("Getting fresh reserve captcha token...")
+	}
+	return c.getReserveCaptchaToken()
+}
+
+func (c *IVACClient) solveCaptchaDirect(logMsg string) (string, error) {
+	c.log(logMsg)
+
+	if c.config.CaptchaAPIKey == "" {
+		c.log("❌ Captcha API key is empty! Please configure it in Config tab")
+		return "", errors.New("captcha API key is empty")
+	}
+
+	c.log(fmt.Sprintf("🔧 Using captcha service: %s", c.config.CaptchaService))
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		if attempt > 1 {
+			c.log(fmt.Sprintf("🔄 Retry attempt %d/5 after 5 seconds...", attempt))
+			time.Sleep(5 * time.Second)
+		}
+
+		proxyURL := getRandomProxyURL()
+		client := getHTTPClient(proxyURL)
+
+		var token string
+		var err error
+
+		switch c.config.CaptchaService {
+		case CAPTCHA_SERVICE_CAPMONSTER:
+			c.log("🤖 Solving with CapMonster...")
+			token, err = c.solveCapMonsterDirect(client)
+		case CAPTCHA_SERVICE_2CAPTCHA:
+			c.log("🤖 Solving with 2Captcha...")
+			token, err = c.solve2CaptchaDirect(client)
+		default:
+			c.log("🤖 Solving with Capsolver...")
+			token, err = c.solveCapSolverDirect(client)
+		}
+
+		if err == nil && token != "" {
+			c.log(fmt.Sprintf("✅ Captcha solved successfully! Token length: %d", len(token)))
+			return token, nil
+		}
+
+		c.log(fmt.Sprintf("❌ Attempt %d failed: %v", attempt, err))
+	}
+
+	return "", errors.New("captcha failed after 5 attempts")
+}
+
+func (c *IVACClient) solveCapSolverDirect(client *http.Client) (string, error) {
+	if c.config.CaptchaAPIKey == "" {
+		return "", errors.New("capsolver API key is empty")
+	}
+
+	taskData := map[string]interface{}{
+		"clientKey": c.config.CaptchaAPIKey,
+		"task": map[string]interface{}{
+			"type":       "AntiTurnstileTaskProxyless",
+			"websiteURL": WEBSITE_URL,
+			"websiteKey": TURNSTILE_SITE_KEY,
+		},
+	}
+
+	jsonData, _ := json.Marshal(taskData)
+	c.log("📤 Creating Capsolver task...")
+
+	resp, err := client.Post("https://api.capsolver.com/createTask", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("capsolver createTask error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var res map[string]interface{}
+	json.Unmarshal(body, &res)
+
+	if errId, ok := res["errorId"]; ok && errId.(float64) > 0 {
+		errDesc := ""
+		if desc, ok := res["errorDescription"].(string); ok {
+			errDesc = desc
+		}
+		return "", fmt.Errorf("capsolver error: %s", errDesc)
+	}
+
+	taskId, ok := res["taskId"]
+	if !ok {
+		return "", errors.New("no taskId returned from capsolver")
+	}
+
+	c.log(fmt.Sprintf("📝 Capsolver task ID: %v", taskId))
+
+	for attempt := 0; attempt < 30; attempt++ {
+		time.Sleep(3 * time.Second)
+
+		resultData := map[string]interface{}{
+			"clientKey": c.config.CaptchaAPIKey,
+			"taskId":    taskId,
+		}
+		jsonResult, _ := json.Marshal(resultData)
+
+		resp2, err := client.Post("https://api.capsolver.com/getTaskResult", "application/json", bytes.NewBuffer(jsonResult))
+		if err != nil {
+			continue
+		}
+
+		body2, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+
+		var tr map[string]interface{}
+		json.Unmarshal(body2, &tr)
+
+		if status, ok := tr["status"].(string); ok && status == "ready" {
+			if solution, ok := tr["solution"].(map[string]interface{}); ok {
+				if token, ok := solution["token"].(string); ok && token != "" {
+					return token, nil
+				}
+			}
+		}
+
+		if status, _ := tr["status"].(string); status == "failed" {
+			return "", errors.New("capsolver task failed")
+		}
+	}
+
+	return "", errors.New("capsolver timeout after 90 seconds")
+}
+
+func (c *IVACClient) solveCapMonsterDirect(client *http.Client) (string, error) {
+	if c.config.CaptchaAPIKey == "" {
+		return "", errors.New("capmonster API key is empty")
+	}
+
+	task := map[string]interface{}{
+		"clientKey": c.config.CaptchaAPIKey,
+		"task": map[string]interface{}{
+			"type":       "TurnstileTaskProxyless",
+			"websiteURL": WEBSITE_URL,
+			"websiteKey": TURNSTILE_SITE_KEY,
+		},
+	}
+
+	jsonData, _ := json.Marshal(task)
+	c.log("📤 Creating CapMonster task...")
+
+	resp, err := client.Post("https://api.capmonster.cloud/createTask", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("capmonster createTask error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var res map[string]interface{}
+	json.Unmarshal(body, &res)
+
+	if eid, ok := res["errorId"].(float64); ok && eid > 0 {
+		errDesc, _ := res["errorDescription"].(string)
+		return "", fmt.Errorf("capmonster error: %s", errDesc)
+	}
+
+	tid, ok := res["taskId"].(float64)
+	if !ok {
+		return "", errors.New("no taskId returned from capmonster")
+	}
+
+	c.log(fmt.Sprintf("📝 CapMonster task ID: %.0f", tid))
+
+	for attempt := 0; attempt < 30; attempt++ {
+		time.Sleep(2 * time.Second)
+
+		getTask := map[string]interface{}{
+			"clientKey": c.config.CaptchaAPIKey,
+			"taskId":    fmt.Sprintf("%.0f", tid),
+		}
+		jsonGet, _ := json.Marshal(getTask)
+
+		resp2, err := client.Post("https://api.capmonster.cloud/getTaskResult", "application/json", bytes.NewBuffer(jsonGet))
+		if err != nil {
+			continue
+		}
+
+		body2, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+
+		var tr map[string]interface{}
+		json.Unmarshal(body2, &tr)
+
+		if s, ok := tr["status"].(string); ok && s == "ready" {
+			if sol, ok := tr["solution"].(map[string]interface{}); ok {
+				if tok, ok := sol["token"].(string); ok && tok != "" {
+					return tok, nil
+				}
+			}
+		}
+
+		if s, _ := tr["status"].(string); s == "failed" {
+			return "", errors.New("capmonster task failed")
+		}
+	}
+
+	return "", errors.New("capmonster timeout after 60 seconds")
+}
+
+func (c *IVACClient) solve2CaptchaDirect(client *http.Client) (string, error) {
+	if c.config.CaptchaAPIKey == "" {
+		return "", errors.New("2captcha API key is empty")
+	}
+
+	submitURL := fmt.Sprintf("https://2captcha.com/in.php?key=%s&method=turnstile&sitekey=%s&pageurl=%s&json=1",
+		c.config.CaptchaAPIKey, TURNSTILE_SITE_KEY, WEBSITE_URL)
+
+	c.log("📤 Submitting to 2Captcha...")
+
+	resp, err := client.Get(submitURL)
+	if err != nil {
+		return "", fmt.Errorf("2captcha submit error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var submitRes map[string]interface{}
+	json.Unmarshal(body, &submitRes)
+
+	if status, ok := submitRes["status"].(float64); !ok || status != 1 {
+		errMsg := ""
+		if req, ok := submitRes["request"].(string); ok {
+			errMsg = req
+		}
+		return "", fmt.Errorf("2captcha submit error: %s", errMsg)
+	}
+
+	taskId, ok := submitRes["request"].(string)
+	if !ok {
+		return "", errors.New("no taskId returned from 2captcha")
+	}
+
+	c.log(fmt.Sprintf("📝 2Captcha task ID: %s", taskId))
+
+	for attempt := 0; attempt < 60; attempt++ {
+		time.Sleep(3 * time.Second)
+
+		resultURL := fmt.Sprintf("https://2captcha.com/res.php?key=%s&action=get&id=%s&json=1",
+			c.config.CaptchaAPIKey, taskId)
+
+		resp2, err := client.Get(resultURL)
+		if err != nil {
+			continue
+		}
+
+		body2, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+
+		var resultData map[string]interface{}
+		json.Unmarshal(body2, &resultData)
+
+		if status, ok := resultData["status"].(float64); ok && status == 1 {
+			if token, ok := resultData["request"].(string); ok && token != "" {
+				return token, nil
+			}
+		}
+
+		if req, ok := resultData["request"].(string); ok && req == "ERROR_CAPTCHA_UNSOLVABLE" {
+			return "", errors.New("captcha unsolvable")
+		}
+	}
+
+	return "", errors.New("2captcha timeout after 180 seconds")
+}
+
+func getOTPUsingCurl(phone string) (string, error) {
+	cleanPhone := regexp.MustCompile(`[^0-9]`).ReplaceAllString(phone, "")
+	u := fmt.Sprintf("%s?action=get_latest_otp&mobile_no=%s", OTP_API_URL, cleanPhone)
+	cmd := exec.Command("powershell", "-Command", fmt.Sprintf(`try { $response = Invoke-WebRequest -Uri '%s' -UseBasicParsing -TimeoutSec 10; $response.Content } catch { Write-Host "ERROR" }`, u))
+	output, err := cmd.Output()
+	if err == nil {
+		result := strings.TrimSpace(string(output))
+		if !strings.Contains(result, "ERROR") && result != "" {
+			type smsResponse struct {
+				Status string `json:"status"`
+				OTP    string `json:"otp"`
+			}
+			var smsResp smsResponse
+			if err := json.Unmarshal([]byte(result), &smsResp); err == nil {
+				if smsResp.Status == "success" && smsResp.OTP != "" {
+					return smsResp.OTP, nil
+				}
+			}
+			pattern := regexp.MustCompile(`\d{5,6}`)
+			matches := pattern.FindAllString(result, -1)
+			if len(matches) > 0 {
+				return matches[len(matches)-1], nil
+			}
+		}
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(u)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	result := string(body)
+	type smsResponse struct {
+		Status string `json:"status"`
+		OTP    string `json:"otp"`
+	}
+	var smsResp smsResponse
+	if err := json.Unmarshal(body, &smsResp); err == nil {
+		if smsResp.Status == "success" && smsResp.OTP != "" {
+			return smsResp.OTP, nil
+		}
+	}
+	pattern := regexp.MustCompile(`\d{5,6}`)
+	matches := pattern.FindAllString(result, -1)
+	if len(matches) > 0 {
+		return matches[len(matches)-1], nil
+	}
+	return "", fmt.Errorf("no OTP found")
+}
+
+type APIResponse struct {
+	SuccessFlag bool                   `json:"successFlag"`
+	Message     string                 `json:"message"`
+	Data        map[string]interface{} `json:"data"`
+	Status      string                 `json:"status"`
+	StatusCode  int                    `json:"statusCode"`
+	RequestID   string                 `json:"requestId"`
+}
+
+func loadConfig() error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	globalConfig = Config{
+		CaptchaAPIKey:        "",
+		CaptchaService:       CAPTCHA_SERVICE_CAPSOLVER,
+		QueueSize:            3,
+		ReserveQueueSize:     2,
+		LoginCaptchaExpiry:   DEFAULT_LOGIN_CAPTCHA_EXPIRY,
+		ReserveCaptchaExpiry: DEFAULT_RESERVE_CAPTCHA_EXPIRY,
+		HostIPs:              []string{},
+		LoginMode:            "auto",
+		AutoCaptcha:          true,
+		AutoOTP:              true,
+		OTPRetryDelay:        5000,
+		SlotMonitor:          SlotMonitorConfig{Enabled: false},
+		SlotCheckInterval:    15,
+		RequestMode:          REQUEST_MODE_SINGLE,
+		Parallel: ParallelConfig{
+			SigninHits: 15, SigninMs: 300,
+			VerifyHits: 25, VerifyMs: 500,
+			ReserveHits: 10, ReserveMs: 1000,
+			BookingHits: 10, BookingMs: 500,
+			InitiateHits: 2, InitiateMs: 100,
+		},
+		ParallelRetry: ParallelRetryConfig{
+			Signin:  ParallelRetryItem{Enabled: false, Hits: []int{3, 2, 5, 4}, DelayMs: 100, ReuseCaptcha: true},
+			Verify:  ParallelRetryItem{Enabled: false, Hits: []int{3, 2, 5, 4}, DelayMs: 100, ReuseCaptcha: false},
+			Reserve: ParallelRetryItem{Enabled: false, Hits: []int{3, 2, 5, 4}, DelayMs: 100, ReuseCaptcha: true},
+			Booking: ParallelRetryItem{Enabled: false, Hits: []int{3, 2, 5, 4}, DelayMs: 100, ReuseCaptcha: false},
+			Payment: ParallelRetryItem{Enabled: false, Hits: []int{3, 2, 5, 4}, DelayMs: 100, ReuseCaptcha: false},
+		},
+	}
+	data, err := os.ReadFile(CONFIG_FILE)
+	if err != nil {
+		return saveConfigFile()
+	}
+	return json.Unmarshal(data, &globalConfig)
+}
+
+func saveConfigFile() error {
+	data, _ := json.MarshalIndent(globalConfig, "", "  ")
+	return os.WriteFile(CONFIG_FILE, data, 0644)
+}
+
+func saveConfig() {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	saveConfigFile()
+}
+
+func loadInstances() error {
+	data, err := os.ReadFile(INSTANCES_FILE)
+	if err != nil {
+		return nil
+	}
+	var list []InstanceData
+	if err := json.Unmarshal(data, &list); err != nil {
+		return err
+	}
+	instancesMu.Lock()
+	defer instancesMu.Unlock()
+	for _, d := range list {
+		if d.NetworkLogs == nil {
+			d.NetworkLogs = []NetworkRequest{}
+		}
+		if d.Logs == nil {
+			d.Logs = []string{}
+		}
+		instances[d.ID] = &Instance{Data: d}
+		if int32(d.ID) >= instanceID {
+			instanceID = int32(d.ID) + 1
+		}
+	}
+	return nil
+}
+
+func saveInstancesToFile() {
+	instancesMu.RLock()
+	var list []InstanceData
+	for _, inst := range instances {
+		inst.mu.Lock()
+		list = append(list, inst.Data)
+		inst.mu.Unlock()
+	}
+	instancesMu.RUnlock()
+	data, _ := json.MarshalIndent(list, "", "  ")
+	os.WriteFile(INSTANCES_FILE, data, 0644)
+}
+
+type IVACClient struct {
+	session          *Session
+	captchaQueue     *SilentCaptchaQueue
+	proxies          []string
+	config           *Config
+	logCb            func(string)
+	stepCb           func(string, string, string, string, string)
+	networkCb        func(NetworkRequest)
+	instanceID       int
+	currentProxy     string
+	currentHostIP    string
+	pooledClient     *http.Client
+	deviceInfo       *DeviceInfo
+	hasAppointmentID bool
+	lastEndpoint     string
+	ctx              context.Context
+	cancel           context.CancelFunc
+	successTracker   *EndpointSuccessTracker
+}
+
+type Session struct {
+	Token      string
+	RequestID  string
+	LoginPhone string
+	OTPPhone   string
+	UserID     string
+}
+
+func NewIVACClient(cfg *Config, proxies []string, instanceID int, deviceInfo *DeviceInfo, hasAppointmentID bool, logCb func(string), stepCb func(string, string, string, string, string), networkCb func(NetworkRequest)) *IVACClient {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &IVACClient{
+		session:          &Session{},
+		captchaQueue:     NewSilentCaptchaQueue(cfg.CaptchaAPIKey, cfg.CaptchaService, cfg.QueueSize, cfg.ReserveQueueSize, cfg.LoginCaptchaExpiry, cfg.ReserveCaptchaExpiry, logCb),
+		proxies:          proxies,
+		config:           cfg,
+		logCb:            logCb,
+		stepCb:           stepCb,
+		networkCb:        networkCb,
+		instanceID:       instanceID,
+		pooledClient:     getHTTPClient(""),
+		deviceInfo:       deviceInfo,
+		hasAppointmentID: hasAppointmentID,
+		ctx:              ctx,
+		cancel:           cancel,
+		successTracker:   NewEndpointSuccessTracker(),
+	}
+}
+
+func (c *IVACClient) log(msg string) {
+	if c.logCb != nil {
+		c.logCb(msg)
+	}
+}
+
+func (c *IVACClient) setStep(step, otp, rid, appointmentDate, payUrl string) {
+	if c.stepCb != nil {
+		c.stepCb(step, otp, rid, appointmentDate, payUrl)
+	}
+}
+
+func (c *IVACClient) Login(loginPhone, password string) error {
+	c.log(fmt.Sprintf("🔐 Logging in: %s", loginPhone))
+	c.setStep("LOGGING_IN", "", "", "", "")
+
+	for {
+		token, err := c.getLoginCaptchaToken()
+		if err != nil {
+			c.log(fmt.Sprintf("❌ Failed to get captcha: %v", err))
+			time.Sleep(2 * time.Second)
+			c.rotateHostIP()
+			continue
+		}
+
+		encryptedToken := encryptCaptchaForLogin(token)
+
+		req := map[string]interface{}{
+			"phone":    loginPhone,
+			"password": password,
+			"c":        encryptedToken,
+		}
+
+		var resp *APIResponse
+		var err2 error
+
+		if c.shouldUseParallelMode() {
+			parallelRetryConfig := c.getCurrentParallelRetryConfig()
+			if parallelRetryConfig.Signin.Enabled {
+				resp, err2 = c.executeParallelRetryWithCaptchaReuse(
+					API_LOGIN_URL, req, "", "Login API",
+					parallelRetryConfig.Signin,
+					token, false,
+				)
+			} else {
+				resp, err2 = c.executeParallelRetryWithCaptchaReuse(
+					API_LOGIN_URL, req, "", "Login API",
+					ParallelRetryItem{Enabled: true, Hits: []int{c.getCurrentParallelConfig().SigninHits}, DelayMs: c.getCurrentParallelConfig().SigninMs, ReuseCaptcha: true},
+					token, false,
+				)
+			}
+		} else {
+			resp, err2 = c.executeSingleRetryWithCaptchaReuse(
+				API_LOGIN_URL, req, "", "Login API",
+				token, false,
+			)
+		}
+
+		if err2 != nil {
+			c.log(fmt.Sprintf("❌ Login request failed: %v", err2))
+			time.Sleep(2 * time.Second)
+			c.rotateHostIP()
+			continue
+		}
+
+		if resp.Data != nil {
+			if accessToken, ok := resp.Data["accessToken"].(string); ok {
+				c.session.Token = accessToken
+				c.session.LoginPhone = loginPhone
+				if reqId, ok := resp.Data["requestId"].(string); ok {
+					c.session.RequestID = reqId
+				} else if resp.RequestID != "" {
+					c.session.RequestID = resp.RequestID
+				}
+				if userId, ok := resp.Data["userId"].(string); ok {
+					c.session.UserID = userId
+				}
+				c.log("✅ Login successful!")
+				c.setStep("LOGGED_IN", "", "", "", "")
+				return nil
+			}
+			if msg, ok := resp.Data["message"].(string); ok && strings.Contains(msg, "Captcha") {
+				c.log("❌ Captcha invalid, retrying...")
+				c.captchaQueue.InvalidateLoginToken(token)
+			}
+		}
+		time.Sleep(2 * time.Second)
+		c.rotateHostIP()
+	}
+}
+
+func (c *IVACClient) GetOTPWithManual(phone string, instanceID int) (string, error) {
+	c.log(fmt.Sprintf("📱 Waiting for OTP for: %s", phone))
+	c.log("💡 You can type OTP manually in the dashboard input field")
+	c.setStep("WAITING_OTP", "", "", "", "")
+	broadcastUpdate(map[string]interface{}{
+		"type":       "waiting_otp",
+		"instanceId": instanceID,
+		"phone":      phone,
+	})
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	autoTicker := time.NewTicker(3 * time.Second)
+	defer autoTicker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return "", errors.New("context cancelled")
+		case <-ticker.C:
+			instancesMu.RLock()
+			inst, ok := instances[instanceID]
+			instancesMu.RUnlock()
+			if ok {
+				inst.mu.Lock()
+				manualOTP := inst.Data.ManualOTP
+				if manualOTP != "" && len(manualOTP) == 6 {
+					inst.Data.ManualOTP = ""
+					inst.mu.Unlock()
+					c.log(fmt.Sprintf("✅ Manual OTP received: %s", manualOTP))
+					c.setStep("OTP_RECEIVED", manualOTP, "", "", "")
+					return manualOTP, nil
+				}
+				inst.mu.Unlock()
+			}
+		case <-autoTicker.C:
+			if c.config.AutoOTP {
+				otp, err := getOTPUsingCurl(phone)
+				if err == nil && otp != "" && len(otp) == 6 {
+					c.log(fmt.Sprintf("✅ Auto OTP received: %s", otp))
+					c.setStep("OTP_RECEIVED", otp, "", "", "")
+					return otp, nil
+				}
+			}
+		}
+	}
+}
+
+func (c *IVACClient) VerifyOTP(phone, otpCode string) error {
+	c.log("🔐 Verifying OTP...")
+	c.setStep("VERIFYING_OTP", otpCode, "", "", "")
+	req := map[string]interface{}{
+		"requestId":  c.session.RequestID,
+		"phone":      phone,
+		"code":       otpCode,
+		"email":      "",
+		"otpChannel": "PHONE",
+	}
+	for {
+		var resp *APIResponse
+		var err error
+
+		if c.shouldUseParallelMode() {
+			parallelRetryConfig := c.getCurrentParallelRetryConfig()
+			if parallelRetryConfig.Verify.Enabled {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_VERIFY_OTP_URL, req, c.session.Token, "Verify OTP API",
+					parallelRetryConfig.Verify,
+					"", false,
+				)
+			} else {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_VERIFY_OTP_URL, req, c.session.Token, "Verify OTP API",
+					ParallelRetryItem{Enabled: true, Hits: []int{c.getCurrentParallelConfig().VerifyHits}, DelayMs: c.getCurrentParallelConfig().VerifyMs, ReuseCaptcha: false},
+					"", false,
+				)
+			}
+		} else {
+			resp, err = c.executeSingleRetryWithCaptchaReuse(
+				API_VERIFY_OTP_URL, req, c.session.Token, "Verify OTP API",
+				"", false,
+			)
+		}
+		
+		if resp != nil && strings.Contains(strings.ToLower(resp.Message), "invalid") {
+			newOTP, err := c.GetOTPWithManual(phone, c.instanceID)
+			if err == nil && newOTP != "" && newOTP != otpCode {
+				otpCode = newOTP
+				req["code"] = newOTP
+				c.setStep("VERIFYING_OTP", newOTP, "", "", "")
+				continue
+			}
+		}
+		if err == nil && (resp.SuccessFlag || resp.StatusCode == 200) {
+			c.log("✅ OTP verified!")
+			c.setStep("OTP_VERIFIED", otpCode, "", "", "")
+			return nil
+		}
+		time.Sleep(time.Duration(c.config.OTPRetryDelay) * time.Millisecond)
+	}
+}
+
+func (c *IVACClient) GetBookingConfig() (string, error) {
+	c.log("📋 Getting booking configuration...")
+	c.setStep("BOOKING_CONFIG_LOADING", "", "", "", "")
+
+	for {
+		var resp *APIResponse
+		var err error
+
+		if c.shouldUseParallelMode() {
+			parallelRetryConfig := c.getCurrentParallelRetryConfig()
+			if parallelRetryConfig.Booking.Enabled {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_BOOKING_CONFIG, nil, c.session.Token, "Booking Config API",
+					parallelRetryConfig.Booking,
+					"", false,
+				)
+			} else {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_BOOKING_CONFIG, nil, c.session.Token, "Booking Config API",
+					ParallelRetryItem{Enabled: true, Hits: []int{c.getCurrentParallelConfig().BookingHits}, DelayMs: c.getCurrentParallelConfig().BookingMs, ReuseCaptcha: false},
+					"", false,
+				)
+			}
+		} else {
+			resp, err = c.executeSingleRetryWithCaptchaReuse(
+				API_BOOKING_CONFIG, nil, c.session.Token, "Booking Config API",
+				"", false,
+			)
+		}
+
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if resp.SuccessFlag && resp.Data != nil {
+			if id, ok := resp.Data["appointmentId"].(string); ok && id != "" {
+				c.log(fmt.Sprintf("✅ Booking config loaded - Appointment ID: %s", id))
+				c.setStep("BOOKING_CONFIG_LOADED", "", "", "", "")
+				return id, nil
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (c *IVACClient) InitiatePayment(appointmentId string) (string, error) {
+	c.log(fmt.Sprintf("💳 Initiating payment with dg-epay using Appointment ID: %s", appointmentId))
+	c.setStep("INITIATING_PAYMENT", "", "", "", "")
+	reqBody := map[string]interface{}{"appointmentId": appointmentId}
+	if appointmentId == "" {
+		reqBody = nil
+	}
+	for {
+		var resp *APIResponse
+		var err error
+
+		if c.shouldUseParallelMode() {
+			parallelRetryConfig := c.getCurrentParallelRetryConfig()
+			if parallelRetryConfig.Payment.Enabled {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_PAYMENT_URL, reqBody, c.session.Token, "Payment API",
+					parallelRetryConfig.Payment,
+					"", false,
+				)
+			} else {
+				resp, err = c.executeParallelRetryWithCaptchaReuse(
+					API_PAYMENT_URL, reqBody, c.session.Token, "Payment API",
+					ParallelRetryItem{Enabled: true, Hits: []int{c.getCurrentParallelConfig().InitiateHits}, DelayMs: c.getCurrentParallelConfig().InitiateMs, ReuseCaptcha: false},
+					"", false,
+				)
+			}
+		} else {
+			resp, err = c.executeSingleRetryWithCaptchaReuse(
+				API_PAYMENT_URL, reqBody, c.session.Token, "Payment API",
+				"", false,
+			)
+		}
+		
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if resp.SuccessFlag && resp.Data != nil {
+			var paymentURL string
+			if webviewURL, ok := resp.Data["webview_url"].(string); ok && webviewURL != "" {
+				paymentURL = webviewURL
+				c.log("✅ Payment URL generated via dg-epay!")
+			} else if gatewayURL, ok := resp.Data["GatewayPageURL"].(string); ok && gatewayURL != "" {
+				paymentURL = gatewayURL
+				c.log("✅ Payment URL generated!")
+			}
+			
+			if paymentURL != "" {
+				c.setStep("PAYMENT_READY", "", "", "", paymentURL)
+				broadcastUpdate(map[string]interface{}{
+					"type":       "payment_url",
+					"instanceId": c.instanceID,
+					"paymentUrl": paymentURL,
+				})
+				return paymentURL, nil
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (c *IVACClient) CheckSlotStatus() (bool, error) {
+	c.log("🔍 Checking slot status...")
+	resp, err := c.doRequest("slot-status", "Slot Status API", nil, c.session.Token)
+	if err != nil {
+		return false, err
+	}
+	if resp.StatusCode == 401 {
+		return false, fmt.Errorf("unauthorized: token expired (401)")
+	}
+	if resp.StatusCode == 200 && resp.SuccessFlag && resp.Data != nil {
+		if slotOpen, ok := resp.Data["slotOpen"].(bool); ok {
+			return slotOpen, nil
+		}
+		if available, ok := resp.Data["available"].(bool); ok {
+			return available, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *IVACClient) startSlotMonitoringAndReserve() (string, string, error) {
+	c.log("🔍 Starting slot monitoring...")
+	c.setStep("MONITORING_SLOTS", "", "", "", "")
+	if !c.config.SlotMonitor.Enabled {
+		return c.reserveSlotWithRetry()
+	}
+	checkInterval := c.config.SlotCheckInterval
+	if checkInterval == 0 {
+		checkInterval = 15
+	}
+	for {
+		select {
+		case <-c.ctx.Done():
+			return "", "", nil
+		default:
+		}
+		slotAvailable, err := c.CheckSlotStatus()
+		if err != nil {
+			if strings.Contains(err.Error(), "rate_limited") {
+				continue
+			}
+			time.Sleep(time.Duration(checkInterval) * time.Second)
+			continue
+		}
+		if slotAvailable {
+			c.log("✅ Slot is OPEN! Proceeding to reserve...")
+			time.Sleep(2 * time.Second)
+			return c.reserveSlotWithRetry()
+		} else {
+			time.Sleep(time.Duration(checkInterval) * time.Second)
+		}
+	}
+}
+
+func (c *IVACClient) reserveSlotWithRetry() (string, string, error) {
+	c.log("📌 Reserving slot with OFFICIAL RESERVE encryption...")
+	c.setStep("RESERVING_SLOT", "", "", "", "")
+
+	var reservationID, appointmentDate string
+	initialToken, err := c.getReserveCaptchaToken()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get initial captcha token: %v", err)
+	}
+
+	for {
+		var resp *APIResponse
+		var err2 error
+
+		encryptedToken := encryptCaptchaForReserve(initialToken)
+		req := map[string]interface{}{"c": encryptedToken}
+
+		if c.shouldUseParallelMode() {
+			parallelRetryConfig := c.getCurrentParallelRetryConfig()
+			if parallelRetryConfig.Reserve.Enabled {
+				resp, err2 = c.executeParallelRetryWithCaptchaReuse(
+					API_RESERVE_SLOT_URL, req, c.session.Token, "Reserve Slot API",
+					parallelRetryConfig.Reserve,
+					initialToken, true,
+				)
+			} else {
+				resp, err2 = c.executeParallelRetryWithCaptchaReuse(
+					API_RESERVE_SLOT_URL, req, c.session.Token, "Reserve Slot API",
+					ParallelRetryItem{Enabled: true, Hits: []int{c.getCurrentParallelConfig().ReserveHits}, DelayMs: c.getCurrentParallelConfig().ReserveMs, ReuseCaptcha: true},
+					initialToken, true,
+				)
+			}
+		} else {
+			resp, err2 = c.executeSingleRetryWithCaptchaReuse(
+				API_RESERVE_SLOT_URL, req, c.session.Token, "Reserve Slot API",
+				initialToken, true,
+			)
+		}
+
+		if err2 != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if resp.Data != nil {
+			if id, ok := resp.Data["reservationId"].(string); ok && id != "" {
+				reservationID = id
+				c.log(fmt.Sprintf("✅ Got Reservation ID: %s", reservationID))
+
+				if date, ok := resp.Data["appointmentDate"].(string); ok {
+					appointmentDate = date
+					c.log(fmt.Sprintf("✅ Got Appointment Date: %s", appointmentDate))
+				}
+
+				if ttl, ok := resp.Data["reserveTtlSeconds"].(float64); ok {
+					c.log(fmt.Sprintf("   Time to complete payment: %d seconds (%d minutes)", int(ttl), int(ttl)/60))
+				}
+
+				c.log(fmt.Sprintf("✅ Slot reserved successfully! ID: %s, Date: %s", reservationID, appointmentDate))
+				c.setStep("SLOT_RESERVED", "", reservationID, appointmentDate, "")
+				return reservationID, appointmentDate, nil
+			}
+		}
+
+		if resp.StatusCode == 400 && (strings.Contains(strings.ToLower(resp.Message), "captcha") ||
+			strings.Contains(strings.ToLower(resp.Message), "verification") ||
+			strings.Contains(strings.ToLower(resp.Message), "expired") ||
+			strings.Contains(strings.ToLower(resp.Message), "invalid")) {
+			c.captchaQueue.InvalidateReserveToken(initialToken)
+			freshToken, freshErr := c.solveCaptchaDirect("Getting fresh captcha token...")
+			if freshErr == nil && freshToken != "" {
+				initialToken = freshToken
+			}
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (c *IVACClient) RunFullFlow(loginPhone, password, otpPhone string, savedAppointmentID string, doneCb func(string, string)) {
+	start := time.Now()
+	c.log("🚀 Starting flow...")
+	hasAppointmentID := savedAppointmentID != ""
+
+	if hasAppointmentID {
+		c.log(fmt.Sprintf("📌 Using saved Appointment ID: %s", savedAppointmentID))
+	} else {
+		c.log("📌 No saved Appointment ID found")
+	}
+
+	// Step 1: Login
+	if err := c.Login(loginPhone, password); err != nil {
+		c.setStep("FAILED", "", "", "", "")
+		doneCb("FAILED", err.Error())
+		return
+	}
+
+	// Step 2: Get OTP
+	otp, err := c.GetOTPWithManual(otpPhone, c.instanceID)
+	if err != nil {
+		c.setStep("FAILED", "", "", "", "")
+		doneCb("FAILED", "OTP failed")
+		return
+	}
+
+	// Step 3: Verify OTP
+	if err := c.VerifyOTP(otpPhone, otp); err != nil {
+		c.setStep("FAILED", "", "", "", "")
+		doneCb("FAILED", "Verify failed")
+		return
+	}
+
+	// Step 4: Reserve slot (ALWAYS do this first)
+	reservationID, appointmentDate, err := c.startSlotMonitoringAndReserve()
+	if err != nil {
+		c.log(fmt.Sprintf("❌ Slot reservation failed: %v", err))
+		c.setStep("FAILED", "", "", "", "")
+		doneCb("FAILED", err.Error())
+		return
+	}
+
+	c.log(fmt.Sprintf("✅ Reservation successful! ID: %s, Date: %s", reservationID, appointmentDate))
+
+	var finalAppointmentID string
+
+	// Step 5: Determine payment flow based on saved Appointment ID
+	if hasAppointmentID {
+		finalAppointmentID = savedAppointmentID
+		c.log(fmt.Sprintf("📌 Using saved Appointment ID: %s", finalAppointmentID))
+	} else {
+		c.log("📌 No saved Appointment ID, fetching booking config...")
+		finalAppointmentID, err = c.GetBookingConfig()
+		if err != nil {
+			c.log(fmt.Sprintf("⚠️ Failed to get booking config: %v, but slot is reserved!", err))
+			c.setStep("SLOT_RESERVED", "", reservationID, appointmentDate, "")
+			doneCb("SLOT_RESERVED", fmt.Sprintf("Slot reserved! ID: %s, Date: %s (Payment config failed)", reservationID, appointmentDate))
+			return
+		}
+		c.log(fmt.Sprintf("✅ Got Appointment ID: %s", finalAppointmentID))
+	}
+
+	// Step 6: Initiate Payment
+	payUrl, err := c.InitiatePayment(finalAppointmentID)
+	if err != nil {
+		c.log(fmt.Sprintf("⚠️ Payment initiation failed: %v, but slot is reserved!", err))
+		c.setStep("SLOT_RESERVED", "", reservationID, appointmentDate, "")
+		doneCb("SLOT_RESERVED", fmt.Sprintf("Slot reserved! ID: %s, Date: %s (Payment failed)", reservationID, appointmentDate))
+		return
+	}
+
+	c.log(fmt.Sprintf("✨ Completed in %s", time.Since(start)))
+	c.log(fmt.Sprintf("🎉 Final - Reservation ID: %s, Payment URL: %s", reservationID, payUrl))
+	c.setStep("COMPLETED", "", reservationID, appointmentDate, payUrl)
+	doneCb("COMPLETED", "Success")
+}
+
+func (c *IVACClient) Cleanup() {
+	if c.captchaQueue != nil {
+		c.captchaQueue.Stop()
+	}
+	if c.cancel != nil {
+		c.cancel()
+	}
+}
+
+func (c *IVACClient) rotateHostIP() {
+	hostRouter := GetHostRouter()
+	newHostIP := hostRouter.GetRandomDifferentHostIP(c.currentHostIP)
+	if newHostIP != "" && newHostIP != c.currentHostIP {
+		c.currentHostIP = newHostIP
+		if inst, ok := c.getInstance(); ok {
+			inst.mu.Lock()
+			inst.Data.CurrentHostIP = newHostIP
+			inst.mu.Unlock()
+		}
+	}
+}
+
+func (c *IVACClient) getInstance() (*Instance, bool) {
+	instancesMu.RLock()
+	defer instancesMu.RUnlock()
+	inst, ok := instances[c.instanceID]
+	return inst, ok
+}
+
+func (c *IVACClient) isLoginSuccess(resp *APIResponse) bool {
+	return resp.SuccessFlag && resp.StatusCode == 200 && resp.Data != nil && resp.Data["accessToken"] != nil && resp.Message == "Success"
+}
+
+func (c *IVACClient) isVerifySuccess(resp *APIResponse) bool {
+	return resp.SuccessFlag && resp.StatusCode == 200 && resp.Message == "Success" && resp.Data != nil
+}
+
+func (c *IVACClient) isReserveSuccess(resp *APIResponse) bool {
+	return (resp.Status == "OK_NEW" || resp.Status == "RESERVED") && resp.Data != nil && resp.Data["reservationId"] != nil
+}
+
+func (c *IVACClient) isBookingConfigSuccess(resp *APIResponse) bool {
+	return resp.SuccessFlag && resp.StatusCode == 200 && resp.Message == "Success" && resp.Data != nil && resp.Data["appointmentId"] != nil
+}
+
+func (c *IVACClient) isPaymentSuccess(resp *APIResponse) bool {
+	return resp.SuccessFlag && resp.StatusCode == 201 && resp.Message == "Initiated" && resp.Data != nil && (resp.Data["webview_url"] != nil || resp.Data["GatewayPageURL"] != nil)
+}
+
+func (c *IVACClient) doRequestWithUnlimitedRetry(endpointKey, endpointDisplay string, body interface{}, token string, successChecker func(*APIResponse) bool) (*APIResponse, error) {
+	endpointMutex := c.successTracker.GetMutex(endpointKey)
+	endpointMutex.Lock()
+	defer endpointMutex.Unlock()
+
+	if c.successTracker.IsSuccess(endpointKey) {
+		return nil, errors.New("already succeeded")
+	}
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return nil, errors.New("context cancelled")
+		default:
+		}
+
+		if c.successTracker.IsSuccess(endpointKey) {
+			return nil, errors.New("already succeeded")
+		}
+
+		reqCtx, reqCancel := context.WithCancel(c.ctx)
+		c.successTracker.RegisterCancel(endpointKey, reqCancel)
+
+		if c.successTracker.IsSuccess(endpointKey) {
+			reqCancel()
+			return nil, errors.New("already succeeded")
+		}
+
+		resp, err := c.doRequestWithContext(reqCtx, endpointKey, endpointDisplay, body, token)
+
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, errors.New("cancelled by success")
+			}
+			time.Sleep(2 * time.Second)
+			c.rotateHostIP()
+			continue
+		}
+
+		if successChecker(resp) {
+			c.successTracker.MarkSuccess(endpointKey)
+			return resp, nil
+		}
+
+		time.Sleep(2 * time.Second)
+		c.rotateHostIP()
+	}
+}
+
+func (c *IVACClient) doRequest(endpointKey, endpointDisplay string, body interface{}, token string) (*APIResponse, error) {
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+	c.successTracker.RegisterCancel(endpointKey, cancel)
+	if c.successTracker.IsSuccess(endpointKey) {
+		return nil, errors.New("already succeeded")
+	}
+	return c.doRequestWithContext(ctx, endpointKey, endpointDisplay, body, token)
+}
+
+func (c *IVACClient) doRequestWithContext(ctx context.Context, endpointKey, endpointDisplay string, body interface{}, token string) (*APIResponse, error) {
+	hostRouter := GetHostRouter()
+	if c.currentHostIP == "" {
+		c.currentHostIP = hostRouter.GetRandomHostIP()
+	}
+
+	var apiURL string
+	switch endpointKey {
+	case "sign-in-v2", "Login API":
+		apiURL = API_LOGIN_URL
+	case "verifySigninOtp", "Verify OTP API":
+		apiURL = API_VERIFY_OTP_URL
+	case "reserveSlot", "Reserve Slot API":
+		apiURL = API_RESERVE_SLOT_URL
+	case "get-booking-config", "Get Booking API":
+		apiURL = API_BOOKING_CONFIG
+	case "initiate", "Payment API":
+		apiURL = API_PAYMENT_URL
+	case "slot-status", "Slot Status API":
+		apiURL = API_SLOT_STATUS_URL
+	default:
+		apiURL = API_LOGIN_URL
+	}
+
+	requestURL := c.buildRequestURL(apiURL)
+
+	proxyURL := getRandomProxyURL()
+	client := getHTTPClient(proxyURL)
+
+	var r io.Reader
+	if body != nil {
+		j, _ := json.Marshal(body)
+		r = bytes.NewBuffer(j)
+	}
+
+	var req *http.Request
+	var reqErr error
+	if body != nil {
+		req, reqErr = http.NewRequestWithContext(ctx, "POST", requestURL, r)
+	} else {
+		req, reqErr = http.NewRequestWithContext(ctx, "GET", requestURL, nil)
+	}
+	if reqErr != nil {
+		return nil, reqErr
+	}
+
+	req.Host = "api.ivacbd.com"
+	setRequestHeaders(req, c.deviceInfo, token)
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	duration := time.Since(start)
+	b, _ := io.ReadAll(resp.Body)
+	var result APIResponse
+	json.Unmarshal(b, &result)
+	result.StatusCode = resp.StatusCode
+
+	if c.currentHostIP != "" {
+		hostRouter.RecordResult(c.currentHostIP, resp.StatusCode >= 200 && resp.StatusCode < 300, duration)
+	}
+
+	proxyIP := "none"
+	if proxyURL != "" {
+		if pURL, err := url.Parse(proxyURL); err == nil {
+			proxyIP = pURL.Hostname()
+		}
+	}
+
+	clientIP := c.currentHostIP
+	if clientIP == "" {
+		clientIP = "api.ivacbd.com"
+	}
+
+	if c.networkCb != nil {
+		statusText := "Success"
+		if resp.StatusCode >= 400 {
+			statusText = result.Message
+			if statusText == "" {
+				statusText = http.StatusText(resp.StatusCode)
+			}
+		}
+		netReq := NetworkRequest{
+			Endpoint:   endpointDisplay,
+			Method:     "POST",
+			StatusCode: resp.StatusCode,
+			StatusText: statusText,
+			ClientIP:   clientIP,
+			ProxyIP:    proxyIP,
+			HostIP:     c.currentHostIP,
+			Timestamp:  time.Now(),
+			Duration:   duration.String(),
+			RequestID:  result.RequestID,
+			RespBody:   string(b)[:min(200, len(string(b)))],
+		}
+		c.networkCb(netReq)
+	}
+
+	return &result, nil
+}
+
+func addInstance(clientName, loginPhone, password, otpPhone, typ, highCom, visaType, loginMode string) int {
+	id := int(atomic.AddInt32(&instanceID, 1) - 1)
+	displayType := typ
+	if highCom != "" && visaType != "" && typ == "" {
+		displayType = highCom + " - " + visaType
+	}
+	hostRouter := GetHostRouter()
+	assignedHostIP := hostRouter.GetInstanceHostIP(id)
+	deviceGen := GetDeviceGenerator()
+	deviceInfo := deviceGen.GenerateDeviceInfo(id)
+	instancesMu.Lock()
+	instances[id] = &Instance{
+		Data: InstanceData{
+			ID: id, ClientName: clientName, LoginPhone: loginPhone, Password: password,
+			OTPPhone: otpPhone, Type: displayType, HighCom: highCom, VisaType: visaType,
+			Name: loginPhone, Status: "STOPPED", Step: "READY",
+			Logs: make([]string, 0), NetworkLogs: make([]NetworkRequest, 0),
+			AssignedHostIP: assignedHostIP, CurrentHostIP: assignedHostIP,
+			RetryCount: 0, DeviceInfo: deviceInfo, AppointmentID: "",
+			HasAppointmentID: false, PausedStep: "",
+		},
+	}
+	instancesMu.Unlock()
+	saveInstancesToFile()
+	return id
+}
+
+func addLog(id int, msg string) {
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if ok {
+		inst.mu.Lock()
+		inst.Data.Logs = append(inst.Data.Logs, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg))
+		if len(inst.Data.Logs) > 500 {
+			inst.Data.Logs = inst.Data.Logs[len(inst.Data.Logs)-500:]
+		}
+		inst.mu.Unlock()
+	}
+}
+
+func addNetworkLog(id int, req NetworkRequest) {
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if ok {
+		inst.mu.Lock()
+		inst.Data.NetworkLogs = append([]NetworkRequest{req}, inst.Data.NetworkLogs...)
+		if len(inst.Data.NetworkLogs) > 50 {
+			inst.Data.NetworkLogs = inst.Data.NetworkLogs[:50]
+		}
+		inst.mu.Unlock()
+	}
+}
+
+func runInstanceFlow(ctx context.Context, inst *Instance, id int) {
+	configMu.RLock()
+	cfg := globalConfig
+	configMu.RUnlock()
+
+	stepCb := func(step, otp, rid, appointmentDate, payUrl string) {
+		inst.mu.Lock()
+		if inst.Data.Status != "STOPPED" && inst.Data.Status != "PAUSED" {
+			inst.Data.Step = step
+		}
+		if otp != "" {
+			inst.Data.OTP = otp
+		}
+		if rid != "" {
+			inst.Data.ReservationID = rid
+			addLog(id, fmt.Sprintf("📌 Updated Reservation ID: %s", rid))
+		}
+		if appointmentDate != "" {
+			inst.Data.AppointmentDate = appointmentDate
+		}
+		if payUrl != "" {
+			inst.Data.PaymentURL = payUrl
+			broadcastUpdate(map[string]interface{}{
+				"type": "payment_url", "instanceId": id, "paymentUrl": payUrl, "step": step,
+			})
+		}
+		inst.mu.Unlock()
+	}
+
+	networkCb := func(req NetworkRequest) { addNetworkLog(id, req) }
+
+	inst.mu.Lock()
+	deviceInfo := inst.Data.DeviceInfo
+	savedAppointmentID := inst.Data.AppointmentID
+	hasAppointmentID := savedAppointmentID != ""
+	pausedStep := inst.Data.PausedStep
+	inst.mu.Unlock()
+
+	client := NewIVACClient(&cfg, nil, id, deviceInfo, hasAppointmentID,
+		func(msg string) { addLog(id, msg) }, stepCb, networkCb)
+
+	inst.mu.Lock()
+	client.currentHostIP = inst.Data.CurrentHostIP
+	inst.client = client
+	inst.mu.Unlock()
+
+	if pausedStep != "" {
+		inst.mu.Lock()
+		inst.Data.PausedStep = ""
+		inst.mu.Unlock()
+		addLog(id, fmt.Sprintf("▶️ Resuming from saved state"))
+	}
+
+	done := make(chan bool)
+	go func() {
+		client.RunFullFlow(inst.Data.LoginPhone, inst.Data.Password, inst.Data.OTPPhone, savedAppointmentID, func(status, message string) {
+			inst.mu.Lock()
+			if inst.Data.Status != "STOPPED" && inst.Data.Status != "PAUSED" {
+				inst.Data.Status = status
+			}
+			if status == "COMPLETED" {
+				inst.Data.Duration = time.Since(inst.Data.StartTime).String()
+			}
+			inst.mu.Unlock()
+			done <- true
+		})
+	}()
+
+	select {
+	case <-done:
+		client.Cleanup()
+		saveInstancesToFile()
+	case <-ctx.Done():
+		inst.mu.Lock()
+		if inst.Data.Status != "STOPPED" && inst.Data.Status != "PAUSED" {
+			inst.Data.Status = "STOPPED"
+			inst.Data.Step = "STOPPED"
+		}
+		inst.mu.Unlock()
+		saveInstancesToFile()
+		client.Cleanup()
+	}
+}
+
+// ==================== HTTP HANDLERS ====================
+
+func getInstances(w http.ResponseWriter, r *http.Request) {
+	instancesMu.RLock()
+	defer instancesMu.RUnlock()
+	configMu.RLock()
+	slotMonitorEnabled := globalConfig.SlotMonitor.Enabled
+	configMu.RUnlock()
+	var running, failed, completed int
+	list := make([]map[string]interface{}, 0)
+	for _, inst := range instances {
+		inst.mu.Lock()
+		s := inst.Data.Status
+		if s == "RUNNING" {
+			running++
+		} else if s == "FAILED" {
+			failed++
+		} else if s == "COMPLETED" {
+			completed++
+		}
+		lastLog := ""
+		if len(inst.Data.Logs) > 0 {
+			lastLog = inst.Data.Logs[len(inst.Data.Logs)-1]
+			if len(lastLog) > 60 {
+				lastLog = lastLog[:60] + "..."
+			}
+		}
+		var latestNetwork *NetworkRequest
+		if len(inst.Data.NetworkLogs) > 0 {
+			latestNetwork = &inst.Data.NetworkLogs[0]
+		}
+		deviceIDShort := ""
+		if inst.Data.DeviceInfo != nil && inst.Data.DeviceInfo.DeviceID != "" {
+			deviceIDShort = inst.Data.DeviceInfo.DeviceID[:min(8, len(inst.Data.DeviceInfo.DeviceID))]
+		}
+		instanceMap := map[string]interface{}{
+			"id": inst.Data.ID, "clientName": inst.Data.ClientName, "loginPhone": inst.Data.LoginPhone,
+			"password": inst.Data.Password, "otpPhone": inst.Data.OTPPhone, "type": inst.Data.Type,
+			"highCom": inst.Data.HighCom, "visaType": inst.Data.VisaType, "name": inst.Data.Name,
+			"status": s, "step": inst.Data.Step, "otp": inst.Data.OTP,
+			"reservationId": inst.Data.ReservationID, "appointmentDate": inst.Data.AppointmentDate,
+			"paymentUrl": inst.Data.PaymentURL, "appointmentId": inst.Data.AppointmentID,
+			"lastLog": lastLog, "duration": inst.Data.Duration, "assignedHostIP": inst.Data.AssignedHostIP,
+			"currentHostIP": inst.Data.CurrentHostIP, "retryCount": inst.Data.RetryCount,
+			"deviceId": deviceIDShort, "endpoint": func() string {
+				if latestNetwork != nil {
+					return latestNetwork.Endpoint
+				}
+				return "-"
+			}(), "statusCode": func() int {
+				if latestNetwork != nil {
+					return latestNetwork.StatusCode
+				}
+				return 0
+			}(), "statusText": func() string {
+				if latestNetwork != nil {
+					return latestNetwork.StatusText
+				}
+				return "-"
+			}(), "clientIp": func() string {
+				if latestNetwork != nil {
+					return latestNetwork.ClientIP
+				}
+				return "-"
+			}(), "proxyIp": func() string {
+				if latestNetwork != nil && latestNetwork.ProxyIP != "" {
+					return latestNetwork.ProxyIP
+				}
+				return "-"
+			}(), "requestId": func() string {
+				if latestNetwork != nil && latestNetwork.RequestID != "" {
+					return latestNetwork.RequestID
+				}
+				return ""
+			}(),
+		}
+		list = append(list, instanceMap)
+		inst.mu.Unlock()
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total": len(instances), "running": running, "failed": failed, "completed": completed,
+		"instances": list, "slotMonitorEnabled": slotMonitorEnabled,
+	})
+}
+
+func startInstanceHandler(w http.ResponseWriter, r *http.Request) {
+	var id int
+	fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"status": "not found"})
+		return
+	}
+	inst.mu.Lock()
+	if inst.Data.Status == "RUNNING" {
+		inst.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "already running"})
+		return
+	}
+	inst.Data.Status = "RUNNING"
+	inst.Data.StartTime = time.Now()
+	inst.Data.Step = "STARTING"
+	inst.Data.OTP = ""
+	inst.Data.ReservationID = ""
+	inst.Data.AppointmentDate = ""
+	inst.Data.PaymentURL = ""
+	inst.Data.NetworkLogs = make([]NetworkRequest, 0)
+	inst.Data.RetryCount = 0
+	inst.Data.ManualOTP = ""
+	inst.Data.PausedStep = ""
+	inst.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	inst.mu.Lock()
+	inst.cancel = cancel
+	inst.mu.Unlock()
+	go runInstanceFlow(ctx, inst, id)
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+}
+
+func stopInstanceHandler(w http.ResponseWriter, r *http.Request) {
+	var id int
+	fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		return
+	}
+	go func() {
+		inst.mu.Lock()
+		if inst.cancel != nil {
+			inst.cancel()
+		}
+		inst.Data.Status = "STOPPED"
+		inst.Data.Step = "STOPPED"
+		inst.Data.PausedStep = ""
+		inst.mu.Unlock()
+		saveInstancesToFile()
+	}()
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+}
+
+func deleteInstanceHandler(w http.ResponseWriter, r *http.Request) {
+	var id int
+	fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+	go func() {
+		instancesMu.Lock()
+		if inst, ok := instances[id]; ok {
+			inst.mu.Lock()
+			if inst.cancel != nil {
+				inst.cancel()
+			}
+			inst.mu.Unlock()
+			delete(instances, id)
+		}
+		instancesMu.Unlock()
+		saveInstancesToFile()
+	}()
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+func addInstanceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		ClientName string `json:"clientName"`
+		LoginPhone string `json:"loginPhone"`
+		Password   string `json:"password"`
+		OTPPhone   string `json:"otpPhone"`
+		Type       string `json:"type"`
+		HighCom    string `json:"highCom"`
+		VisaType   string `json:"visaType"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	highCom := req.HighCom
+	visaType := req.VisaType
+	if highCom == "" {
+		highCom = "DHAKA"
+	}
+	if visaType == "" {
+		visaType = "MEDICAL"
+	}
+	configMu.RLock()
+	loginMode := globalConfig.LoginMode
+	configMu.RUnlock()
+	id := addInstance(req.ClientName, req.LoginPhone, req.Password, req.OTPPhone, req.Type, highCom, visaType, loginMode)
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func updateInstanceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		ID         int    `json:"id"`
+		ClientName string `json:"clientName"`
+		LoginPhone string `json:"loginPhone"`
+		Password   string `json:"password"`
+		OTPPhone   string `json:"otpPhone"`
+		Type       string `json:"type"`
+		HighCom    string `json:"highCom"`
+		VisaType   string `json:"visaType"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	instancesMu.RLock()
+	inst, ok := instances[req.ID]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"status": "not found"})
+		return
+	}
+	inst.mu.Lock()
+	inst.Data.ClientName = req.ClientName
+	inst.Data.LoginPhone = req.LoginPhone
+	inst.Data.Password = req.Password
+	inst.Data.OTPPhone = req.OTPPhone
+	inst.Data.Name = req.LoginPhone
+	if req.HighCom != "" && req.VisaType != "" {
+		inst.Data.Type = req.HighCom + " - " + req.VisaType
+		inst.Data.HighCom = req.HighCom
+		inst.Data.VisaType = req.VisaType
+	} else if req.Type != "" {
+		inst.Data.Type = req.Type
+	}
+	inst.mu.Unlock()
+	saveInstancesToFile()
+	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+}
+
+func toggleAllHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	switch req.Action {
+	case "start":
+		go func() {
+			instancesMu.RLock()
+			all := make([]*Instance, 0, len(instances))
+			for _, inst := range instances {
+				all = append(all, inst)
+			}
+			instancesMu.RUnlock()
+			for _, inst := range all {
+				inst.mu.Lock()
+				if inst.Data.Status != "RUNNING" && inst.Data.Status != "COMPLETED" && inst.Data.Status != "PAUSED" {
+					inst.Data.Status = "RUNNING"
+					inst.Data.StartTime = time.Now()
+					inst.Data.Step = "STARTING"
+					inst.Data.OTP = ""
+					inst.Data.ReservationID = ""
+					inst.Data.AppointmentDate = ""
+					inst.Data.PaymentURL = ""
+					inst.Data.NetworkLogs = make([]NetworkRequest, 0)
+					inst.Data.RetryCount = 0
+					inst.Data.ManualOTP = ""
+					inst.Data.PausedStep = ""
+					inst.mu.Unlock()
+					ctx, cancel := context.WithCancel(context.Background())
+					inst.mu.Lock()
+					inst.cancel = cancel
+					inst.mu.Unlock()
+					go runInstanceFlow(ctx, inst, inst.Data.ID)
+				} else {
+					inst.mu.Unlock()
+				}
+			}
+			saveInstancesToFile()
+		}()
+		json.NewEncoder(w).Encode(map[string]string{"status": "started all"})
+	case "stop":
+		go func() {
+			instancesMu.RLock()
+			all := make([]*Instance, 0, len(instances))
+			for _, inst := range instances {
+				all = append(all, inst)
+			}
+			instancesMu.RUnlock()
+			for _, inst := range all {
+				inst.mu.Lock()
+				if inst.cancel != nil {
+					inst.cancel()
+				}
+				inst.Data.Status = "STOPPED"
+				inst.Data.Step = "STOPPED"
+				inst.Data.PausedStep = ""
+				inst.mu.Unlock()
+			}
+			saveInstancesToFile()
+		}()
+		json.NewEncoder(w).Encode(map[string]string{"status": "stopped all"})
+	case "pause":
+		go func() {
+			instancesMu.RLock()
+			all := make([]*Instance, 0, len(instances))
+			for _, inst := range instances {
+				all = append(all, inst)
+			}
+			instancesMu.RUnlock()
+			for _, inst := range all {
+				inst.mu.Lock()
+				if inst.cancel != nil && inst.Data.Status == "RUNNING" {
+					inst.cancel()
+					inst.Data.Status = "PAUSED"
+					inst.Data.Step = "PAUSED"
+					inst.Data.PausedStep = inst.Data.Step
+				}
+				inst.mu.Unlock()
+			}
+			saveInstancesToFile()
+		}()
+		json.NewEncoder(w).Encode(map[string]string{"status": "paused all"})
+	case "resume":
+		go func() {
+			instancesMu.RLock()
+			all := make([]*Instance, 0, len(instances))
+			for _, inst := range instances {
+				all = append(all, inst)
+			}
+			instancesMu.RUnlock()
+			for _, inst := range all {
+				inst.mu.Lock()
+				if inst.Data.Status == "PAUSED" {
+					inst.Data.Status = "RUNNING"
+					inst.Data.StartTime = time.Now()
+					inst.Data.Step = "RESUMING"
+					inst.Data.ManualOTP = ""
+					inst.mu.Unlock()
+					ctx, cancel := context.WithCancel(context.Background())
+					inst.mu.Lock()
+					inst.cancel = cancel
+					inst.mu.Unlock()
+					go runInstanceFlow(ctx, inst, inst.Data.ID)
+				} else {
+					inst.mu.Unlock()
+				}
+			}
+			saveInstancesToFile()
+		}()
+		json.NewEncoder(w).Encode(map[string]string{"status": "resumed all"})
+	}
+}
+
+func handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		configMu.RLock()
+		defer configMu.RUnlock()
+		json.NewEncoder(w).Encode(globalConfig)
+	} else if r.Method == "POST" {
+		var nc Config
+		json.NewDecoder(r.Body).Decode(&nc)
+		configMu.Lock()
+		globalConfig = nc
+		configMu.Unlock()
+		saveConfig()
+		if len(nc.HostIPs) > 0 {
+			GetHostRouter().UpdateHostIPs(nc.HostIPs)
+		}
+		if nc.SlotMonitor.Enabled {
+			startSlotMonitor()
+		} else {
+			stopSlotMonitor()
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+	}
+}
+
+func handleParallelConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		configMu.RLock()
+		defer configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"traditional":   globalConfig.Parallel,
+			"parallelRetry": globalConfig.ParallelRetry,
+		})
+	} else if r.Method == "POST" {
+		var req struct {
+			Traditional   ParallelConfig       `json:"traditional"`
+			ParallelRetry ParallelRetryConfig `json:"parallelRetry"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		configMu.Lock()
+		if req.Traditional.SigninHits > 0 {
+			globalConfig.Parallel = req.Traditional
+		}
+		globalConfig.ParallelRetry = req.ParallelRetry
+		configMu.Unlock()
+		saveConfig()
+		json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+	}
+}
+
+func handleSlotMonitor(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		configMu.Lock()
+		globalConfig.SlotMonitor.Enabled = req.Enabled
+		configMu.Unlock()
+		saveConfig()
+		if req.Enabled {
+			startSlotMonitor()
+		} else {
+			stopSlotMonitor()
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "enabled": req.Enabled})
+	} else {
+		configMu.RLock()
+		enabled := globalConfig.SlotMonitor.Enabled
+		configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]bool{"enabled": enabled})
+	}
+}
+
+func handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	var id int
+	fmt.Sscanf(idStr, "%d", &id)
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "instance not found"})
+		return
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"logs":        inst.Data.Logs,
+		"networkLogs": inst.Data.NetworkLogs,
+	})
+}
+
+func handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	var id int
+	fmt.Sscanf(idStr, "%d", &id)
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "instance not found"})
+		return
+	}
+	inst.mu.Lock()
+	inst.Data.Logs = make([]string, 0)
+	inst.Data.NetworkLogs = make([]NetworkRequest, 0)
+	inst.mu.Unlock()
+	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+}
+
+func handleProxies(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		proxiesMu.RLock()
+		defer proxiesMu.RUnlock()
+		proxyList := make([]map[string]interface{}, len(globalProxies))
+		for i, p := range globalProxies {
+			proxyList[i] = map[string]interface{}{
+				"id": p.ID, "type": p.Type, "host": p.Host, "port": p.Port,
+				"user": p.User, "password": p.Password, "enabled": p.Enabled,
+				"testPass": p.TestPass, "responseMs": p.ResponseMs, "lastTest": p.LastTest,
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"proxies": proxyList, "count": len(globalProxies), "enabled": len(getEnabledProxies()),
+		})
+	} else if r.Method == "POST" {
+		var req struct {
+			Action string `json:"action"`
+			Proxy  struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Host     string `json:"host"`
+				Port     int    `json:"port"`
+				User     string `json:"user"`
+				Password string `json:"password"`
+				Enabled  bool   `json:"enabled"`
+			} `json:"proxy"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		switch req.Action {
+		case "add":
+			proxyType := req.Proxy.Type
+			if proxyType == "" || proxyType == "auto" {
+				proxyType = detectProxyType(req.Proxy.Host, req.Proxy.Port)
+			}
+			newProxy := ProxyConfig{
+				Type: proxyType, Host: req.Proxy.Host, Port: req.Proxy.Port,
+				User: req.Proxy.User, Password: req.Proxy.Password, Enabled: req.Proxy.Enabled,
+				CreatedAt: time.Now(),
+			}
+			addProxy(newProxy)
+			proxiesMu.Lock()
+			for i := range globalProxies {
+				if globalProxies[i].ID == newProxy.ID {
+					testProxy(&globalProxies[i])
+					break
+				}
+			}
+			proxiesMu.Unlock()
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "added", "id": newProxy.ID})
+		case "update":
+			proxyType := req.Proxy.Type
+			if proxyType == "" || proxyType == "auto" {
+				proxyType = detectProxyType(req.Proxy.Host, req.Proxy.Port)
+			}
+			updatedProxy := ProxyConfig{
+				Type: proxyType, Host: req.Proxy.Host, Port: req.Proxy.Port,
+				User: req.Proxy.User, Password: req.Proxy.Password, Enabled: req.Proxy.Enabled,
+			}
+			updateProxy(req.Proxy.ID, updatedProxy)
+			proxiesMu.Lock()
+			for i := range globalProxies {
+				if globalProxies[i].ID == req.Proxy.ID {
+					testProxy(&globalProxies[i])
+					break
+				}
+			}
+			proxiesMu.Unlock()
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "updated"})
+		case "delete":
+			deleteProxy(req.Proxy.ID)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted"})
+		case "testAll":
+			go testAllProxies()
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "testing"})
+		}
+	}
+}
+
+func handleHostIPs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		configMu.RLock()
+		defer configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"hostIPs": globalConfig.HostIPs, "activeIP": globalConfig.ActiveHostIP,
+			"bestHost": GetHostRouter().GetBestHostIP(), "stats": GetHostRouter().GetAllHostStats(),
+		})
+	} else if r.Method == "POST" {
+		var req struct {
+			RawText string `json:"rawText"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		lines := strings.Split(req.RawText, "\n")
+		var ips []string
+		for _, line := range lines {
+			ip := strings.TrimSpace(line)
+			if ip != "" && strings.Contains(ip, ".") {
+				ips = append(ips, ip)
+			}
+		}
+		configMu.Lock()
+		globalConfig.HostIPs = ips
+		configMu.Unlock()
+		saveConfig()
+		GetHostRouter().UpdateHostIPs(ips)
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "saved", "count": len(ips)})
+	}
+}
+
+func handleApplyHost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IP string `json:"ip"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.IP == "" {
+		err := removeHostsEntry()
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "message": err.Error()})
+			return
+		}
+		configMu.Lock()
+		globalConfig.ActiveHostIP = ""
+		configMu.Unlock()
+		saveConfig()
+		GetHostRouter().ResetBestHost()
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+		return
+	}
+	err := writeHostsEntry(req.IP)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "message": err.Error()})
+		return
+	}
+	configMu.Lock()
+	globalConfig.ActiveHostIP = req.IP
+	configMu.Unlock()
+	saveConfig()
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+}
+
+func handleHostStats(w http.ResponseWriter, r *http.Request) {
+	stats := GetHostRouter().GetAllHostStats()
+	bestHost := GetHostRouter().GetBestHostIP()
+	json.NewEncoder(w).Encode(map[string]interface{}{"stats": stats, "bestHost": bestHost})
+}
+
+func handleResetHost(w http.ResponseWriter, r *http.Request) {
+	GetHostRouter().ResetBestHost()
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+}
+
+func handleRequestMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		configMu.RLock()
+		mode := globalConfig.RequestMode
+		if mode == "" {
+			mode = REQUEST_MODE_SINGLE
+		}
+		configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]string{"mode": mode})
+	} else if r.Method == "POST" {
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		configMu.Lock()
+		if req.Mode == REQUEST_MODE_PARALLEL || req.Mode == REQUEST_MODE_SINGLE {
+			globalConfig.RequestMode = req.Mode
+		} else {
+			globalConfig.RequestMode = REQUEST_MODE_SINGLE
+		}
+		configMu.Unlock()
+		saveConfig()
+		json.NewEncoder(w).Encode(map[string]string{"status": "saved", "mode": globalConfig.RequestMode})
+	}
+}
+
+func handleParallelRetryMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		configMu.RLock()
+		enabled := globalConfig.ParallelRetry.Signin.Enabled || 
+				   globalConfig.ParallelRetry.Verify.Enabled ||
+				   globalConfig.ParallelRetry.Reserve.Enabled ||
+				   globalConfig.ParallelRetry.Booking.Enabled ||
+				   globalConfig.ParallelRetry.Payment.Enabled
+		configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]bool{"enabled": enabled})
+	} else if r.Method == "POST" {
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		configMu.Lock()
+		// Enable/disable all parallel retry items
+		globalConfig.ParallelRetry.Signin.Enabled = req.Enabled
+		globalConfig.ParallelRetry.Verify.Enabled = req.Enabled
+		globalConfig.ParallelRetry.Reserve.Enabled = req.Enabled
+		globalConfig.ParallelRetry.Booking.Enabled = req.Enabled
+		globalConfig.ParallelRetry.Payment.Enabled = req.Enabled
+		configMu.Unlock()
+		saveConfig()
+		json.NewEncoder(w).Encode(map[string]bool{"enabled": req.Enabled})
+	}
+}
+
+func testCaptchaHandler(w http.ResponseWriter, r *http.Request) {
+	configMu.RLock()
+	key := globalConfig.CaptchaAPIKey
+	service := globalConfig.CaptchaService
+	expiry := globalConfig.LoginCaptchaExpiry
+	configMu.RUnlock()
+
+	if key == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Captcha API key is empty! Please add your API key in Config tab",
+			"service": service,
+		})
+		return
+	}
+
+	q := NewSilentCaptchaQueue(key, service, 1, 1, expiry, 90, func(msg string) {
+		fmt.Printf("[TEST] %s\n", msg)
+	})
+	defer q.Stop()
+
+	tok, err := q.GetLoginToken()
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": err.Error(),
+			"service": service,
+			"apiKey":  key[:min(10, len(key))] + "...",
+		})
+		return
+	}
+
+	if tok == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Got empty token from captcha service",
+			"service": service,
+		})
+		return
+	}
+
+	encrypted := encryptCaptchaForLogin(tok)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"token":        tok[:min(50, len(tok))] + "...",
+		"tokenLength":  len(tok),
+		"encrypted":    encrypted[:min(50, len(encrypted))] + "...",
+		"encryption":   "OFFICIAL LOGIN ENCRYPTION (start_at=2, length=25)",
+		"service":      service,
+		"message":      fmt.Sprintf("✅ Successfully solved captcha using %s!", service),
+	})
+}
+
+func testParallelHandler(w http.ResponseWriter, r *http.Request) {
+	configMu.RLock()
+	pc := globalConfig.Parallel
+	configMu.RUnlock()
+	client := getHTTPClient("")
+	results := make([]map[string]interface{}, 0)
+	for i := 0; i < pc.SigninHits && i < 5; i++ {
+		if i > 0 && pc.SigninMs > 0 {
+			time.Sleep(time.Duration(i*pc.SigninMs) * time.Millisecond)
+		}
+		req, _ := http.NewRequest("GET", API_BASE+"/health", nil)
+		req.Header.Set("Accept", "application/json")
+		start := time.Now()
+		resp, err := client.Do(req)
+		duration := time.Since(start)
+		result := map[string]interface{}{"hit": i + 1, "duration": duration.String(), "error": nil}
+		if err != nil {
+			result["error"] = err.Error()
+			result["status"] = 0
+		} else {
+			result["status"] = resp.StatusCode
+			resp.Body.Close()
+		}
+		results = append(results, result)
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "config": pc, "results": results})
+}
+
+func testParallelRetryHandler(w http.ResponseWriter, r *http.Request) {
+	configMu.RLock()
+	pr := globalConfig.ParallelRetry
+	configMu.RUnlock()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Parallel retry test endpoint",
+		"config":  pr,
+	})
+}
+
+func handleSelectedInstances(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		InstanceIDs []int  `json:"instanceIds"`
+		Action      string `json:"action"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	go func() {
+		for _, id := range req.InstanceIDs {
+			instancesMu.RLock()
+			inst, ok := instances[id]
+			instancesMu.RUnlock()
+			if !ok {
+				continue
+			}
+			switch req.Action {
+			case "start":
+				inst.mu.Lock()
+				if inst.Data.Status != "RUNNING" && inst.Data.Status != "COMPLETED" {
+					inst.Data.Status = "RUNNING"
+					inst.Data.StartTime = time.Now()
+					inst.Data.Step = "STARTING"
+					inst.Data.OTP = ""
+					inst.Data.ReservationID = ""
+					inst.Data.AppointmentDate = ""
+					inst.Data.PaymentURL = ""
+					inst.Data.NetworkLogs = make([]NetworkRequest, 0)
+					inst.Data.RetryCount = 0
+					inst.Data.ManualOTP = ""
+					inst.Data.PausedStep = ""
+					inst.mu.Unlock()
+					ctx, cancel := context.WithCancel(context.Background())
+					inst.mu.Lock()
+					inst.cancel = cancel
+					inst.mu.Unlock()
+					go runInstanceFlow(ctx, inst, id)
+				} else {
+					inst.mu.Unlock()
+				}
+			case "stop":
+				inst.mu.Lock()
+				if inst.cancel != nil {
+					inst.cancel()
+				}
+				inst.Data.Status = "STOPPED"
+				inst.Data.Step = "STOPPED"
+				inst.Data.PausedStep = ""
+				inst.mu.Unlock()
+			case "pause":
+				inst.mu.Lock()
+				if inst.cancel != nil && inst.Data.Status == "RUNNING" {
+					inst.cancel()
+					inst.Data.Status = "PAUSED"
+					inst.Data.Step = "PAUSED"
+					inst.Data.PausedStep = inst.Data.Step
+				}
+				inst.mu.Unlock()
+			case "resume":
+				inst.mu.Lock()
+				if inst.Data.Status == "PAUSED" {
+					inst.Data.Status = "RUNNING"
+					inst.Data.StartTime = time.Now()
+					inst.Data.Step = "RESUMING"
+					inst.Data.ManualOTP = ""
+					inst.mu.Unlock()
+					ctx, cancel := context.WithCancel(context.Background())
+					inst.mu.Lock()
+					inst.cancel = cancel
+					inst.mu.Unlock()
+					go runInstanceFlow(ctx, inst, id)
+				} else {
+					inst.mu.Unlock()
+				}
+			case "delete":
+				inst.mu.Lock()
+				if inst.cancel != nil {
+					inst.cancel()
+				}
+				inst.mu.Unlock()
+				instancesMu.Lock()
+				delete(instances, id)
+				instancesMu.Unlock()
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		saveInstancesToFile()
+	}()
+	json.NewEncoder(w).Encode(map[string]string{"status": "processing"})
+}
+
+func handleManualOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		InstanceID int    `json:"instanceId"`
+		OTP        string `json:"otp"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.OTP == "" {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "OTP is required"})
+		return
+	}
+	if len(req.OTP) != 6 {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "OTP must be 6 digits"})
+		return
+	}
+	instancesMu.RLock()
+	inst, ok := instances[req.InstanceID]
+	instancesMu.RUnlock()
+	if !ok {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "Instance not found"})
+		return
+	}
+	inst.mu.Lock()
+	inst.Data.ManualOTP = req.OTP
+	inst.Data.ManualOTPTime = time.Now()
+	inst.mu.Unlock()
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Manual OTP received"})
+}
+
+func handleSaveAppointmentID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		InstanceID    int    `json:"instanceId"`
+		AppointmentID string `json:"appointmentId"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	instancesMu.RLock()
+	inst, ok := instances[req.InstanceID]
+	instancesMu.RUnlock()
+	if !ok {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "Instance not found"})
+		return
+	}
+	inst.mu.Lock()
+	inst.Data.AppointmentID = req.AppointmentID
+	inst.Data.HasAppointmentID = req.AppointmentID != ""
+	inst.mu.Unlock()
+	saveInstancesToFile()
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Appointment ID saved"})
+}
+
+func startSlotMonitor() {
+	slotMonitorMu.Lock()
+	if slotMonitorRunning {
+		slotMonitorMu.Unlock()
+		return
+	}
+	slotMonitorRunning = true
+	slotMonitorStopChan = make(chan bool)
+	slotMonitorMu.Unlock()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-slotMonitorStopChan:
+				slotMonitorMu.Lock()
+				slotMonitorRunning = false
+				slotMonitorMu.Unlock()
+				return
+			case <-ticker.C:
+				configMu.RLock()
+				enabled := globalConfig.SlotMonitor.Enabled
+				configMu.RUnlock()
+				if !enabled {
+					return
+				}
+				client := getHTTPClient("")
+				req, _ := http.NewRequest("GET", API_SLOT_STATUS_URL, nil)
+				for k, v := range browserHeaders {
+					req.Header.Set(k, v)
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					return
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode == 200 {
+					b, _ := io.ReadAll(resp.Body)
+					var result map[string]interface{}
+					json.Unmarshal(b, &result)
+					slotAvailable := false
+					if data, ok := result["data"].(map[string]interface{}); ok {
+						if slotOpen, ok := data["slotOpen"].(bool); ok {
+							slotAvailable = slotOpen
+						} else if available, ok := data["available"].(bool); ok {
+							slotAvailable = available
+						}
+					}
+					broadcastUpdate(map[string]interface{}{
+						"type": "slot_status", "available": slotAvailable, "data": result, "timestamp": time.Now(),
+					})
+				}
+			}
+		}
+	}()
+}
+
+func stopSlotMonitor() {
+	slotMonitorMu.Lock()
+	defer slotMonitorMu.Unlock()
+	if slotMonitorRunning && slotMonitorStopChan != nil {
+		close(slotMonitorStopChan)
+		slotMonitorRunning = false
+	}
+}
+
+// ==================== DASHBOARD HTML ====================
+
+func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(getDashboardHTML()))
+}
+
+func getDashboardHTML() string {
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>IVAC Payment Bot - Ultimate Dashboard v9 (Single + Parallel Mode)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; min-height: 100vh; color: #1e293b; }
+        .sidebar { position: fixed; left: 0; top: 0; width: 280px; height: 100vh; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #fff; z-index: 100; transition: all 0.3s ease; overflow-y: auto; }
+        .sidebar-header { padding: 24px 20px; border-bottom: 1px solid #334155; margin-bottom: 20px; }
+        .sidebar-header h2 { font-size: 20px; font-weight: 700; background: linear-gradient(135deg, #60a5fa, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .sidebar-header p { font-size: 11px; color: #94a3b8; margin-top: 8px; }
+        .sidebar-nav { padding: 0 16px; }
+        .nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 8px; border-radius: 12px; cursor: pointer; transition: all 0.2s; color: #94a3b8; }
+        .nav-item:hover { background: #334155; color: #fff; }
+        .nav-item.active { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+        .nav-icon { font-size: 20px; width: 24px; }
+        .nav-label { font-weight: 500; font-size: 14px; }
+        .main-content { margin-left: 280px; padding: 24px 32px; min-height: 100vh; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 28px; }
+        .stat-card { background: #fff; border-radius: 20px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; transition: all 0.2s; cursor: pointer; }
+        .stat-card:hover { transform: translateY(-2px); box-shadow: 0 12px 24px -12px rgba(0,0,0,0.15); }
+        .stat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .stat-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; }
+        .stat-icon { font-size: 28px; opacity: 0.7; }
+        .stat-number { font-size: 36px; font-weight: 700; color: #1e293b; }
+        .stat-total .stat-number { color: #3b82f6; }
+        .stat-running .stat-number { color: #10b981; }
+        .stat-failed .stat-number { color: #ef4444; }
+        .stat-completed .stat-number { color: #8b5cf6; }
+        .slot-monitor-bar { background: #fff; border-radius: 16px; padding: 16px 24px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #e2e8f0; flex-wrap: wrap; gap: 12px; }
+        .slot-status { display: flex; align-items: center; gap: 16px; }
+        .slot-label { font-weight: 600; color: #64748b; }
+        .slot-value { font-weight: 700; font-size: 16px; padding: 4px 12px; border-radius: 20px; background: #f1f5f9; }
+        .slot-value.on { background: #d1fae5; color: #065f46; }
+        .slot-value.off { background: #fee2e2; color: #991b1b; }
+        .switch { position: relative; display: inline-block; width: 52px; height: 28px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: 0.2s; border-radius: 28px; }
+        .slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background-color: white; transition: 0.2s; border-radius: 50%; }
+        input:checked + .slider { background-color: #10b981; }
+        input:checked + .slider:before { transform: translateX(24px); }
+        .action-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn { padding: 8px 16px; border: none; border-radius: 10px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
+        .btn-success { background: #10b981; color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-info { background: #8b5cf6; color: white; }
+        .btn-info:hover { background: #7c3aed; }
+        .btn-outline { background: transparent; border: 1px solid #cbd5e1; color: #475569; }
+        .btn-outline:hover { background: #f1f5f9; }
+        .mode-switch-container { display: flex; align-items: center; gap: 8px; background: #f1f5f9; padding: 4px; border-radius: 40px; }
+        .mode-btn { padding: 6px 16px; border: none; border-radius: 30px; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; }
+        .mode-btn.active { background: #10b981; color: white; box-shadow: 0 2px 8px rgba(16,185,129,0.3); }
+        .mode-btn.inactive { background: #e2e8f0; color: #64748b; }
+        .table-container { background: #fff; border-radius: 20px; overflow-x: auto; border: 1px solid #e2e8f0; }
+        table { width: 100%; border-collapse: collapse; }
+        .config-table { min-width: 800px; }
+        .instances-table { min-width: 1800px; }
+        th { background: #f8fafc; color: #475569; padding: 14px 12px; text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; }
+        td { padding: 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; vertical-align: middle; }
+        tr:hover td { background: #fafbff; }
+        .step-badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; display: inline-block; white-space: nowrap; }
+        .step-ready { background: #e2e8f0; color: #475569; }
+        .step-starting, .step-logging_in, .step-verifying_otp, .step-reserving_slot,
+        .step-initiating_payment, .step-monitoring_slots, .step-booking_config_loading {
+            background: #dbeafe; color: #1e40af; animation: pulse 1.5s infinite;
+        }
+        .step-logged_in, .step-otp_verified, .step-booking_config_loaded {
+            background: #d1fae5; color: #065f46;
+        }
+        .step-waiting_otp { background: #ede9fe; color: #5b21b6; animation: pulse 1.5s infinite; }
+        .step-otp_received { background: #d1fae5; color: #065f46; }
+        .step-slot_reserved { background: #fed7aa; color: #92400e; }
+        .step-payment_ready { background: #fef3c7; color: #92400e; }
+        .step-completed { background: #e9d5ff; color: #6b21a5; }
+        .step-failed { background: #fee2e2; color: #991b1b; }
+        .step-stopped { background: #e2e8f0; color: #475569; }
+        .step-paused { background: #fef3c7; color: #92400e; }
+        .step-resuming { background: #ccfbf1; color: #0f766e; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .status-badge { padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; display: inline-block; }
+        .status-200, .status-201 { background: #d1fae5; color: #065f46; }
+        .status-400, .status-401, .status-403, .status-404, .status-500 { background: #fee2e2; color: #991b1b; }
+        .password-cell { font-family: 'Monaco', 'Courier New', monospace; font-size: 12px; font-weight: 600; color: #64748b; }
+        .password-toggle { cursor: pointer; margin-left: 6px; font-size: 12px; opacity: 0.6; display: inline-block; }
+        .password-toggle:hover { opacity: 1; }
+        .client-name { font-weight: 600; color: #3b82f6; }
+        .device-id-badge { background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 6px; font-family: monospace; font-size: 10px; }
+        .client-ip { background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 12px; font-family: monospace; font-size: 11px; }
+        .proxy-ip { background: #f3e8ff; color: #6b21a5; padding: 2px 8px; border-radius: 12px; font-family: monospace; font-size: 11px; }
+        .endpoint-name { font-weight: 600; color: #3b82f6; font-size: 11px; }
+        .request-id { background: #f1f5f9; color: #64748b; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 10px; }
+        .otp-display { background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 8px; font-family: monospace; font-weight: 700; font-size: 13px; }
+        .waiting-otp-badge { background: #ede9fe; color: #5b21b6; padding: 4px 8px; border-radius: 16px; font-size: 10px; font-weight: bold; animation: pulse 1.5s infinite; }
+        .manual-otp-container { display: flex; gap: 5px; align-items: center; min-width: 160px; }
+        .manual-otp-input { width: 80px; padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-family: monospace; font-size: 14px; font-weight: bold; text-align: center; letter-spacing: 3px; }
+        .manual-otp-input:focus { outline: none; border-color: #3b82f6; }
+        .appointment-container { display: flex; gap: 5px; align-items: center; min-width: 200px; }
+        .appointment-input { width: 120px; padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-family: monospace; font-size: 12px; }
+        .payment-cell { display: flex; flex-direction: column; gap: 5px; }
+        .payment-url { font-size: 10px; color: #64748b; word-break: break-all; }
+        .btn-pay { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; font-weight: 700; padding: 4px 12px; font-size: 11px; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; }
+        .modal-content { background: #fff; border-radius: 24px; padding: 28px; width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; }
+        .modal-content h3 { margin-bottom: 20px; color: #1e293b; }
+        .modal-content input, .modal-content select, .modal-content textarea { width: 100%; padding: 10px 14px; margin-bottom: 12px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 14px; }
+        .modal-content input:focus { outline: none; border-color: #3b82f6; }
+        .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+        .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 12px; background: #1e293b; color: white; font-weight: 500; z-index: 1100; display: none; animation: slideInRight 0.3s ease; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .toast-success { background: #10b981; }
+        .toast-error { background: #ef4444; }
+        .toast-info { background: #3b82f6; }
+        .add-form, .bulk-actions { background: #fff; border-radius: 16px; padding: 20px; margin-bottom: 20px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; border: 1px solid #e2e8f0; }
+        .add-form input, .add-form select { flex: 1; min-width: 120px; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 14px; }
+        .add-form input:focus, .add-form select:focus { outline: none; border-color: #3b82f6; }
+        .bulk-actions { background: #f8fafc; padding: 12px 20px; }
+        .tab-content { display: none; animation: fadeIn 0.3s ease; }
+        .tab-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .config-panel { background: #fff; border-radius: 20px; padding: 24px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .config-panel h3 { color: #1e293b; margin-bottom: 20px; font-size: 18px; font-weight: 600; }
+        .config-group { margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+        .config-group label { width: 200px; color: #475569; font-weight: 500; font-size: 13px; }
+        .config-group input, .config-group select { flex: 1; max-width: 300px; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 8px; }
+        .checkbox-col { width: 30px; text-align: center; }
+        .checkbox-col input { width: 18px; height: 18px; cursor: pointer; }
+        .menu-toggle { display: none; position: fixed; top: 20px; left: 20px; z-index: 101; background: #1e293b; color: white; border: none; padding: 12px; border-radius: 10px; cursor: pointer; font-size: 18px; }
+        .encryption-badge, .service-badge { padding: 4px 10px; border-radius: 20px; font-size: 10px; font-weight: 600; display: inline-block; margin: 2px; }
+        .encryption-badge { background: #e9d5ff; color: #6b21a5; }
+        .service-badge { background: #dbeafe; color: #1e40af; }
+        .log-content { background: #0f172a; border-radius: 12px; padding: 16px; max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
+        .log-line { padding: 6px 8px; border-bottom: 1px solid #1e293b; color: #94a3b8; word-break: break-all; white-space: pre-wrap; }
+        .log-line.log-error { color: #f87171; }
+        .log-line.log-success { color: #4ade80; }
+        .log-line.log-info { color: #38bdf8; }
+        .log-line.log-warning { color: #fbbf24; }
+        .log-filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .log-filter-btn { padding: 6px 12px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; font-size: 12px; transition: all 0.2s; }
+        .log-filter-btn:hover { background: #e2e8f0; }
+        .log-filter-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
+        .network-logs { background: #0f172a; border-radius: 8px; padding: 12px; margin-top: 16px; max-height: 200px; overflow-y: auto; }
+        .net-log-row { display: flex; gap: 12px; padding: 6px 8px; border-bottom: 1px solid #1e293b; font-size: 11px; font-family: monospace; flex-wrap: wrap; }
+        .net-endpoint { font-weight: 600; color: #38bdf8; min-width: 100px; }
+        .net-status-ok { color: #4ade80; min-width: 45px; }
+        .net-status-err { color: #f87171; min-width: 45px; }
+        .net-ip { color: #a78bfa; min-width: 120px; }
+        .net-proxy { color: #c4b5fd; min-width: 120px; }
+        .net-dur { color: #94a3b8; min-width: 80px; }
+        .net-body { color: #94a3b8; flex: 1; word-break: break-all; }
+        .proxy-status-ok { color: #10b981; font-weight: bold; }
+        .proxy-status-fail { color: #ef4444; font-weight: bold; }
+        .proxy-enabled { color: #10b981; }
+        .proxy-disabled { color: #ef4444; }
+        .host-stats-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .host-stats-table th, .host-stats-table td { padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        .host-stats-table th { color: #3b82f6; font-weight: 600; }
+        .host-healthy { color: #10b981; }
+        .host-unhealthy { color: #ef4444; }
+        .parallel-section { margin-bottom: 32px; }
+        .parallel-section h4 { color: #1e293b; font-size: 16px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+        .hits-input { font-family: monospace; font-size: 12px; }
+        @media (max-width: 1024px) { .menu-toggle { display: block; } .sidebar { transform: translateX(-100%); } .sidebar.open { transform: translateX(0); } .main-content { margin-left: 0; padding: 20px; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+    </style>
+</head>
+<body>
+<button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+
+<div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+        <h2>🏥 IVAC Payment Bot</h2>
+        <p>
+            <span class="encryption-badge">🔐 LOGIN ENCRYPTION (start_pos=2, length=25) v2</span>
+            <span class="encryption-badge">🔐 RESERVE ENCRYPTION (start_pos=4, length=29) v2</span>
+            <span class="service-badge">💳 dg-epay Payment</span>
+            <span class="service-badge">⚡ SINGLE + PARALLEL MODE</span>
+            <span class="service-badge">🔍 SLOT MONITOR</span>
+            <span class="service-badge">📝 MANUAL OTP</span>
+            <span class="service-badge">🎯 CAPTCHA SERVICES</span>
+            <span class="service-badge">🌐 PROXY + HOST IP ROUTING</span>
+        </p>
+    </div>
+    <div class="sidebar-nav">
+        <div class="nav-item active" data-tab="instances"><span class="nav-icon">📋</span><span class="nav-label">Instances</span></div>
+        <div class="nav-item" data-tab="config"><span class="nav-icon">⚙️</span><span class="nav-label">Configuration</span></div>
+        <div class="nav-item" data-tab="parallel"><span class="nav-icon">⚡</span><span class="nav-label">Parallel Config</span></div>
+        <div class="nav-item" data-tab="proxies"><span class="nav-icon">🌐</span><span class="nav-label">Proxies</span></div>
+        <div class="nav-item" data-tab="hosts"><span class="nav-icon">🖥️</span><span class="nav-label">Hosts</span></div>
+    </div>
+</div>
+
+<div class="main-content">
+    <div id="toast" class="toast"></div>
+    
+    <div class="stats-grid">
+        <div class="stat-card stat-total"><div class="stat-header"><span class="stat-title">Total Instances</span><span class="stat-icon">📊</span></div><div class="stat-number" id="totalCount">0</div></div>
+        <div class="stat-card stat-running"><div class="stat-header"><span class="stat-title">Running</span><span class="stat-icon">▶️</span></div><div class="stat-number" id="runningCount">0</div></div>
+        <div class="stat-card stat-failed"><div class="stat-header"><span class="stat-title">Failed</span><span class="stat-icon">❌</span></div><div class="stat-number" id="failedCount">0</div></div>
+        <div class="stat-card stat-completed"><div class="stat-header"><span class="stat-title">Completed</span><span class="stat-icon">✅</span></div><div class="stat-number" id="completedCount">0</div></div>
+    </div>
+    
+    <div class="slot-monitor-bar">
+        <div class="slot-status"><span class="slot-label">🔍 Slot Monitor:</span><span class="slot-value off" id="slotMonitorStatus">OFF</span></div>
+        <label class="switch"><input type="checkbox" id="slotMonitorSwitch" onchange="toggleSlotMonitor(this.checked)"><span class="slider"></span></label>
+        
+        <div style="display: flex; align-items: center; gap: 20px; margin-left: auto;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-weight: 600; color: #64748b;">Request Mode:</span>
+                <div class="mode-switch-container">
+                    <button id="singleModeBtn" class="mode-btn active">⚡ Single Hit</button>
+                    <button id="parallelModeBtn" class="mode-btn inactive">⚡ Parallel</button>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-weight: 600; color: #64748b;">Parallel Retry:</span>
+                <label class="switch" style="width: 52px; height: 28px;">
+                    <input type="checkbox" id="parallelRetryToggle" onchange="toggleParallelRetryMode(this.checked)">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+        
+        <div class="action-buttons"><button class="btn btn-info btn-sm" onclick="testCaptcha()">🎯 Test CAPTCHA</button><button class="btn btn-primary btn-sm" onclick="testParallel()">⚡ Test Parallel</button><button class="btn btn-success btn-sm" onclick="testParallelRetry()">🔄 Test Retry</button></div>
+    </div>
+    
+    <div id="tab-instances" class="tab-content active">
+        <div class="add-form">
+            <input type="text" id="clientName" placeholder="Client Name">
+            <input type="text" id="loginPhone" placeholder="Login Phone">
+            <input type="password" id="password" placeholder="Password">
+            <input type="text" id="otpPhone" placeholder="OTP Phone">
+            <select id="highCom"><option>DHAKA</option><option>CHITAGONG</option><option>KHULNA</option><option>JASHORE</option><option>RAJSHAHI</option><option>SYLHET</option></select>
+            <select id="visaType"><option>MEDICAL</option><option>ENTRY</option><option>DOUBLE ENTRY</option><option>STUDENT</option><option>BUSINESS</option><option>TOURIST</option></select>
+            <button class="btn btn-primary" onclick="addInstance()">➕ Add</button>
+            <button class="btn btn-success" id="toggleAllBtn" onclick="toggleAll()">▶️ Start All</button>
+            <button class="btn btn-warning" id="pauseAllBtn" onclick="togglePause()">⏸️ Pause All</button>
+            <button class="btn btn-outline" onclick="refresh()">🔄 Refresh</button>
+        </div>
+        
+        <div class="bulk-actions">
+            <span>📌 Bulk Actions:</span>
+            <button class="btn btn-success btn-sm" onclick="bulkAction('start')">▶️ Start</button>
+            <button class="btn btn-danger btn-sm" onclick="bulkAction('stop')">⏹️ Stop</button>
+            <button class="btn btn-warning btn-sm" onclick="bulkAction('pause')">⏸️ Pause</button>
+            <button class="btn btn-info btn-sm" onclick="bulkAction('resume')">▶️ Resume</button>
+            <button class="btn btn-danger btn-sm" onclick="bulkAction('delete')">🗑️ Delete</button>
+            <label style="margin-left:auto;display:flex;align-items:center;gap:8px"><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()"> Select All</label>
+        </div>
+        
+        <div class="table-container">
+            <table class="instances-table"><thead>
+<th class="checkbox-col"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll()"></th><th>ID</th><th>Client</th><th>Phone</th><th>Password</th><th>Type</th><th>Step</th><th>OTP</th><th>Device ID</th><th>Appointment ID</th><th>RID</th><th>Endpoint</th><th>Status</th><th>Host IP</th><th>Proxy IP</th><th>Payment Url</th><th>Last Log</th><th>Action</th>
+</thead><tbody id="tableBody"></tbody>
+</table>
+        </div>
+    </div>
+    
+    <div id="tab-config" class="tab-content">
+        <div class="config-panel"><h3>🔑 CAPTCHA Configuration</h3>
+            <div class="config-group"><label>Service:</label><select id="captchaService"><option value="capsolver">Capsolver</option><option value="capmonster">CapMonster</option><option value="2captcha">2Captcha</option></select></div>
+            <div class="config-group"><label>API Key:</label><input type="text" id="captchaApiKey" placeholder="Enter API key"><button class="btn btn-info" onclick="testCaptcha()" style="margin-left:8px">Test</button></div>
+            <div class="config-group"><label>Login Expiry (sec):</label><input type="number" id="loginCaptchaExpiry" value="210"></div>
+            <div class="config-group"><label>Reserve Expiry (sec):</label><input type="number" id="reserveCaptchaExpiry" value="90"></div>
+            <div class="config-group"><label>Queue Size:</label><input type="number" id="queueSize" value="3"></div>
+            <div class="config-group"><label>Reserve Queue Size:</label><input type="number" id="reserveQueueSize" value="2"></div></div>
+        <div class="config-panel"><h3>⚙️ Advanced Settings</h3>
+            <div class="config-group"><label>Auto CAPTCHA:</label><select id="autoCaptcha"><option value="true">ON</option><option value="false">OFF</option></select></div>
+            <div class="config-group"><label>Auto OTP:</label><select id="autoOtp"><option value="true">ON</option><option value="false">OFF</option></select></div>
+            <div class="config-group"><label>OTP Retry Delay (ms):</label><input type="number" id="otpRetryDelay" value="5000"></div>
+            <div class="config-group"><label>Login Mode:</label><select id="loginMode"><option value="auto">Auto</option><option value="manual">Manual</option></select></div>
+            <div class="config-group"><label>Slot Check Interval (sec):</label><input type="number" id="slotCheckInterval" value="15"></div></div>
+        <div class="config-panel"><button class="btn btn-primary" onclick="saveConfig()">💾 Save Config</button><button class="btn btn-outline" onclick="loadConfig()">🔄 Reload</button></div>
+    </div>
+    
+    <div id="tab-parallel" class="tab-content">
+        <div class="parallel-section"><h4>⚡ TRADITIONAL PARALLEL (One-time parallel requests)</h4><div class="table-container"><table class="config-table"><thead>\
+<th>API Endpoint</th><th>Parallel Hits</th><th>Delay Between Hits (ms)</th>\
+</thead><tbody>
+             <tr><td>🔐 Signin (Login)</td><td><input type="number" id="parallelSigninHits" value="15" style="width:100px"></td><td><input type="number" id="parallelSigninMs" value="300" style="width:100px"></td></tr>
+             <tr><td>📱 Verify OTP</td><td><input type="number" id="parallelVerifyHits" value="25" style="width:100px"></td><td><input type="number" id="parallelVerifyMs" value="500" style="width:100px"></td></tr>
+             <tr><td>📌 Reserve Slot</td><td><input type="number" id="parallelReserveHits" value="10" style="width:100px"></td><td><input type="number" id="parallelReserveMs" value="1000" style="width:100px"></td></tr>
+             <tr><td>📋 Booking Config</td><td><input type="number" id="parallelBookingHits" value="10" style="width:100px"></td><td><input type="number" id="parallelBookingMs" value="500" style="width:100px"></td></tr>
+             <tr><td>💳 Initiate Payment</td><td><input type="number" id="parallelInitiateHits" value="2" style="width:100px"></td><td><input type="number" id="parallelInitiateMs" value="100" style="width:100px"></td></tr>
+        </tbody></table></div><button class="btn btn-primary" onclick="saveTraditionalParallelConfig()" style="margin-top:16px">💾 Save Traditional Config</button></div>
+        
+        <div class="parallel-section"><h4>🔄 PARALLEL RETRY (Retry until success - First success wins)</h4><div class="table-container"><table class="config-table"><thead>\
+<th>API Endpoint</th><th>Enabled</th><th>Hit Pattern</th><th>Delay (ms)</th><th>Reuse Captcha</th>\
+</thead><tbody>
+             <tr><td>🔐 Signin</td><td><input type="checkbox" id="parallelRetrySigninEnabled"></td><td><input type="text" id="parallelRetrySigninHits" placeholder="3,2,5,4" class="hits-input" style="width:150px"></td><td><input type="number" id="parallelRetrySigninDelay" value="100" style="width:100px"></td><td><input type="checkbox" id="parallelRetrySigninReuse"></td></tr>
+             <tr><td>📱 Verify OTP</td><td><input type="checkbox" id="parallelRetryVerifyEnabled"></td><td><input type="text" id="parallelRetryVerifyHits" placeholder="3,2,5,4" class="hits-input" style="width:150px"></td><td><input type="number" id="parallelRetryVerifyDelay" value="100" style="width:100px"></td><td><span style="color:#94a3b8">N/A</span></td></tr>
+             <tr><td>📌 Reserve</td><td><input type="checkbox" id="parallelRetryReserveEnabled"></td><td><input type="text" id="parallelRetryReserveHits" placeholder="3,2,5,4" class="hits-input" style="width:150px"></td><td><input type="number" id="parallelRetryReserveDelay" value="100" style="width:100px"></td><td><input type="checkbox" id="parallelRetryReserveReuse"></td></tr>
+             <tr><td>📋 Booking</td><td><input type="checkbox" id="parallelRetryBookingEnabled"></td><td><input type="text" id="parallelRetryBookingHits" placeholder="3,2,5,4" class="hits-input" style="width:150px"></td><td><input type="number" id="parallelRetryBookingDelay" value="100" style="width:100px"></td><td><span style="color:#94a3b8">N/A</span></td></tr>
+             <tr><td>💳 Payment</td><td><input type="checkbox" id="parallelRetryPaymentEnabled"></td><td><input type="text" id="parallelRetryPaymentHits" placeholder="3,2,5,4" class="hits-input" style="width:150px"></td><td><input type="number" id="parallelRetryPaymentDelay" value="100" style="width:100px"></td><td><span style="color:#94a3b8">N/A</span></td></tr>
+        </tbody></table></div><div style="margin-top:16px; display:flex; gap:12px;"><button class="btn btn-primary" onclick="saveParallelRetryConfig()">💾 Save Parallel Retry Config</button><button class="btn btn-info" onclick="testParallelRetry()">🔄 Test Parallel Retry</button></div></div>
+    </div>
+    
+    <div id="tab-proxies" class="tab-content">
+        <div class="config-panel"><h3>🌍 Proxy Management</h3><div style="margin-bottom:16px"><button class="btn btn-primary" onclick="openAddProxyModal()">➕ Add Proxy</button><button class="btn btn-info" onclick="testAllProxies()">🔍 Test All</button><span style="margin-left:10px">Total: <span id="proxyTotalCount">0</span> | Enabled: <span id="proxyEnabledCount">0</span></span></div><div id="proxyTableContainer"></div></div>
+    </div>
+    
+    <div id="tab-hosts" class="tab-content">
+        <div class="config-panel"><h3>🖥️ Host IP Configuration</h3><textarea id="hostIPsText" rows="4" style="width:100%" placeholder="Enter IP addresses one per line"></textarea><div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap"><button class="btn btn-primary" onclick="saveHostIPs()">💾 Save Host IPs</button><button class="btn btn-info" onclick="loadHostStats()">📊 Refresh Stats</button><button class="btn btn-warning" onclick="applyHostIP()">🌐 Apply Best Host</button><button class="btn btn-danger" onclick="removeHostEntry()">❌ Remove Host Entry</button><button class="btn btn-outline" onclick="resetBestHost()">🔄 Reset Best Host</button></div><div id="hostStats" style="margin-top:20px"></div></div>
+    </div>
+</div>
+
+<div id="logModal" class="modal"><div class="modal-content"><h3>📋 Instance Logs - #<span id="logIdSpan"></span> (<span id="logNameSpan"></span>)</h3><div class="log-filter-bar"><button class="log-filter-btn active" onclick="filterLogs('all', this)">All</button><button class="log-filter-btn" onclick="filterLogs('api', this)">API</button><button class="log-filter-btn" onclick="filterLogs('otp', this)">OTP</button><button class="log-filter-btn" onclick="filterLogs('captcha', this)">Captcha</button><button class="log-filter-btn" onclick="filterLogs('step', this)">Step</button><button class="log-filter-btn" onclick="filterLogs('error', this)">Error</button><button class="log-filter-btn" onclick="filterLogs('success', this)">Success</button></div><div class="modal-buttons" style="margin-bottom:12px"><button class="btn btn-info" onclick="copyAllLogs()">📋 Copy All Logs</button><button class="btn btn-warning" onclick="clearLogs()">🗑️ Clear Logs</button></div><div id="logContent" class="log-content"></div><h4 style="margin-top:16px;color:#3b82f6">📡 Network Requests</h4><div id="networkLogContent" class="network-logs"></div><div class="modal-buttons" style="margin-top:16px"><button class="btn btn-primary" onclick="closeLogModal()">Close</button></div></div></div>
+
+<div id="editModal" class="modal"><div class="modal-content"><h3>✏️ Edit Instance</h3><input type="hidden" id="editId"><input type="text" id="editClientName" placeholder="Client Name"><input type="text" id="editLoginPhone" placeholder="Login Phone"><input type="password" id="editPassword" placeholder="Password"><input type="text" id="editOtpPhone" placeholder="OTP Phone"><select id="editHighCom"><option>DHAKA</option><option>CHITAGONG</option><option>KHULNA</option><option>JASHORE</option><option>RAJSHAHI</option><option>SYLHET</option></select><select id="editVisaType"><option>MEDICAL</option><option>ENTRY</option><option>DOUBLE ENTRY</option><option>STUDENT</option><option>BUSINESS</option><option>TOURIST</option></select><div class="modal-buttons"><button class="btn btn-primary" onclick="saveEdit()">💾 Save</button><button class="btn btn-danger" onclick="closeEditModal()">❌ Cancel</button></div></div></div>
+
+<div id="proxyModal" class="modal"><div class="modal-content"><h3 id="proxyModalTitle">Add Proxy</h3><input type="hidden" id="proxyEditId"><select id="proxyType"><option value="auto">Auto Detect</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks4">SOCKS4</option><option value="socks5">SOCKS5</option></select><input type="text" id="proxyHost" placeholder="Host / IP"><input type="number" id="proxyPort" placeholder="Port"><input type="text" id="proxyUser" placeholder="Username (optional)"><input type="password" id="proxyPassword" placeholder="Password (optional)"><label style="margin:10px 0"><input type="checkbox" id="proxyEnabled" checked> Enable Proxy</label><div class="modal-buttons"><button class="btn btn-primary" onclick="saveProxy()">💾 Save</button><button class="btn btn-danger" onclick="closeProxyModal()">❌ Cancel</button></div></div></div>
+
+<script>
+var selectedInstances = new Set();
+var allRunning = false;
+var allPaused = false;
+var passwordVisible = {};
+var ws = null;
+var currentLogFilter = 'all';
+var cachedLogData = { logs: [], networkLogs: [] };
+var instancesDataCache = [];
+
+function showToast(msg, type) { var t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast toast-' + type; t.style.display = 'block'; setTimeout(function() { t.style.display = 'none'; }, 3000); }
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+function showTab(tabName) { document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); }); document.querySelectorAll('.nav-item').forEach(function(b) { b.classList.remove('active'); }); document.getElementById('tab-' + tabName).classList.add('active'); document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active'); if (tabName === 'config') loadConfig(); if (tabName === 'parallel') { loadTraditionalParallelConfig(); loadParallelRetryConfig(); } if (tabName === 'proxies') loadProxies(); if (tabName === 'hosts') { loadHostIPs(); loadHostStats(); } }
+document.querySelectorAll('.nav-item').forEach(function(item) { item.addEventListener('click', function() { showTab(this.getAttribute('data-tab')); }); });
+
+function togglePassword(id) { passwordVisible[id] = !passwordVisible[id]; var cell = document.getElementById('password_cell_' + id); var password = cell.getAttribute('data-password'); cell.innerHTML = passwordVisible[id] ? password : '••••••••'; cell.innerHTML += ' <span class="password-toggle" onclick="event.stopPropagation();togglePassword(' + id + ')">' + (passwordVisible[id] ? '🙈' : '👁️') + '</span>'; }
+
+function getStepBadge(step) { var cls = 'step-' + (step || 'ready').toLowerCase().replace(/ /g, '_'); var labels = { 'READY': 'Ready', 'STARTING': 'Starting', 'LOGGING_IN': 'Login', 'LOGGED_IN': 'Logged', 'WAITING_OTP': 'Waiting OTP', 'OTP_RECEIVED': 'OTP', 'VERIFYING_OTP': 'Verify', 'OTP_VERIFIED': 'Verified', 'BOOKING_CONFIG_LOADING': 'Loading Config', 'BOOKING_CONFIG_LOADED': 'Config Loaded', 'MONITORING_SLOTS': 'Monitoring', 'RESERVING_SLOT': 'Reserve', 'SLOT_RESERVED': 'Reserved', 'INITIATING_PAYMENT': 'Payment', 'PAYMENT_READY': 'Pay', 'COMPLETED': 'Done', 'FAILED': 'Failed', 'STOPPED': 'Stopped', 'PAUSED': 'Paused', 'RESUMING': 'Resuming' }; return '<span class="step-badge ' + cls + '">' + (labels[step] || step || 'Ready') + '</span>'; }
+function getStatusBadge(code) { if (code >= 200 && code < 300) return '<span class="status-badge status-' + code + '">✓ ' + code + '</span>'; if (code >= 400) return '<span class="status-badge status-' + code + '">✗ ' + code + '</span>'; return '<span class="status-badge">-</span>'; }
+function submitManualOTP(instanceId, otp) { if (!otp || otp.length !== 6) return; showToast('Submitting OTP for #' + instanceId + '...', 'info'); fetch('/api/manualOTP', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instanceId: instanceId, otp: otp }) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'ok') { showToast('✅ OTP submitted for #' + instanceId, 'success'); refresh(); } else { showToast('❌ Failed: ' + res.message, 'error'); } }); }
+function saveAppointmentID(instanceId) { var inp = document.getElementById('appointment_input_' + instanceId); var appointmentId = inp.value.trim(); fetch('/api/saveAppointmentId', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instanceId: instanceId, appointmentId: appointmentId }) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'ok') { showToast('Appointment ID saved for #' + instanceId, 'success'); refresh(); } else { showToast('Failed to save', 'error'); } }); }
+function showLogs(id) { var inst = instancesDataCache.find(function(i) { return i.id === id; }); if (!inst) return; document.getElementById('logIdSpan').innerText = id; document.getElementById('logNameSpan').innerText = inst.clientName || inst.loginPhone || ''; document.getElementById('logModal').style.display = 'flex'; currentLogFilter = 'all'; document.querySelectorAll('.log-filter-btn').forEach(function(b) { b.classList.remove('active'); }); document.querySelector('.log-filter-btn').classList.add('active'); fetchLogs(id); }
+function closeLogModal() { document.getElementById('logModal').style.display = 'none'; }
+function fetchLogs(id) { fetch('/api/logs?id=' + id).then(function(r) { return r.json(); }).then(function(d) { cachedLogData = d; renderLogs(); renderNetworkLogs(d.networkLogs || []); }); }
+function filterLogs(filter, btn) { currentLogFilter = filter; document.querySelectorAll('.log-filter-btn').forEach(function(b) { b.classList.remove('active'); }); if (btn) btn.classList.add('active'); renderLogs(); }
+function renderLogs() { var logs = cachedLogData.logs || []; var filtered = logs; if (currentLogFilter !== 'all') { filtered = logs.filter(function(l) { var lf = currentLogFilter; if (lf === 'api') return l.includes('📡') || l.includes('HTTP') || l.includes('API') || l.includes('PARALLEL'); if (lf === 'otp') return l.includes('📱') || l.includes('OTP'); if (lf === 'captcha') return l.includes('🔑') || l.includes('captcha') || l.includes('📦'); if (lf === 'step') return l.includes('🔄') || l.includes('🚀') || l.includes('✨'); if (lf === 'error') return l.includes('❌') || l.includes('FAILED') || l.includes('Error'); if (lf === 'success') return l.includes('✅') || l.includes('COMPLETED'); return true; }); } var c = document.getElementById('logContent'); c.innerHTML = ''; filtered.forEach(function(l) { var cls = 'log-line'; if (l.includes('❌') || l.includes('FAILED')) cls += ' log-error'; else if (l.includes('✅') || l.includes('COMPLETED')) cls += ' log-success'; else if (l.includes('📡')) cls += ' log-info'; else if (l.includes('⚠️')) cls += ' log-warning'; var div = document.createElement('div'); div.className = cls; div.textContent = l; c.appendChild(div); }); c.scrollTop = c.scrollHeight; }
+function renderNetworkLogs(netLogs) { var c = document.getElementById('networkLogContent'); c.innerHTML = ''; if (!netLogs || netLogs.length === 0) { c.innerHTML = '<div style="color:#64748b;padding:8px">No network requests</div>'; return; } netLogs.forEach(function(n) { var sc = (n.statusCode >= 200 && n.statusCode < 300) ? 'net-status-ok' : 'net-status-err'; var body = n.respBody || n.statusText || '-'; if (body.length > 80) body = body.substring(0, 80) + '...'; c.innerHTML += '<div class="net-log-row"><span class="net-endpoint">' + n.endpoint + '</span><span class="' + sc + '">' + n.statusCode + '</span><span>' + n.method + '</span><span class="net-ip">🌐 ' + (n.clientIp || '-') + '</span><span class="net-proxy">🔒 ' + (n.proxyIp || '-') + '</span><span class="net-dur">' + n.duration + '</span><span class="net-body" title="' + (n.respBody || '').replace(/"/g, '&quot;') + '">' + body + '</span></div>'; }); }
+function copyAllLogs() { if (cachedLogData.logs) { navigator.clipboard.writeText(cachedLogData.logs.join('\n')).then(function() { showToast('Logs copied!', 'success'); }); } }
+function clearLogs() { var id = document.getElementById('logIdSpan').innerText; if (!id) return; if (!confirm('Clear logs for #' + id + '?')) return; fetch('/api/clearLogs?id=' + id, { method: 'POST' }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'cleared') { cachedLogData = { logs: [], networkLogs: [] }; renderLogs(); renderNetworkLogs([]); showToast('Logs cleared!', 'success'); refresh(); } }); }
+function refresh() { fetch('/api/instances').then(function(r) { return r.json(); }).then(function(data) { document.getElementById('totalCount').innerText = data.total; document.getElementById('runningCount').innerText = data.running; document.getElementById('failedCount').innerText = data.failed; document.getElementById('completedCount').innerText = data.completed; instancesDataCache = data.instances; var tbody = document.getElementById('tableBody'); tbody.innerHTML = ''; data.instances.forEach(function(inst) { var row = tbody.insertRow(); var cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'instance-checkbox'; cb.value = inst.id; cb.checked = selectedInstances.has(inst.id); cb.onchange = (function(id) { return function(e) { if(e.target.checked) selectedInstances.add(id); else selectedInstances.delete(id); }; })(inst.id); row.insertCell(0).appendChild(cb); row.insertCell(1).innerHTML = '<b>#' + inst.id + '</b>'; row.insertCell(2).innerHTML = '<span class="client-name">' + (inst.clientName || '-') + '</span>'; row.insertCell(3).innerHTML = inst.loginPhone + '<br><small>' + (inst.otpPhone || '') + '</small>'; var passwordCell = row.insertCell(4); passwordCell.className = 'password-cell'; passwordCell.id = 'password_cell_' + inst.id; passwordCell.setAttribute('data-password', inst.password || ''); passwordCell.innerHTML = '•••••••• <span class="password-toggle" onclick="event.stopPropagation();togglePassword(' + inst.id + ')">👁️</span>'; row.insertCell(5).innerHTML = inst.type || (inst.highCom + ' - ' + inst.visaType); row.insertCell(6).innerHTML = getStepBadge(inst.step); if (inst.step === 'WAITING_OTP') { row.insertCell(7).innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric"><span class="waiting-otp-badge">⏳ Waiting</span></div>'; setTimeout(function() { var inp = document.getElementById('otp_input_' + inst.id); if (inp) { inp.focus(); inp.oninput = function(e) { var val = e.target.value.replace(/[^0-9]/g, ''); if (val.length === 6) submitManualOTP(inst.id, val); }; } }, 100); } else if (inst.otp) { row.insertCell(7).innerHTML = '<span class="otp-display">' + inst.otp + '</span>'; } else { row.insertCell(7).innerHTML = '-'; } row.insertCell(8).innerHTML = '<span class="device-id-badge">' + (inst.deviceId || '-') + '</span>'; row.insertCell(9).innerHTML = '<div class="appointment-container"><input type="text" class="appointment-input" id="appointment_input_' + inst.id + '" placeholder="Appointment ID" value="' + (inst.appointmentId || '') + '"><button class="btn btn-primary btn-sm" onclick="saveAppointmentID(' + inst.id + ')">💾 Save</button></div>'; row.insertCell(10).innerHTML = '<small>' + (inst.reservationId ? inst.reservationId.substring(0, 8) + '...' : '-') + '<br>' + (inst.appointmentDate || '') + '</small>'; row.insertCell(11).innerHTML = '<span class="endpoint-name">' + (inst.endpoint || '-') + '</span>' + (inst.requestId ? '<br><span class="request-id">' + inst.requestId.substring(0, 12) + '...</span>' : ''); row.insertCell(12).innerHTML = inst.statusCode ? getStatusBadge(inst.statusCode) : '-'; row.insertCell(13).innerHTML = inst.clientIp && inst.clientIp != '-' ? '<span class="client-ip">🌐 ' + inst.clientIp + '</span>' : (inst.currentHostIP || '-'); row.insertCell(14).innerHTML = inst.proxyIp && inst.proxyIp != '-' ? '<span class="proxy-ip">🔒 ' + inst.proxyIp + '</span>' : '-'; if (inst.paymentUrl && (inst.step === 'PAYMENT_READY' || inst.step === 'COMPLETED')) { row.insertCell(15).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button><button class="btn btn-success btn-sm" onclick="window.open(\'' + inst.paymentUrl + '\', \'_blank\')">🔗 Open</button></div></div>'; } else { row.insertCell(15).innerHTML = '-'; } row.insertCell(16).innerHTML = '<span style="color:#64748b;font-size:11px">' + (inst.lastLog || '-') + '</span>'; var actionHtml = ''; if (inst.status !== 'RUNNING' && inst.step !== 'COMPLETED' && inst.status !== 'PAUSED') actionHtml += '<button class="btn btn-success btn-sm" onclick="startInstance(' + inst.id + ')">▶️</button> '; if (inst.status === 'RUNNING') actionHtml += '<button class="btn btn-danger btn-sm" onclick="stopInstance(' + inst.id + ')">⏹️</button> '; if (inst.status === 'PAUSED') actionHtml += '<button class="btn btn-info btn-sm" onclick="resumeInstance(' + inst.id + ')">▶️</button> '; actionHtml += '<button class="btn btn-outline btn-sm" onclick="showLogs(' + inst.id + ')">📋</button> <button class="btn btn-outline btn-sm" onclick="openEditModal(' + JSON.stringify(inst).replace(/'/g, "\\'") + ')">✏️</button> <button class="btn btn-outline btn-sm" onclick="deleteInstance(' + inst.id + ')">🗑️</button>'; row.insertCell(17).innerHTML = actionHtml; }); if (data.slotMonitorEnabled !== undefined) { var sw = document.getElementById('slotMonitorSwitch'); if (sw) { sw.checked = data.slotMonitorEnabled; var statusSpan = document.getElementById('slotMonitorStatus'); statusSpan.innerText = data.slotMonitorEnabled ? 'ON' : 'OFF'; statusSpan.className = 'slot-value ' + (data.slotMonitorEnabled ? 'on' : 'off'); } } }); }
+function startInstance(id) { fetch('/api/start?id=' + id, { method: 'POST' }).then(function() { showToast('Started #' + id, 'success'); refresh(); }); }
+function stopInstance(id) { fetch('/api/stop?id=' + id, { method: 'POST' }).then(function() { showToast('Stopped #' + id, 'success'); refresh(); }); }
+function resumeInstance(id) { fetch('/api/start?id=' + id, { method: 'POST' }).then(function() { showToast('Resumed #' + id, 'success'); refresh(); }); }
+function deleteInstance(id) { if (confirm('Delete #' + id + '?')) { fetch('/api/delete?id=' + id, { method: 'DELETE' }).then(function() { selectedInstances.delete(id); refresh(); showToast('Deleted #' + id, 'success'); }); } }
+function addInstance() { var data = { clientName: document.getElementById('clientName').value, loginPhone: document.getElementById('loginPhone').value, password: document.getElementById('password').value, otpPhone: document.getElementById('otpPhone').value, highCom: document.getElementById('highCom').value, visaType: document.getElementById('visaType').value }; if (!data.loginPhone || !data.password || !data.otpPhone) { showToast('Fill required fields!', 'error'); return; } fetch('/api/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(function(r) { return r.json(); }).then(function(res) { showToast('Added #' + res.id, 'success'); document.getElementById('clientName').value = ''; document.getElementById('loginPhone').value = ''; document.getElementById('password').value = ''; document.getElementById('otpPhone').value = ''; refresh(); }); }
+function toggleSelectAll() { var isChecked = document.getElementById('selectAllCheckbox').checked; document.querySelectorAll('.instance-checkbox').forEach(function(cb) { cb.checked = isChecked; if(isChecked) selectedInstances.add(parseInt(cb.value)); else selectedInstances.delete(parseInt(cb.value)); }); }
+function bulkAction(action) { if(selectedInstances.size === 0) { showToast('No instances selected!', 'error'); return; } var ids = Array.from(selectedInstances); fetch('/api/selectedInstances', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instanceIds: ids, action: action }) }).then(function() { showToast(action + ' completed for ' + ids.length + ' instances', 'success'); refresh(); }); }
+function toggleAll() { var action = allRunning ? 'stop' : 'start'; fetch('/api/toggleAll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action }) }).then(function() { allRunning = !allRunning; document.getElementById('toggleAllBtn').innerHTML = allRunning ? '⏹️ Stop All' : '▶️ Start All'; showToast(allRunning ? 'All started' : 'All stopped', 'success'); refresh(); }); }
+function togglePause() { var action = allPaused ? 'resume' : 'pause'; fetch('/api/toggleAll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action }) }).then(function() { allPaused = !allPaused; document.getElementById('pauseAllBtn').innerHTML = allPaused ? '▶️ Resume All' : '⏸️ Pause All'; showToast(allPaused ? 'All paused' : 'All resumed', 'success'); refresh(); }); }
+function loadConfig() { fetch('/api/config').then(function(r) { return r.json(); }).then(function(c) { document.getElementById('captchaService').value = c.captchaService || 'capsolver'; document.getElementById('captchaApiKey').value = c.captchaApiKey || ''; document.getElementById('loginCaptchaExpiry').value = c.loginCaptchaExpiry || 210; document.getElementById('reserveCaptchaExpiry').value = c.reserveCaptchaExpiry || 90; document.getElementById('queueSize').value = c.queueSize || 3; document.getElementById('reserveQueueSize').value = c.reserveQueueSize || 2; document.getElementById('otpRetryDelay').value = c.otpRetryDelay || 5000; document.getElementById('autoCaptcha').value = String(c.autoCaptcha !== false); document.getElementById('autoOtp').value = String(c.autoOtp !== false); document.getElementById('loginMode').value = c.loginMode || 'auto'; document.getElementById('slotCheckInterval').value = c.slotCheckInterval || 15; }); }
+function saveConfig() { var config = { captchaService: document.getElementById('captchaService').value, captchaApiKey: document.getElementById('captchaApiKey').value, loginCaptchaExpiry: parseInt(document.getElementById('loginCaptchaExpiry').value), reserveCaptchaExpiry: parseInt(document.getElementById('reserveCaptchaExpiry').value), queueSize: parseInt(document.getElementById('queueSize').value), reserveQueueSize: parseInt(document.getElementById('reserveQueueSize').value), otpRetryDelay: parseInt(document.getElementById('otpRetryDelay').value), autoCaptcha: document.getElementById('autoCaptcha').value === 'true', autoOtp: document.getElementById('autoOtp').value === 'true', loginMode: document.getElementById('loginMode').value, slotCheckInterval: parseInt(document.getElementById('slotCheckInterval').value) }; fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }).then(function() { showToast('Config saved!', 'success'); }); }
+function loadTraditionalParallelConfig() { fetch('/api/parallelConfig').then(function(r) { return r.json(); }).then(function(d) { var c = d.traditional || {}; document.getElementById('parallelSigninHits').value = c.signinHits || 15; document.getElementById('parallelSigninMs').value = c.signinMs || 300; document.getElementById('parallelVerifyHits').value = c.verifyHits || 25; document.getElementById('parallelVerifyMs').value = c.verifyMs || 500; document.getElementById('parallelReserveHits').value = c.reserveHits || 10; document.getElementById('parallelReserveMs').value = c.reserveMs || 1000; document.getElementById('parallelBookingHits').value = c.bookingHits || 10; document.getElementById('parallelBookingMs').value = c.bookingMs || 500; document.getElementById('parallelInitiateHits').value = c.initiateHits || 2; document.getElementById('parallelInitiateMs').value = c.initiateMs || 100; }); }
+function saveTraditionalParallelConfig() { var traditional = { signinHits: parseInt(document.getElementById('parallelSigninHits').value) || 15, signinMs: parseInt(document.getElementById('parallelSigninMs').value) || 300, verifyHits: parseInt(document.getElementById('parallelVerifyHits').value) || 25, verifyMs: parseInt(document.getElementById('parallelVerifyMs').value) || 500, reserveHits: parseInt(document.getElementById('parallelReserveHits').value) || 10, reserveMs: parseInt(document.getElementById('parallelReserveMs').value) || 1000, bookingHits: parseInt(document.getElementById('parallelBookingHits').value) || 10, bookingMs: parseInt(document.getElementById('parallelBookingMs').value) || 500, initiateHits: parseInt(document.getElementById('parallelInitiateHits').value) || 2, initiateMs: parseInt(document.getElementById('parallelInitiateMs').value) || 100 }; fetch('/api/parallelConfig', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ traditional: traditional }) }).then(function() { showToast('Traditional parallel config saved!', 'success'); }); }
+function loadParallelRetryConfig() { fetch('/api/parallelConfig').then(function(r) { return r.json(); }).then(function(d) { var pr = d.parallelRetry || {}; document.getElementById('parallelRetrySigninEnabled').checked = pr.signin?.enabled || false; document.getElementById('parallelRetrySigninHits').value = (pr.signin?.hits || [3,2,5,4]).join(','); document.getElementById('parallelRetrySigninDelay').value = pr.signin?.delayMs || 100; document.getElementById('parallelRetrySigninReuse').checked = pr.signin?.reuseCaptcha || false; document.getElementById('parallelRetryVerifyEnabled').checked = pr.verify?.enabled || false; document.getElementById('parallelRetryVerifyHits').value = (pr.verify?.hits || [3,2,5,4]).join(','); document.getElementById('parallelRetryVerifyDelay').value = pr.verify?.delayMs || 100; document.getElementById('parallelRetryReserveEnabled').checked = pr.reserve?.enabled || false; document.getElementById('parallelRetryReserveHits').value = (pr.reserve?.hits || [3,2,5,4]).join(','); document.getElementById('parallelRetryReserveDelay').value = pr.reserve?.delayMs || 100; document.getElementById('parallelRetryReserveReuse').checked = pr.reserve?.reuseCaptcha || false; document.getElementById('parallelRetryBookingEnabled').checked = pr.booking?.enabled || false; document.getElementById('parallelRetryBookingHits').value = (pr.booking?.hits || [3,2,5,4]).join(','); document.getElementById('parallelRetryBookingDelay').value = pr.booking?.delayMs || 100; document.getElementById('parallelRetryPaymentEnabled').checked = pr.payment?.enabled || false; document.getElementById('parallelRetryPaymentHits').value = (pr.payment?.hits || [3,2,5,4]).join(','); document.getElementById('parallelRetryPaymentDelay').value = pr.payment?.delayMs || 100; }); }
+function parseHits(str) { return str.split(',').map(Number).filter(function(n) { return !isNaN(n) && n > 0; }); }
+function saveParallelRetryConfig() { var pr = { signin: { enabled: document.getElementById('parallelRetrySigninEnabled').checked, hits: parseHits(document.getElementById('parallelRetrySigninHits').value), delayMs: parseInt(document.getElementById('parallelRetrySigninDelay').value) || 100, reuseCaptcha: document.getElementById('parallelRetrySigninReuse').checked }, verify: { enabled: document.getElementById('parallelRetryVerifyEnabled').checked, hits: parseHits(document.getElementById('parallelRetryVerifyHits').value), delayMs: parseInt(document.getElementById('parallelRetryVerifyDelay').value) || 100, reuseCaptcha: false }, reserve: { enabled: document.getElementById('parallelRetryReserveEnabled').checked, hits: parseHits(document.getElementById('parallelRetryReserveHits').value), delayMs: parseInt(document.getElementById('parallelRetryReserveDelay').value) || 100, reuseCaptcha: document.getElementById('parallelRetryReserveReuse').checked }, booking: { enabled: document.getElementById('parallelRetryBookingEnabled').checked, hits: parseHits(document.getElementById('parallelRetryBookingHits').value), delayMs: parseInt(document.getElementById('parallelRetryBookingDelay').value) || 100, reuseCaptcha: false }, payment: { enabled: document.getElementById('parallelRetryPaymentEnabled').checked, hits: parseHits(document.getElementById('parallelRetryPaymentHits').value), delayMs: parseInt(document.getElementById('parallelRetryPaymentDelay').value) || 100, reuseCaptcha: false } }; if (pr.signin.hits.length === 0) pr.signin.hits = [3,2,5,4]; if (pr.verify.hits.length === 0) pr.verify.hits = [3,2,5,4]; if (pr.reserve.hits.length === 0) pr.reserve.hits = [3,2,5,4]; if (pr.booking.hits.length === 0) pr.booking.hits = [3,2,5,4]; if (pr.payment.hits.length === 0) pr.payment.hits = [3,2,5,4]; fetch('/api/parallelConfig', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parallelRetry: pr }) }).then(function() { showToast('Parallel retry config saved!', 'success'); }); }
+function testCaptcha() { var apiKey = document.getElementById('captchaApiKey').value; if (!apiKey) { showToast('Please enter API key first!', 'error'); return; } showToast('Testing captcha...', 'info'); fetch('/api/testCaptcha').then(function(r) { return r.json(); }).then(function(d) { if(d.success) showToast('✅ CAPTCHA working! Token length: ' + d.tokenLength, 'success'); else showToast('❌ Failed: ' + d.message, 'error'); }); }
+function testParallel() { showToast('Testing traditional parallel...', 'info'); fetch('/api/testParallel').then(function(r) { return r.json(); }).then(function(d) { if(d.success) showToast('Parallel test completed!', 'success'); else showToast('Test failed', 'error'); }); }
+function testParallelRetry() { showToast('Testing parallel retry...', 'info'); fetch('/api/testParallelRetry').then(function(r) { return r.json(); }).then(function(d) { showToast('Parallel retry config loaded', 'success'); }); }
+function toggleSlotMonitor(en) { fetch('/api/slotMonitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: en }) }).then(function() { showToast('Slot Monitor ' + (en ? 'ON' : 'OFF'), 'success'); refresh(); }); }
+function loadProxies() { fetch('/api/proxies').then(function(r) { return r.json(); }).then(function(d) { document.getElementById('proxyTotalCount').innerText = d.count || 0; document.getElementById('proxyEnabledCount').innerText = d.enabled || 0; var html = '<div class="table-container"><table class="config-table"><thead>\
+<th>Status</th><th>Enabled</th><th>Type</th><th>Host:Port</th><th>Auth</th><th>Response</th><th>Last Test</th><th>Actions</th>\
+</thead><tbody>'; (d.proxies || []).forEach(function(p) { html += '<tr><td>' + (p.testPass ? '<span class="proxy-status-ok">✓ Working</span>' : '<span class="proxy-status-fail">✗ Failed</span>') + '</td><td>' + (p.enabled ? '<span class="proxy-enabled">Enabled</span>' : '<span class="proxy-disabled">Disabled</span>') + '</td><td>' + p.type.toUpperCase() + '</td><td>' + p.host + ':' + p.port + '</td><td>' + (p.user ? p.user : '-') + '</td><td>' + (p.responseMs ? p.responseMs + 'ms' : '-') + '</td><td>' + (p.lastTest ? new Date(p.lastTest).toLocaleTimeString() : '-') + '</td><td><button class="btn btn-outline btn-sm" onclick="editProxy(\'' + p.id + '\')">✏️</button> <button class="btn btn-danger btn-sm" onclick="deleteProxy(\'' + p.id + '\')">🗑️</button></td></tr>'; }); html += '</tbody></table></div>'; document.getElementById('proxyTableContainer').innerHTML = html; }); }
+function openAddProxyModal() { document.getElementById('proxyModalTitle').innerText = 'Add Proxy'; document.getElementById('proxyEditId').value = ''; document.getElementById('proxyType').value = 'auto'; document.getElementById('proxyHost').value = ''; document.getElementById('proxyPort').value = ''; document.getElementById('proxyUser').value = ''; document.getElementById('proxyPassword').value = ''; document.getElementById('proxyEnabled').checked = true; document.getElementById('proxyModal').style.display = 'flex'; }
+function editProxy(id) { fetch('/api/proxies').then(function(r) { return r.json(); }).then(function(d) { var proxy = d.proxies.find(function(p) { return p.id === id; }); if (proxy) { document.getElementById('proxyModalTitle').innerText = 'Edit Proxy'; document.getElementById('proxyEditId').value = proxy.id; document.getElementById('proxyType').value = proxy.type; document.getElementById('proxyHost').value = proxy.host; document.getElementById('proxyPort').value = proxy.port; document.getElementById('proxyUser').value = proxy.user || ''; document.getElementById('proxyPassword').value = proxy.password || ''; document.getElementById('proxyEnabled').checked = proxy.enabled; document.getElementById('proxyModal').style.display = 'flex'; } }); }
+function closeProxyModal() { document.getElementById('proxyModal').style.display = 'none'; }
+function saveProxy() { var id = document.getElementById('proxyEditId').value; var proxy = { id: id, type: document.getElementById('proxyType').value, host: document.getElementById('proxyHost').value, port: parseInt(document.getElementById('proxyPort').value), user: document.getElementById('proxyUser').value, password: document.getElementById('proxyPassword').value, enabled: document.getElementById('proxyEnabled').checked }; if (!proxy.host || !proxy.port) { showToast('Host and Port are required!', 'error'); return; } var action = id ? 'update' : 'add'; fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action, proxy: proxy }) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'added' || res.status === 'updated') { showToast('Proxy ' + res.status + '!', 'success'); closeProxyModal(); loadProxies(); } }); }
+function deleteProxy(id) { if (confirm('Delete this proxy?')) { fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', proxy: { id: id } }) }).then(function() { showToast('Proxy deleted!', 'success'); loadProxies(); }); } }
+function testAllProxies() { showToast('Testing all proxies...', 'info'); fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'testAll' }) }).then(function() { setTimeout(function() { loadProxies(); showToast('Proxy testing completed!', 'success'); }, 5000); }); }
+function loadHostIPs() { fetch('/api/hostIPs').then(function(r) { return r.json(); }).then(function(d) { document.getElementById('hostIPsText').value = (d.hostIPs || []).join('\n'); }); }
+function saveHostIPs() { var rawText = document.getElementById('hostIPsText').value; fetch('/api/hostIPs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rawText: rawText }) }).then(function() { showToast('Host IPs saved!', 'success'); loadHostIPs(); }); }
+function loadHostStats() { fetch('/api/hostStats').then(function(r) { return r.json(); }).then(function(d) { var html = '<div class="table-container"><table class="host-stats-table"><thead><tr><th>IP Address (Target)</th><th>Success</th><th>Failed</th><th>Rate</th><th>Last Used</th><th>Health</th></tr></thead><tbody>'; d.stats.forEach(function(s) { var healthClass = s.isHealthy ? 'host-healthy' : 'host-unhealthy'; html += '<tr><td><b>' + s.ip + '</b></td><td>' + s.successCount + '</td><td>' + s.failedCount + '</td><td>' + (s.successRate * 100).toFixed(1) + '%</td><td>' + new Date(s.lastUsed).toLocaleTimeString() + '</td><td class="' + healthClass + '">' + (s.isHealthy ? '✓ Healthy' : '✗ Unhealthy') + '</td></tr>'; }); html += '</tbody></table></div>'; document.getElementById('hostStats').innerHTML = html; if (d.bestHost && d.bestHost !== '-') showToast('Best host: ' + d.bestHost, 'info'); }); }
+function applyHostIP() { fetch('/api/hostStats').then(function(r) { return r.json(); }).then(function(d) { if (d.bestHost && d.bestHost !== '-') { fetch('/api/applyHost', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: d.bestHost }) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'ok') showToast('Best host applied!', 'success'); else showToast('Error: ' + res.message, 'error'); }); } else { showToast('No best host available', 'error'); } }); }
+function removeHostEntry() { fetch('/api/applyHost', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: '' }) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'ok') showToast('Host entry removed!', 'success'); else showToast('Error: ' + res.message, 'error'); }); }
+function resetBestHost() { fetch('/api/resetHost', { method: 'POST' }).then(function() { showToast('Best host reset!', 'success'); loadHostStats(); }); }
+function openEditModal(inst) { document.getElementById('editId').value = inst.id; document.getElementById('editClientName').value = inst.clientName || ''; document.getElementById('editLoginPhone').value = inst.loginPhone; document.getElementById('editPassword').value = inst.password || ''; document.getElementById('editOtpPhone').value = inst.otpPhone; document.getElementById('editHighCom').value = inst.highCom || 'DHAKA'; document.getElementById('editVisaType').value = inst.visaType || 'MEDICAL'; document.getElementById('editModal').style.display = 'flex'; }
+function saveEdit() { var data = { id: parseInt(document.getElementById('editId').value), clientName: document.getElementById('editClientName').value, loginPhone: document.getElementById('editLoginPhone').value, password: document.getElementById('editPassword').value, otpPhone: document.getElementById('editOtpPhone').value, highCom: document.getElementById('editHighCom').value, visaType: document.getElementById('editVisaType').value }; fetch('/api/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(function(r) { return r.json(); }).then(function(res) { if (res.status === 'updated') { showToast('Instance #' + data.id + ' updated!', 'success'); closeEditModal(); refresh(); } }); }
+function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
+function copyToClipboard(text) { navigator.clipboard.writeText(text).then(function() { showToast('Copied!', 'success'); }); }
+
+var currentRequestMode = 'single';
+var parallelRetryEnabled = false;
+
+function toggleRequestMode(mode) {
+    currentRequestMode = mode;
+    var singleBtn = document.getElementById('singleModeBtn');
+    var parallelBtn = document.getElementById('parallelModeBtn');
+    
+    if (mode === 'single') {
+        singleBtn.className = 'mode-btn active';
+        parallelBtn.className = 'mode-btn inactive';
+        showToast('Single Hit Mode Activated - Each request will retry until success', 'info');
+    } else {
+        singleBtn.className = 'mode-btn inactive';
+        parallelBtn.className = 'mode-btn active';
+        showToast('Parallel Mode Activated - Multiple parallel requests will retry until success', 'info');
+    }
+    
+    fetch('/api/requestMode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode })
+    }).catch(function(err) { console.error('Failed to save mode:', err); });
+}
+
+function toggleParallelRetryMode(enabled) {
+    parallelRetryEnabled = enabled;
+    var statusText = enabled ? 'enabled' : 'disabled';
+    showToast('Parallel Retry ' + statusText.toUpperCase(), enabled ? 'success' : 'info');
+    
+    fetch('/api/parallelRetryMode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled })
+    }).catch(function(err) { console.error('Failed to save parallel retry mode:', err); });
+}
+
+function loadRequestMode() {
+    fetch('/api/requestMode').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.mode === 'parallel') {
+            currentRequestMode = 'parallel';
+            document.getElementById('singleModeBtn').className = 'mode-btn inactive';
+            document.getElementById('parallelModeBtn').className = 'mode-btn active';
+        } else {
+            currentRequestMode = 'single';
+            document.getElementById('singleModeBtn').className = 'mode-btn active';
+            document.getElementById('parallelModeBtn').className = 'mode-btn inactive';
+        }
+    }).catch(function(err) { console.error('Failed to load mode:', err); });
+    
+    fetch('/api/parallelRetryMode').then(function(r) { return r.json(); }).then(function(data) {
+        parallelRetryEnabled = data.enabled || false;
+        document.getElementById('parallelRetryToggle').checked = parallelRetryEnabled;
+    }).catch(function(err) { console.error('Failed to load parallel retry mode:', err); });
+}
+
+document.getElementById('singleModeBtn').addEventListener('click', function() { toggleRequestMode('single'); });
+document.getElementById('parallelModeBtn').addEventListener('click', function() { toggleRequestMode('parallel'); });
+
+function connectWebSocket() { ws = new WebSocket('ws://' + location.host + '/ws'); ws.onopen = function() { console.log('WebSocket connected'); }; ws.onmessage = function(e) { try { var d = JSON.parse(e.data); if (d.type === 'payment_url') showToast('💰 Payment URL for #' + d.instanceId, 'success'); if (d.type === 'slot_status') showToast('📅 Slot ' + (d.available ? 'OPEN!' : 'CLOSED'), d.available ? 'success' : 'info'); refresh(); } catch(e) {} }; ws.onclose = function() { setTimeout(connectWebSocket, 5000); }; }
+connectWebSocket(); 
+loadRequestMode();
+refresh(); 
+setInterval(refresh, 5000); 
+setInterval(function() { var m = document.getElementById('logModal'); if (m && m.style.display === 'flex') { var id = document.getElementById('logIdSpan').innerText; if (id) fetchLogs(id); } }, 30000);
+</script>
+</body>
+</html>`
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano())
+	loadConfig()
+	loadInstances()
+	loadProxies()
+	GetHostRouter()
+	configMu.RLock()
+	if globalConfig.SlotMonitor.Enabled {
+		startSlotMonitor()
+	}
+	configMu.RUnlock()
+
+	http.HandleFunc("/", serveDashboard)
+	http.HandleFunc("/ws", websocketHandler)
+	http.HandleFunc("/api/instances", getInstances)
+	http.HandleFunc("/api/start", startInstanceHandler)
+	http.HandleFunc("/api/stop", stopInstanceHandler)
+	http.HandleFunc("/api/delete", deleteInstanceHandler)
+	http.HandleFunc("/api/add", addInstanceHandler)
+	http.HandleFunc("/api/update", updateInstanceHandler)
+	http.HandleFunc("/api/toggleAll", toggleAllHandler)
+	http.HandleFunc("/api/config", handleConfig)
+	http.HandleFunc("/api/parallelConfig", handleParallelConfig)
+	http.HandleFunc("/api/slotMonitor", handleSlotMonitor)
+	http.HandleFunc("/api/logs", handleGetLogs)
+	http.HandleFunc("/api/clearLogs", handleClearLogs)
+	http.HandleFunc("/api/proxies", handleProxies)
+	http.HandleFunc("/api/hostIPs", handleHostIPs)
+	http.HandleFunc("/api/applyHost", handleApplyHost)
+	http.HandleFunc("/api/hostStats", handleHostStats)
+	http.HandleFunc("/api/resetHost", handleResetHost)
+	http.HandleFunc("/api/requestMode", handleRequestMode)
+	http.HandleFunc("/api/parallelRetryMode", handleParallelRetryMode)
+	http.HandleFunc("/api/testCaptcha", testCaptchaHandler)
+	http.HandleFunc("/api/testParallel", testParallelHandler)
+	http.HandleFunc("/api/testParallelRetry", testParallelRetryHandler)
+	http.HandleFunc("/api/selectedInstances", handleSelectedInstances)
+	http.HandleFunc("/api/manualOTP", handleManualOTP)
+	http.HandleFunc("/api/saveAppointmentId", handleSaveAppointmentID)
+
+	fmt.Println("")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                    IVAC PAYMENT BOT - NETWORK MONITOR DASHBOARD v9                    ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  🔐 LOGIN ENCRYPTION: start_at=2, length=25 (UPDATED v2)                             ║")
+	fmt.Println("║  🔐 RESERVE ENCRYPTION: start_pos=4, length=29 (UPDATED v2)                          ║")
+	fmt.Println("║  🔐 UNIQUE DEVICE ID PER INSTANCE (20-char random alphanumeric)                       ║")
+	fmt.Println("║  🔄 SINGLE MODE: One request at a time, retry until success                           ║")
+	fmt.Println("║  ⚡ PARALLEL MODE: Multiple requests at once, first success wins                      ║")
+	fmt.Println("║  🔄 PARALLEL RETRY: When enabled, uses hit pattern; when disabled, single batch       ║")
+	fmt.Println("║  ✅ SUCCESS CHECKERS: Login(200+accessToken) | Verify(200+verified)                   ║")
+	fmt.Println("║     Reserve(OK_NEW/RESERVED+reservationId) | Config(200+appointmentId)                ║")
+	fmt.Println("║     Payment(201+webview_url)                                                          ║")
+	fmt.Println("║  ✅ AUTO CANCEL ON SUCCESS: When a request succeeds, all pending                      ║")
+	fmt.Println("║     requests for that endpoint are cancelled immediately                              ║")
+	fmt.Println("║  🔄 CAPTCHA AUTO-REFRESH: On 400 error (captcha invalid/expired),                     ║")
+	fmt.Println("║     automatically solves fresh captcha and retries                                    ║")
+	fmt.Println("║  🔄 SMART HOST IP ROTATION ON RETRY                                                   ║")
+	fmt.Println("║  📌 FLOW WITH/WITHOUT SAVED APPOINTMENT ID                                            ║")
+	fmt.Println("║  🤖 DUAL CAPTCHA QUEUE: Login & Reserve                                               ║")
+	fmt.Println("║  ⏰ CAPTCHA EXPIRY: LOGIN = 3.5 MINUTES | RESERVE = 1.5 MINUTES                       ║")
+	fmt.Println("║  ♻️  CAPTCHA REUSE: Tokens are reused within expiry, auto-refreshed when expired      ║")
+	fmt.Println("║  🔍 SLOT MONITOR: Auto-check slots after OTP verification                             ║")
+	fmt.Println("║  💳 dg-epay PAYMENT GATEWAY INTEGRATION                                               ║")
+	fmt.Println("║  🌍 PROXY MANAGEMENT: Multi-proxy support (Source IP rotation)                        ║")
+	fmt.Println("║  🖥️ HOST IP ROUTING: Route requests to specific backend server IPs                    ║")
+	fmt.Println("║  📝 MANUAL OTP: Type 6-digit OTP → Auto-submit!                                       ║")
+	fmt.Println("║  🔁 AUTO OTP: Automatic fetch from SMS API                                            ║")
+	fmt.Println("║  📊 HTTP STATUS CODES: Shows color-coded status codes in table                        ║")
+	fmt.Println("║  📋 BOOKING CONFIRM: Traditional Parallel + Parallel Retry support                    ║")
+	fmt.Println("║  🎯 CAPTCHA SERVICES: Capsolver, CapMonster, 2Captcha fully integrated                ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  🌐 Dashboard: http://localhost:8080                                                  ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("")
+	fmt.Println("📌 Opening dashboard in your browser...")
+	fmt.Println("")
+
+	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()
+	http.ListenAndServe(":8080", nil)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
