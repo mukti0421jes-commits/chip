@@ -7,7 +7,27 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
+
+// spawnSync would block this process's event loop, which also serves the pages
+// the browser is loading — the run would hang and time out with no output.
+function run(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stderr += d; });
+    const timer = opts.timeout ? setTimeout(() => child.kill('SIGKILL'), opts.timeout) : null;
+    child.on('close', (status, signal) => {
+      if (timer) clearTimeout(timer);
+      resolve({ stdout, stderr, status, signal });
+    });
+    child.on('error', (error) => {
+      if (timer) clearTimeout(timer);
+      resolve({ stdout, stderr, status: 1, error });
+    });
+  });
+}
 
 const DIR = __dirname;
 const BASE_PORT = 9200;
@@ -59,10 +79,12 @@ function startServer(port, bundleFile) {
     }));
 
     console.log(`\n${'='.repeat(60)}\n▶ ${name}  (port ${port})\n${'='.repeat(60)}`);
-    const r = spawnSync('node', [path.join(DIR, 'flow-capture.js'), cfgPath], {
-      encoding: 'utf8', timeout: 180000, cwd: DIR,
+    const r = await run('node', [path.join(DIR, 'flow-capture.js'), cfgPath], {
+      timeout: 180000, cwd: DIR,
     });
     const out = (r.stdout || '') + (r.stderr || '');
+    if (r.error) console.log(`  spawn error: ${r.error.message}`);
+    if (r.status !== 0) console.log(`  exit status: ${r.status}${r.signal ? ' signal ' + r.signal : ''}`);
     process.stdout.write(out.split('\n').filter(l =>
       /✓|→|❌|captured|extracted|error|stuck|complete/i.test(l)
     ).join('\n') + '\n');
