@@ -1,0 +1,5 @@
+# Personal, machine-local Claude Code settings (permission grants etc.) — never shared.
+.claude/settings.local.json
+
+# Go build output
+*.exe
