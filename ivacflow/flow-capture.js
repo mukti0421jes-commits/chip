@@ -658,6 +658,10 @@ function extractFromCaptured(entries, final) {
   if (flowState.capturedDgepayUuid) extracted.dgepayUuid = flowState.capturedDgepayUuid;
   for (const e of entries) {
     const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
+    // Skip the direct-fallback's fabricated URLs (mock-uuid / mock-slot-id /
+    // mock-appointment…). They are our placeholders, not real bundle values,
+    // and must never leak into the extracted output.
+    if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(urlPath)) continue;
     if (!extracted.dgepayUuid) {
       const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(urlPath);
       if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
