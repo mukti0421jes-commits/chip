@@ -705,13 +705,9 @@ function findChromeExe() {
 
 (async () => {
   const exe = findChromeExe();
-  // Trim chromium's cold start so the window appears sooner.
-  const LAUNCH_ARGS = [
-    '--no-first-run', '--no-default-browser-check', '--disable-extensions',
-    '--disable-background-networking', '--disable-component-update',
-    '--disable-sync', '--disable-default-apps', '--no-sandbox',
-    '--disable-features=Translate,MediaRouter,OptimizationHints',
-  ];
+  // A couple of safe, widely-supported flags only — aggressive flag sets made
+  // some machines' first launch fail and fall back after a long timeout.
+  const LAUNCH_ARGS = ['--no-first-run', '--no-default-browser-check'];
   let browser;
   try {
     browser = await chromium.launch({ headless: HEADLESS, args: LAUNCH_ARGS });
