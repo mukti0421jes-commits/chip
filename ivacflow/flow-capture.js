@@ -50,7 +50,7 @@ const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
 
 // ── Extract slotId and dgepayUuid from any IVAC bundle ──
 // Tries ALL array functions in the bundle (not just the first one).
-function extractBundleIds(bundleSrc) {
+function extractBundleIds(bundleSrc, deep) {
   const ids = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
 
   // slotId: plaintext /slots/<uuid>/reserve-slot
@@ -74,8 +74,8 @@ function extractBundleIds(bundleSrc) {
 
   // The rotation brute-force below is very slow (~9s on a 2MB bundle) and only
   // recovers dgepayUuid, which the runtime walk captures anyway. Skip it unless
-  // explicitly asked (cfg.deepIds) — the plaintext slotId above is enough.
-  if (!cfg.deepIds) return ids;
+  // asked (deep) — used lazily as a fallback only when the walk missed the uuid.
+  if (!deep) return ids;
 
   // Find ALL array functions (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
   const arrFnRe = /function (\w{2,3})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function\(\)\{return e\}\)\(\)\}/g;
@@ -115,11 +115,13 @@ function extractBundleIds(bundleSrc) {
 
 // Auto-detect bundle file and extract IDs
 let BUNDLE_IDS = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
+let BUNDLE_SRC = '';   // kept for a lazy deep decode if the walk misses the uuid
 const bundlePath = cfg.bundlePath || '';
 if (bundlePath) {
   try {
     const src = fs.readFileSync(bundlePath, 'utf8');
-    BUNDLE_IDS = extractBundleIds(src);
+    BUNDLE_SRC = src;
+    BUNDLE_IDS = extractBundleIds(src, !!cfg.deepIds);
     console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
   } catch (_) {}
 } else {
@@ -132,7 +134,8 @@ if (bundlePath) {
         if (stat.size > 500000) {
           const src = fs.readFileSync(fp, 'utf8');
           if (src.includes('reserve-slot') && src.includes('appointment')) {
-            BUNDLE_IDS = extractBundleIds(src);
+            BUNDLE_SRC = src;
+            BUNDLE_IDS = extractBundleIds(src, !!cfg.deepIds);
             if (BUNDLE_IDS.slotId) {
               console.log('📦 auto-detected bundle:', f);
               console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
@@ -677,6 +680,16 @@ function extractFromCaptured(entries) {
   // Fallback to static extraction
   if (!extracted.slotId && BUNDLE_IDS.slotId) extracted.slotId = BUNDLE_IDS.slotId;
   if (!extracted.dgepayUuid && BUNDLE_IDS.dgepayUuid) extracted.dgepayUuid = BUNDLE_IDS.dgepayUuid;
+  // Last resort: the walk never hit payment-initiate, so run the slow deep
+  // decode over the bundle's obfuscated strings to recover the real uuid.
+  if (!extracted.dgepayUuid && BUNDLE_SRC) {
+    try {
+      console.log('ℹ walk missed dgepayUuid — deep-decoding bundle (slow)…');
+      const deep = extractBundleIds(BUNDLE_SRC, true);
+      if (deep.dgepayUuid) { extracted.dgepayUuid = deep.dgepayUuid; console.log('  ✓ recovered dgepayUuid via deep decode'); }
+      if (!extracted.slotId && deep.slotId) extracted.slotId = deep.slotId;
+    } catch (_) {}
+  }
   if (extracted.dgepayUuid && !extracted.initiatePath) extracted.initiatePath = '/payment/' + extracted.dgepayUuid + '/dg-epay/initiate';
   return extracted;
 }
