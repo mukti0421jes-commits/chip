@@ -72,6 +72,11 @@ function extractBundleIds(bundleSrc) {
     return decodeURIComponent(n);
   }
 
+  // The rotation brute-force below is very slow (~9s on a 2MB bundle) and only
+  // recovers dgepayUuid, which the runtime walk captures anyway. Skip it unless
+  // explicitly asked (cfg.deepIds) — the plaintext slotId above is enough.
+  if (!cfg.deepIds) return ids;
+
   // Find ALL array functions (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
   const arrFnRe = /function (\w{2,3})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function\(\)\{return e\}\)\(\)\}/g;
   let afm;
