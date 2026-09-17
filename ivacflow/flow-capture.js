@@ -651,7 +651,7 @@ const log = [];
 const responsesMap = {};
 function writeResponses() { try { fs.writeFileSync(RESPONSES_OUT, JSON.stringify(responsesMap, null, 2)); } catch (_) {} }
 
-function extractFromCaptured(entries) {
+function extractFromCaptured(entries, final) {
   const extracted = { dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {} };
   // Use runtime-captured IDs first, then from entries, then from static extraction
   if (flowState.capturedSlotId) extracted.slotId = flowState.capturedSlotId;
@@ -682,7 +682,7 @@ function extractFromCaptured(entries) {
   if (!extracted.dgepayUuid && BUNDLE_IDS.dgepayUuid) extracted.dgepayUuid = BUNDLE_IDS.dgepayUuid;
   // Last resort: the walk never hit payment-initiate, so run the slow deep
   // decode over the bundle's obfuscated strings to recover the real uuid.
-  if (!extracted.dgepayUuid && BUNDLE_SRC) {
+  if (final && !extracted.dgepayUuid && BUNDLE_SRC) {
     try {
       console.log('ℹ walk missed dgepayUuid — deep-decoding bundle (slow)…');
       const deep = extractBundleIds(BUNDLE_SRC, true);
@@ -691,6 +691,12 @@ function extractFromCaptured(entries) {
     } catch (_) {}
   }
   if (extracted.dgepayUuid && !extracted.initiatePath) extracted.initiatePath = '/payment/' + extracted.dgepayUuid + '/dg-epay/initiate';
+  // If the walk captured an initiate call with no uuid segment (older bundles
+  // where the server hadn't added the uuid yet), use that plain path as-is
+  // instead of forcing a {uuid} placeholder.
+  if (!extracted.initiatePath && extracted.endpoints.paymentInitiate) {
+    extracted.initiatePath = extracted.endpoints.paymentInitiate;
+  }
   return extracted;
 }
 
@@ -1684,7 +1690,7 @@ function findChromeExe() {
   }
 
   console.log(`\n💾 captured ${log.length} API call(s) → ${path.join(OUT, 'flow.json')}`);
-  const captured = extractFromCaptured(log);
+  const captured = extractFromCaptured(log, true);
   console.log('📋 extracted:', JSON.stringify(captured, null, 2));
   // For a connected (warm) browser this disconnects and clears our contexts but
   // leaves the shared server running; for our own it closes fully.
