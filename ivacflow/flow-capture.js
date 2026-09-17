@@ -705,13 +705,20 @@ function findChromeExe() {
 
 (async () => {
   const exe = findChromeExe();
+  // Trim chromium's cold start so the window appears sooner.
+  const LAUNCH_ARGS = [
+    '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+    '--disable-background-networking', '--disable-component-update',
+    '--disable-sync', '--disable-default-apps', '--no-sandbox',
+    '--disable-features=Translate,MediaRouter,OptimizationHints',
+  ];
   let browser;
   try {
-    browser = await chromium.launch({ headless: HEADLESS });
+    browser = await chromium.launch({ headless: HEADLESS, args: LAUNCH_ARGS });
   } catch (e) {
     if (!exe) throw e;
     console.log('ℹ using system chromium:', exe);
-    browser = await chromium.launch({ headless: HEADLESS, executablePath: exe });
+    browser = await chromium.launch({ headless: HEADLESS, executablePath: exe, args: LAUNCH_ARGS });
   }
   const context = await browser.newContext();
   await context.addInitScript(turnstileInitScript(MOCK.turnstile));
