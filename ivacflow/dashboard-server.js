@@ -552,8 +552,8 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(cfgFile, JSON.stringify({
           url: 'http://localhost:' + HOST_PORT + '/',
           hostOrigin: 'http://localhost:' + HOST_PORT,
-          headless: true, walkTimeoutMs: 45000, runMs: 60000,
-          speed: 0.2, stepPause: 250,   // fast background extraction (near the safe floor)
+          headless: true, walkTimeoutMs: 55000, runMs: 70000,
+          speed: 0.5, stepPause: 1000,   // safe pace: slow enough that every bundle's walk reaches payment-initiate so the REAL captured path is shown
           connectWs: autoWs,
           bundlePath: bundleFile, out: outDir,
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
