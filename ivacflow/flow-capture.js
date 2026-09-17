@@ -708,13 +708,21 @@ function findChromeExe() {
   // A couple of safe, widely-supported flags only — aggressive flag sets made
   // some machines' first launch fail and fall back after a long timeout.
   const LAUNCH_ARGS = ['--no-first-run', '--no-default-browser-check'];
-  let browser;
-  try {
-    browser = await chromium.launch({ headless: HEADLESS, args: LAUNCH_ARGS });
-  } catch (e) {
-    if (!exe) throw e;
-    console.log('ℹ using system chromium:', exe);
-    browser = await chromium.launch({ headless: HEADLESS, executablePath: exe, args: LAUNCH_ARGS });
+  let browser, connected = false;
+  // Connect to a pre-warmed browser server (dashboard keeps one alive) so we
+  // skip the ~3s chromium cold start; fall back to launching our own.
+  if (cfg.connectWs) {
+    try { browser = await chromium.connect(cfg.connectWs); connected = true; }
+    catch (e) { console.log('ℹ warm connect failed, launching own:', e.message); }
+  }
+  if (!browser) {
+    try {
+      browser = await chromium.launch({ headless: HEADLESS, args: LAUNCH_ARGS });
+    } catch (e) {
+      if (!exe) throw e;
+      console.log('ℹ using system chromium:', exe);
+      browser = await chromium.launch({ headless: HEADLESS, executablePath: exe, args: LAUNCH_ARGS });
+    }
   }
   const context = await browser.newContext();
   await context.addInitScript(turnstileInitScript(MOCK.turnstile));
@@ -1660,6 +1668,8 @@ function findChromeExe() {
   console.log(`\n💾 captured ${log.length} API call(s) → ${path.join(OUT, 'flow.json')}`);
   const captured = extractFromCaptured(log);
   console.log('📋 extracted:', JSON.stringify(captured, null, 2));
+  // For a connected (warm) browser this disconnects and clears our contexts but
+  // leaves the shared server running; for our own it closes fully.
   await browser.close().catch(() => {});
   process.exit(0);
 })().catch((e) => { console.error('flow-capture error:', e); process.exit(1); });

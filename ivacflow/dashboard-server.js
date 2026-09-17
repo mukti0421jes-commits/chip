@@ -17,6 +17,44 @@ const cp = require('child_process');
 const { extract } = require('./extract-core');
 const { buildTemplate } = require('./flow-template');
 
+// Keep chromium browser servers warm so each walk connects instantly instead
+// of paying the ~3s cold start. One headless (background walks) + one headed
+// (visible "browser-এ চালাও"). flow-capture connects via cfg.connectWs.
+let chromiumLib = null;
+try { chromiumLib = require('playwright').chromium; } catch (_) {}
+const warmServers = { headless: null, headed: null };
+function findChromeExe() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !fs.existsSync(root)) return undefined;
+  const stack = [root];
+  while (stack.length) {
+    const d = stack.pop();
+    let ents = []; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.name === 'chrome' || e.name === 'chrome.exe' || e.name === 'headless_shell' || e.name === 'chrome-headless-shell') return p;
+    }
+  }
+  return undefined;
+}
+async function getWarmWs(headless) {
+  if (!chromiumLib) return '';
+  const key = headless ? 'headless' : 'headed';
+  const s = warmServers[key];
+  try {
+    if (s && s.process() && s.process().exitCode == null && !s.process().killed) return s.wsEndpoint();
+  } catch (_) {}
+  const args = ['--no-first-run', '--no-default-browser-check'];
+  try {
+    let srv;
+    try { srv = await chromiumLib.launchServer({ headless, args }); }
+    catch (e) { const exe = findChromeExe(); if (!exe) throw e; srv = await chromiumLib.launchServer({ headless, args, executablePath: exe }); }
+    warmServers[key] = srv;
+    return srv.wsEndpoint();
+  } catch (_) { return ''; }
+}
+
 const SITE = process.env.IVAC_SITE || 'https://appointment.ivacbd.com/';
 
 // GET a URL as text (follows one level of asset resolution). Uses the system's
@@ -510,11 +548,13 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(bundleFile, lastBundle.src);
         try { fs.unlinkSync(path.join(outDir, 'flow.json')); } catch (_) {}
         const cfgFile = path.join(outDir, '.auto-cfg.json');
+        const autoWs = await getWarmWs(true);
         fs.writeFileSync(cfgFile, JSON.stringify({
           url: 'http://localhost:' + HOST_PORT + '/',
           hostOrigin: 'http://localhost:' + HOST_PORT,
           headless: true, walkTimeoutMs: 45000, runMs: 60000,
           speed: 0.2, stepPause: 250,   // fast background extraction (near the safe floor)
+          connectWs: autoWs,
           bundlePath: bundleFile, out: outDir,
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
         }));
@@ -557,8 +597,9 @@ const server = http.createServer(async (req, res) => {
           // hand; all APIs mocked + captured (streamed to flow.json). Return now,
           // dashboard polls /api/probe-flow.
           const responsesFile = path.join(outDir, 'responses.json');
+          const headedWs = await getWarmWs(false);
           fs.writeFileSync(cfgFile, JSON.stringify({ url: site, headless: false, runMs: 900000, out: outDir,
-            hostOrigin: 'http://localhost:' + HOST_PORT, holdOpenMs: 900000, mock,
+            hostOrigin: 'http://localhost:' + HOST_PORT, holdOpenMs: 900000, mock, connectWs: headedWs,
             responsesFile: fs.existsSync(responsesFile) ? responsesFile : undefined,
             steps: [
               { waitMs: 3000 },
@@ -584,7 +625,8 @@ const server = http.createServer(async (req, res) => {
         }
 
         // AUTO (demo / real site): walk signin->initiate with mock data, then finish.
-        fs.writeFileSync(cfgFile, JSON.stringify({ url: site, headless, runMs: 30000, out: outDir, mock,
+        const autoSiteWs = await getWarmWs(headless);
+        fs.writeFileSync(cfgFile, JSON.stringify({ url: site, headless, runMs: 30000, out: outDir, mock, connectWs: autoSiteWs,
           steps: [
             { waitMs: 3500 },
             { fill: 'input[type="tel"], input[name*="phone" i], input[placeholder*="phone" i], input[placeholder*="mobile" i]', value: '$phone' },
@@ -621,8 +663,9 @@ const server = http.createServer(async (req, res) => {
       try {
         const cfgFile = path.join(__dirname, '.live-cfg.json');
         try { fs.unlinkSync(path.join(__dirname, 'flow.json')); } catch (_) {}
+        const liveWs = await getWarmWs(false);
         fs.writeFileSync(cfgFile, JSON.stringify({ url: site, headless: false, runMs: 1800000,
-          out: __dirname, liveCapture: true, holdOpenMs: 1800000,
+          out: __dirname, liveCapture: true, holdOpenMs: 1800000, connectWs: liveWs,
           responsesOut: path.join(__dirname, 'responses.json'), steps: [{ waitMs: 2000 }] }));
         killWalk();
         const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
@@ -667,4 +710,7 @@ server.listen(PORT, () => {
   const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
             : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   try { const c = cp.spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true, windowsHide: true }); c.on('error', () => {}); c.unref(); } catch (_) {}
+  // Pre-warm the headless browser server so the first bundle-drop walk starts
+  // instantly. (The headed one warms lazily on the first "browser-এ চালাও".)
+  getWarmWs(true).then((ws) => { if (ws) console.log('  ⚡ browser pre-warmed — walks start instantly'); });
 });
