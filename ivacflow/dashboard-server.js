@@ -67,6 +67,22 @@ http.createServer((q, s) => {
 let snapshot = { config: null, template: [], allEndpoints: [], bundleName: '', at: '' };
 let lastBundle = { name: '', src: '' };   // raw source of the last-loaded bundle (for "browser-এ চালাও")
 
+// Track the current flow-capture child so a new walk (or a new bundle load)
+// terminates the previous one — otherwise background walks pile up and starve
+// a freshly requested visible browser, making it take ages to appear.
+let currentWalk = null;
+function killWalk() {
+  const c = currentWalk; currentWalk = null;
+  if (!c || c.killed || c.exitCode != null) return;
+  try {
+    if (process.platform === 'win32') {
+      cp.spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+    } else {
+      c.kill('SIGKILL');
+    }
+  } catch (_) {}
+}
+
 function body(req) { return new Promise((res) => { let d = ''; req.on('data', (c) => d += c); req.on('end', () => res(d)); }); }
 
 // read flow.json → per-call endpoint + payload fields + extra headers + cipher "c"
@@ -502,9 +518,10 @@ const server = http.createServer(async (req, res) => {
           bundlePath: bundleFile, out: outDir,
           mock: { phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN_abc123' },
         }));
+        killWalk();
         const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
           { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
-        c.on('error', () => {}); c.unref();
+        c.on('error', () => {}); c.unref(); currentWalk = c;
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, started: true }));
       } catch (e) {
@@ -558,9 +575,10 @@ const server = http.createServer(async (req, res) => {
               { clickText: 'Verify' },
               { waitMs: 2500 },
             ] }));
+          killWalk();
           const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
             { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
-          c.on('error', () => {}); c.unref();
+          c.on('error', () => {}); c.unref(); currentWalk = c;
           res.writeHead(200, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ ok: true, manual: true, note: 'দৃশ্যমান window খুলছে — popup বন্ধ করে Sign In → নিজে হাতে চালান। ধরা-পড়া ডেটা নিচে live আসবে।' }));
         }
@@ -577,9 +595,11 @@ const server = http.createServer(async (req, res) => {
             { click: '#otp button[type="submit"], button[type="submit"]:visible, button:visible:has-text("Verify"), button:visible:has-text("Continue")' },
             { waitMs: 3500 },
           ] }));
+        killWalk();
         await new Promise((resolve, reject) => {
           const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
             { cwd: __dirname, env: Object.assign({}, process.env), windowsHide: true });
+          currentWalk = c;
           let err = ''; c.stderr.on('data', (d) => err += d);
           c.on('error', reject);
           c.on('close', (code) => code === 0 ? resolve() : reject(new Error(err || ('exit ' + code))));
@@ -604,9 +624,10 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(cfgFile, JSON.stringify({ url: site, headless: false, runMs: 1800000,
           out: __dirname, liveCapture: true, holdOpenMs: 1800000,
           responsesOut: path.join(__dirname, 'responses.json'), steps: [{ waitMs: 2000 }] }));
+        killWalk();
         const c = cp.spawn('node', [path.join(__dirname, 'flow-capture.js'), cfgFile],
           { cwd: __dirname, env: Object.assign({}, process.env), stdio: 'ignore', windowsHide: true });
-        c.on('error', () => {}); c.unref();
+        c.on('error', () => {}); c.unref(); currentWalk = c;
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, live: true, note: 'আসল সাইট খুলছে — নিজে login+captcha করে ধাপে ধাপে এগোন; প্রতিটা আসল response responses.json-এ জমা হবে। শেষে এই window বন্ধ করুন।' }));
       } catch (e) {
