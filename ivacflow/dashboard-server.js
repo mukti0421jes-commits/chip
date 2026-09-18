@@ -185,6 +185,10 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
  table{width:100%;border-collapse:collapse;font-size:13px}
  td{padding:5px 8px 5px 0;border-bottom:1px solid var(--line);vertical-align:middle}
  th{text-align:left;color:var(--dim);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;padding:5px 8px 5px 0;border-bottom:1px solid var(--line)}
+ .mini{font-size:11px;padding:3px 8px;border-radius:7px}
+ .a-box{border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-bottom:8px}
+ .a-box.raw{border-style:dashed;opacity:.75}
+ textarea.a-code{width:100%;margin-top:6px;font-family:ui-monospace,Consolas,monospace;font-size:11px;background:transparent;border:1px solid var(--line);border-radius:7px;color:var(--ink);padding:6px 8px}
  td:first-child{width:180px;color:var(--dim);font-size:12.5px}
  .drop{border:2px dashed var(--line);border-radius:11px;padding:16px;text-align:center;cursor:pointer;font-size:14px}
  .drop:hover,.drop.over{border-color:var(--accent)}
@@ -270,7 +274,24 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
        <b id="a-state"><span class="dim">— function পরে</span></b>
      </div>
      <div class="dim" id="a-same" style="font-size:12px;margin:2px 0 8px"></div>
-     <div id="a-roles" class="dim" style="font-size:12.5px">bundle-এর cipher function যোগ হলে এখানে প্রতিটা role-এর (signin · reserve · upload · pay) standalone code — startAt · length · algorithm সহ — বসবে।</div>
+     <div id="a-roles">
+       <div class="a-box" data-role="signin"><b>signin</b> <span class="badge">টেবিল — function পরে</span> <span class="badge">startAt — · length —</span> <span class="dim">algorithm —</span>
+         <div class="dim" style="font-size:11.5px;margin-top:3px">যাচাই: — <span class="dim">(function পরে)</span></div>
+         <div style="display:flex;gap:6px;margin-top:6px"><button class="mini ghost a-copy" data-role="signin" disabled>📋 signin-এর কোড কপি</button><button class="mini ghost a-one" data-role="signin" disabled>শুধু এইটা আবার</button></div>
+         <textarea class="a-code" readonly style="height:90px" placeholder="(function যোগ হলে এখানে signin-এর standalone code — table + function — বসবে)"></textarea></div>
+       <div class="a-box" data-role="reserve"><b>reserve</b> <span class="badge">টেবিল — function পরে</span> <span class="badge">startAt — · length —</span> <span class="dim">algorithm —</span>
+         <div class="dim" style="font-size:11.5px;margin-top:3px">যাচাই: — <span class="dim">(function পরে)</span></div>
+         <div style="display:flex;gap:6px;margin-top:6px"><button class="mini ghost a-copy" data-role="reserve" disabled>📋 reserve-এর কোড কপি</button><button class="mini ghost a-one" data-role="reserve" disabled>শুধু এইটা আবার</button></div>
+         <textarea class="a-code" readonly style="height:90px" placeholder="(function যোগ হলে এখানে reserve-এর standalone code — table + function — বসবে)"></textarea></div>
+       <div class="a-box raw" data-role="upload"><b>upload</b> <span class="badge">RAW — টেবিল লাগে না</span>
+         <div class="dim" style="font-size:11.5px;margin-top:3px">এই bundle-এ upload-এ কাঁচা token গেলে টেবিল ফাঁকা। ঢাকা শুরু হলে এখানেই টেবিল বসবে।</div>
+         <textarea class="a-code" readonly style="height:44px" placeholder="(ফাঁকা — raw token)"></textarea>
+         <div style="margin-top:6px"><button class="mini ghost a-one" data-role="upload" disabled>তবু চেষ্টা করে দেখো</button></div></div>
+       <div class="a-box raw" data-role="pay"><b>pay</b> <span class="badge">RAW — টেবিল লাগে না</span>
+         <div class="dim" style="font-size:11.5px;margin-top:3px">এই bundle-এ pay-এ কাঁচা token গেলে টেবিল ফাঁকা। ঢাকা শুরু হলে এখানেই টেবিল বসবে।</div>
+         <textarea class="a-code" readonly style="height:44px" placeholder="(ফাঁকা — raw token)"></textarea>
+         <div style="margin-top:6px"><button class="mini ghost a-one" data-role="pay" disabled>তবু চেষ্টা করে দেখো</button></div></div>
+     </div>
      <button id="a-run" class="ghost" style="margin-top:8px;font-size:12px;padding:6px 12px" disabled>দুইটাই আবার বের করো <span class="dim">(function পরে)</span></button>
    </div>
  </div>
