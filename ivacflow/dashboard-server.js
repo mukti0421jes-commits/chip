@@ -101,7 +101,15 @@ http.createServer((q, s) => {
     s.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' }); return s.end(lastBundle.src);
   }
   s.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); s.end(HOST_HTML);
-}).listen(HOST_PORT, () => {});
+}).listen(HOST_PORT, () => {}).on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE') {
+    console.log('\n  ⚠ IVAC Node আগে থেকেই চলছে (port ' + HOST_PORT + ' ব্যস্ত)।');
+    console.log('  → এই window বন্ধ করে http://localhost:' + PORT + ' খুলুন,');
+    console.log('    অথবা পুরনো IVAC window/টাস্ক বন্ধ করে আবার চালান।\n');
+    process.exit(1);
+  }
+  throw e;
+});
 let snapshot = { config: null, template: [], allEndpoints: [], bundleName: '', at: '' };
 let lastBundle = { name: '', src: '' };   // raw source of the last-loaded bundle (for "browser-এ চালাও")
 

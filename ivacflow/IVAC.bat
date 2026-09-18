@@ -14,6 +14,10 @@ if not exist "%~dp0node_modules\playwright" (
   call npm install
   call npx playwright install chromium
 )
+REM free the dashboard ports in case a previous IVAC instance is still running.
+for %%P in (8777 8778) do (
+  for /f "tokens=5" %%a in ('netstat -ano ^| findstr :%%P ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>nul
+)
 echo.
 echo Starting IVAC Node dashboard ...
 echo If the browser does not open, go to:  http://localhost:8777
