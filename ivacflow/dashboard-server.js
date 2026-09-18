@@ -347,7 +347,7 @@ $('fetch').onclick=async()=>{
   addLog('⬇ সাইট থেকে bundle নামাচ্ছি…');$('note').textContent='নামছে…';
   const r=await fetch('/api/fetch-bundle',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   const j=await r.json();
-  if(j.ok){addLog('✅ নামানো হলো — '+j.bundleName);render(j);$('save').disabled=false;$('note').textContent='done';}
+  if(j.ok){addLog('✅ নামানো হলো — '+j.bundleName);render(j);$('save').disabled=false;startAutoWalk();}
   else{addLog('❌ '+j.error);$('note').textContent='❌ '+j.error+' (এই মেশিনে ইন্টারনেট/সাইট লাগবে)';}
 };
 let pollTimer=null,autoTimer=null;
@@ -696,6 +696,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { name, js } = await fetchBundleFromSite(site);
         const config = extract(js, { skipInitiate: true });
+        config.ciphers = extractCiphers(js);   // instant per-role cipher extract, like file load
         lastBundle = { name, src: js };   // keep raw so "browser-এ চালাও" can run it
         snapshot = { config, template: buildTemplate(config), allEndpoints: config.allEndpoints || [], bundleName: name, at: new Date().toLocaleString(), source: 'site' };
         res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(Object.assign({ ok: true }, snapshot)));
