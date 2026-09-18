@@ -178,9 +178,19 @@ func (r *Runner) ensureDgEpay() {
 	apply := func() {
 		if r.dgJob.id != "" {
 			r.Config.DgepayID = r.dgJob.id
+			r.Config.noteSource("dgepayId", SrcScan)
 			r.log("💳 dg-epay id ready (live scan): " + r.dgJob.id)
 			if r.OnScanIDs != nil {
 				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID) // auto-fill dashboard input
+			}
+		} else if imp := r.Config.ImportedDgepayID(); imp != "" {
+			// the bundle never carries this uuid in the clear, so a recorded real
+			// request is the only other place it can come from
+			r.Config.DgepayID = imp
+			r.Config.noteSource("dgepayId", SrcImport)
+			r.log("📥 import: dg-epay id → " + imp + " (bundle resolve korte pareni)")
+			if r.OnScanIDs != nil {
+				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID)
 			}
 		} else {
 			r.log("⚠ dg-epay id not resolved — using fallback/manual id (" + r.Config.DgepayID + ")")

@@ -172,7 +172,12 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	r.OnScanIDs = in.OnScanIDs
 	r.OnSignedIn = in.OnSignedIn
 	r.OnVerified = in.OnVerified
-	r.OnScanComplete = in.OnScanComplete
+	r.OnScanComplete = func(ok bool, detail string) {
+		publishScanSources(cfg.Source) // dashboard: where each value came from
+		if in.OnScanComplete != nil {
+			in.OnScanComplete(ok, detail)
+		}
+	}
 	// live retry delays: map "signin/verify/book/reserve/initiate" → StepName.
 	if in.LiveDelaySec != nil {
 		nameOf := map[flow.StepName]string{
@@ -186,6 +191,8 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 			return -1
 		}
 	}
+	// captured-config safety net: used ONLY where the live scan resolves nothing
+	cfg.Imported = getImportedConfig()
 	// manual dashboard overrides win over the live scan
 	cfg.ForcedSlotID, cfg.ForcedDgepayID = getOverrideIDs()
 	if in.RegisterStop != nil {
@@ -199,7 +206,9 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 		in.RegisterClearOTP(r.ClearOTP)
 	}
 
-	if err := flow.RunFullAuto(r, in.Files, in.Mission, in.IvacCenter); err != nil {
+	err := flow.RunFullAuto(r, in.Files, in.Mission, in.IvacCenter)
+	publishScanSources(cfg.Source) // refresh: dg-epay resolves late, after the scan
+	if err != nil {
 		return "", err
 	}
 	return r.PaymentURL, nil

@@ -18,6 +18,8 @@ func (r *Runner) Scan() {
 	sc := getSharedScan(r.Fetcher, AppointmentOrigin, r.Stopped, r.interruptibleSleep, r.log)
 	if sc == nil {
 		r.log("⚠ Bundle unreachable — using CURRENT built-in endpoints + cipher fallback (signin will still work)")
+		// nothing was scanned → every value is a gap the import may be able to fill
+		r.Config.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, r.log)
 		r.applyForcedIDs()
 		if r.OnScanComplete != nil {
 			r.OnScanComplete(false, "bundle unreachable — built-in fallback in use")
@@ -40,6 +42,8 @@ func (r *Runner) Scan() {
 	// it. This keeps the server + captcha pool responsive and Stop working.
 	r.dgJob = StartDgEpayResolve(combined)
 	r.log("💳 dg-epay resolving in background (won't block signin/upload)…")
+	// fill ONLY what this scan could not resolve — the scan always wins
+	r.Config.ApplyImportGaps(sc.ep, sc.cipherOK, r.log)
 	r.applyForcedIDs()
 	r.log("🔍 Scan done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
 
@@ -71,10 +75,12 @@ func boolWord(b bool) string {
 func (r *Runner) applyForcedIDs() {
 	if r.Config.ForcedSlotID != "" {
 		r.Config.SlotID = r.Config.ForcedSlotID
+		r.Config.noteSource("slotId", SrcManual)
 		r.log("📌 Slot ID forced (manual): " + r.Config.SlotID)
 	}
 	if r.Config.ForcedDgepayID != "" {
 		r.Config.DgepayID = r.Config.ForcedDgepayID
+		r.Config.noteSource("dgepayId", SrcManual)
 		r.log("📌 dg-epay ID forced (manual): " + r.Config.DgepayID)
 	}
 	if r.OnScanIDs != nil {

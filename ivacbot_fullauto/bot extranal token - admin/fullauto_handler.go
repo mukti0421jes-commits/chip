@@ -87,7 +87,14 @@ type scanAnnouncement struct {
 var (
 	scanAnnMu sync.Mutex
 	scanAnn   scanAnnouncement
+	scanAnnAt time.Time
 )
+
+// scanAnnounceCooldown suppresses repeat announcements of the SAME scan result.
+// Full Auto All starts every instance against one shared scan, so all of them
+// report the identical result — without this the dashboard would play the
+// "UPDATE SUCCESSFULLY" sound once per instance.
+const scanAnnounceCooldown = 2 * time.Minute
 
 // announceScanComplete records a finished bundle scan for the dashboard. Only a
 // FULL scan (ok) triggers the announcement sound; a fallback scan is logged only.
@@ -96,8 +103,14 @@ func announceScanComplete(ok bool, detail string) {
 		return
 	}
 	scanAnnMu.Lock()
+	defer scanAnnMu.Unlock()
+	// Same result, seen again within the cooldown → the same scan reported by
+	// another instance, not a new one. Leave Seq alone so no second sound plays.
+	if scanAnn.Detail == detail && time.Since(scanAnnAt) < scanAnnounceCooldown {
+		return
+	}
 	scanAnn = scanAnnouncement{Seq: scanAnn.Seq + 1, OK: true, Detail: detail, At: time.Now().Format("15:04:05")}
-	scanAnnMu.Unlock()
+	scanAnnAt = time.Now()
 }
 
 // handleScanEvent reports the latest bundle-scan announcement. The dashboard

@@ -78,3 +78,89 @@ fetcher run where `sms.php` serves the old code three times before the new one.
 ```
 go build ./... && go vet ./... && go test ./...
 ```
+
+---
+
+# Round 2 — captured-config import, and one sound per scan
+
+## 5. "UPDATE SUCCESSFULLY" now plays once, not once per instance
+
+Full Auto All starts every instance against ONE shared bundle scan, so each
+instance reported the same result and `announceScanComplete` bumped the sequence
+number every time — the dashboard played the announcement once per instance.
+
+`announceScanComplete` now ignores a repeat of the same result within
+`scanAnnounceCooldown` (2 min). A genuinely different scan result, or the same
+result after the cooldown, still announces. An incomplete scan still makes no
+sound at all.
+
+## 6. Import an RJ SLOT capture to fill what the scan cannot resolve
+
+Two values are assembled by the site at runtime and therefore never appear as
+plaintext in the bundle: the reserve **slot id** and the **dg-epay uuid**. The
+bundle scan can only guess at them (and regularly fails). They do appear, in the
+clear, in the URL of a real request — which the RJ SLOT userscript records and
+exports as an `rj_dyn_sync` JSON.
+
+`flow/imported.go` parses that export. `import_handler.go` stores it and serves
+the dashboard.
+
+### Precedence — the live scan always wins
+
+    1. manual override (dashboard boxes)
+    2. live bundle scan            ← the normal path, unchanged
+    3. import                      ← only where the scan resolved nothing
+    4. built-in fallback
+
+`Config.ApplyImportGaps` fills **per value**, not as a blob: if the scan
+resolved 10 endpoints and the cipher but missed the slot id, only the slot id is
+filled. When the scan resolves everything, the import is not consulted at all —
+a normal day behaves exactly as before.
+
+### Ground truth: recorded URLs, not the export's id fields
+
+`rj_dyn_captured.slotId` / `payId` are the userscript's own **hardcoded**
+fallbacks, and in a real export they were stale. The parser deliberately ignores
+both and extracts the two ids from the URL of a recorded successful request:
+
+    /slots/([0-9a-zA-Z-]{36})/reserve-slot
+    /payment/([0-9a-zA-Z-]{36})/dg-epay/initiate
+
+Alphanumeric, not hex: IVAC's live ids are not strictly hex
+(`…-368583e830bs`, `…-3s28-…`), and a hex-only pattern drops them silently.
+
+The rule: a value that really worked against the server is true; a value
+hardcoded in someone's source is not.
+
+### Endpoints, headers, cipher
+
+* endpoints — `fam` (the userscript's own scan, re-run every page load) is
+  primary; `epMap` and recorded URLs fill anything it missed
+* headers — fixed headers only; `authorization`, `x-token`, `cookie`,
+  `x-device-id` and friends are never imported
+* cipher — from `rj_enc`, decoded leniently (numbers may arrive as strings)
+
+### Dashboard
+
+* **📥 Import Capture** — paste the JSON, **Preview** shows exactly what would
+  change (old → new per field, plus warnings for anything missing), then Apply
+* a status strip shows where each live value came from:
+  `slot id 139fd4d2… ✅ scan`, `dg-epay 23228961… 📥 import`,
+  `cipher ⚠️ built-in` — so a gap is visible **before** a run, not after it fails
+* the capture persists in `captured_config.json` and survives a restart
+* **🗑️ Clear Import** drops it
+
+Endpoints: `GET/POST /api/importCaptured`, `POST /api/clearImport`,
+`GET /api/configSources`.
+
+## Tests
+
+`flow/imported_test.go` — recorded URLs beat the hardcoded fields, non-hex ids
+survive, endpoints/headers/cipher parse (including numbers-as-strings), secrets
+are never imported, trailing junk is tolerated, foreign JSON is rejected, gaps
+are filled without ever overwriting a scan-resolved value, and no import means
+no change.
+
+`announce_test.go` — ten instances produce one announcement; a changed result
+still announces; the cooldown lapsing announces again; an incomplete scan never
+sounds.

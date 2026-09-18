@@ -6448,8 +6448,25 @@ func getDashboardHTML() string {
             </span>
             <button class="btn btn-primary" onclick="fullAutoAll()" style="font-weight:800;">⚡ Full Auto All</button>
             <button class="btn btn-outline" onclick="cleanCache()" title="Clear resume sessions, captcha queues & dg-epay scan cache">🧹 Clean Cache</button>
+            <button class="btn btn-outline" onclick="toggleImportPanel()" title="Import the RJ SLOT userscript capture (fills only what the live scan cannot resolve)">📥 Import Capture</button>
             <button class="btn btn-outline" onclick="changeAdminPassword()" title="Change the admin login password">🔑 Password</button>
             <button class="btn btn-outline" onclick="refresh()">🔄 Refresh</button>
+        </div>
+        <div id="cfgSourceBar" style="margin:8px 0;padding:8px 12px;background:rgba(13,21,37,0.6);border:1px solid rgba(45,212,191,0.10);border-radius:8px;font-size:11px;color:#94a3b8;display:none;"></div>
+        <div id="importPanel" style="display:none;margin:8px 0;padding:14px;background:rgba(13,21,37,0.75);border:1px solid rgba(124,58,237,0.35);border-radius:10px;">
+            <div style="font-weight:800;color:#c4b5fd;margin-bottom:4px;">📥 Import RJ SLOT Capture</div>
+            <div style="color:#8b93a7;font-size:11px;margin-bottom:8px;line-height:1.6;">
+                RJ SLOT স্ক্রিপ্টে <b>Exp</b> চেপে JSON কপি করে এখানে পেস্ট করুন। এটা <b>শুধু সেই মানগুলো</b> ভরাট করবে
+                যেগুলো লাইভ scan বের করতে পারেনি — scan যা পায় তার উপরে কখনো কথা বলবে না।
+            </div>
+            <textarea id="importJson" rows="5" placeholder='{"_t":"rj_dyn_sync", ...}' style="width:100%;font-family:monospace;font-size:11px;background:rgba(8,13,24,0.8);border:1px solid rgba(124,58,237,0.25);border-radius:8px;color:#e2e8f0;padding:10px;"></textarea>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-info btn-sm" onclick="previewImport()">🔍 Preview</button>
+                <button class="btn btn-primary btn-sm" id="importApplyBtn" onclick="applyImport()" disabled>✅ Apply</button>
+                <button class="btn btn-outline btn-sm" onclick="loadImportState()">↻ Current</button>
+                <button class="btn btn-danger btn-sm" onclick="clearImport()">🗑️ Clear Import</button>
+            </div>
+            <div id="importResult" style="margin-top:10px;font-size:11px;color:#cbd5e1;"></div>
         </div>
         
         <div class="bulk-actions">
@@ -7154,6 +7171,112 @@ function changeAdminPassword(){
         if(d.ok){ showToast('🔑 Admin password change holo — porer login e notun password lagbe','success'); }
         else { alert(d.error||'Failed'); }
       }).catch(function(){ alert('Password change failed'); });
+}
+
+// ===== Import RJ SLOT capture =====
+// The capture fills ONLY what the live bundle scan could not resolve (chiefly the
+// reserve slot id and the dg-epay uuid, which the site builds at runtime and the
+// bundle therefore never spells out). A value the scan found always wins.
+function toggleImportPanel(){
+    var p=document.getElementById('importPanel');
+    if(!p) return;
+    var show = p.style.display==='none';
+    p.style.display = show ? 'block' : 'none';
+    if(show) loadImportState();
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+// renderPreview shows what WOULD change, so a stale export can never be applied blind.
+function renderPreview(p){
+    var el=document.getElementById('importResult');
+    if(!el) return;
+    if(p.error){ el.innerHTML='<span style="color:#f87171;">❌ '+esc(p.error)+'</span>'; return; }
+    var h='';
+    if(p.summary) h+='<div style="color:#94a3b8;margin-bottom:6px;">'+esc(p.summary)+'</div>';
+    (p.warnings||[]).forEach(function(w){ h+='<div style="color:#fbbf24;">⚠ '+esc(w)+'</div>'; });
+    var ch=p.changes||[];
+    if(ch.length){
+        h+='<table style="width:100%;margin-top:8px;border-collapse:collapse;font-family:monospace;font-size:10.5px;">';
+        ch.forEach(function(c){
+            var color = c.same ? '#475569' : '#4ade80';
+            var mark  = c.same ? '=' : '→';
+            h+='<tr><td style="padding:2px 8px 2px 0;color:#94a3b8;">'+esc(c.field)+'</td>'+
+               '<td style="padding:2px 6px;color:#64748b;">'+esc(c.from||'-')+'</td>'+
+               '<td style="padding:2px 6px;color:'+color+';">'+mark+'</td>'+
+               '<td style="padding:2px 0;color:'+color+';">'+esc(c.to)+'</td></tr>';
+        });
+        h+='</table>';
+        var diff = ch.filter(function(c){ return !c.same; }).length;
+        h+='<div style="margin-top:6px;color:#8b93a7;">'+diff+' ti man bodlabe, '+(ch.length-diff)+' ti already same.</div>';
+    }
+    el.innerHTML=h;
+}
+
+function previewImport(){
+    var raw=document.getElementById('importJson').value;
+    if(!raw.trim()){ showToast('JSON paste korun','warning'); return; }
+    fetch('/api/importCaptured',{method:'POST',body:raw}).then(function(r){return r.json();}).then(function(p){
+        renderPreview(p);
+        document.getElementById('importApplyBtn').disabled = !!p.error;
+        if(!p.error) showToast('Preview ready — dekhe Apply korun','info');
+    }).catch(function(){ showToast('Preview failed','error'); });
+}
+
+function applyImport(){
+    var raw=document.getElementById('importJson').value;
+    if(!raw.trim()) return;
+    if(!confirm('Apply korbo?\n\nEi man gulo SHUDHU tokhoni babohar hobe jokhon live scan segulo resolve korte pare na.')) return;
+    fetch('/api/importCaptured?apply=1',{method:'POST',body:raw}).then(function(r){return r.json();}).then(function(res){
+        if(res.error){ showToast('Apply failed: '+res.error,'error'); return; }
+        renderPreview(res.preview||{});
+        showToast('📥 Capture applied — porer run e gap gulo bhorat hobe','success');
+        loadConfigSources();
+    }).catch(function(){ showToast('Apply failed','error'); });
+}
+
+function loadImportState(){
+    fetch('/api/configSources').then(function(r){return r.json();}).then(function(){}).catch(function(){});
+    fetch('/api/importCaptured').then(function(r){return r.json();}).then(function(d){
+        var el=document.getElementById('importResult');
+        if(!el) return;
+        if(!d.active){ el.innerHTML='<span style="color:#64748b;">Ekhono kono capture import kora nei.</span>'; return; }
+        el.innerHTML='<div style="color:#4ade80;">✅ Active: '+esc(d.summary)+'</div>'+
+                     '<div style="color:#64748b;">imported '+esc(d.importedAt||'')+'</div>';
+    }).catch(function(){});
+}
+
+function clearImport(){
+    if(!confirm('Import kora capture muche felbo?\n\nEr por bot shudhu live scan + built-in fallback babohar korbe.')) return;
+    fetch('/api/clearImport',{method:'POST'}).then(function(r){return r.json();}).then(function(){
+        document.getElementById('importResult').innerHTML='<span style="color:#64748b;">Import cleared.</span>';
+        document.getElementById('importApplyBtn').disabled=true;
+        showToast('Import cleared','info');
+        loadConfigSources();
+    });
+}
+
+// loadConfigSources shows WHERE each live value came from, so a gap is visible
+// before a run starts rather than after it fails.
+function loadConfigSources(){
+    fetch('/api/configSources').then(function(r){return r.json();}).then(function(d){
+        var bar=document.getElementById('cfgSourceBar');
+        if(!bar) return;
+        var src=d.sources||{};
+        var pill=function(label,val,key){
+            var s=src[key]||(d.hasImport?'':'built-in');
+            var color = s==='scan' ? '#4ade80' : s==='import' ? '#38bdf8' : s==='manual' ? '#c4b5fd' : '#fbbf24';
+            var icon  = s==='scan' ? '✅' : s==='import' ? '📥' : s==='manual' ? '📌' : '⚠️';
+            var short = val ? (val.length>16 ? val.substring(0,16)+'…' : val) : '-';
+            return '<span style="margin-right:14px;">'+label+' <b style="font-family:monospace;color:#cbd5e1;">'+esc(short)+'</b> '+
+                   '<span style="color:'+color+';">'+icon+' '+(s||'built-in')+'</span></span>';
+        };
+        var h = pill('slot id', d.slotId, 'slotId') + pill('dg-epay', d.dgepayId, 'dgepayId') + pill('cipher','', 'cipher');
+        if(d.hasImport) h+='<span style="color:#38bdf8;">📥 capture: '+esc(d.importSummary||'')+'</span>';
+        else h+='<span style="color:#64748b;">kono capture import kora nei</span>';
+        bar.innerHTML=h;
+        bar.style.display='block';
+    }).catch(function(){});
 }
 
 function cleanCache(){
@@ -8153,6 +8276,7 @@ function startAutoRefresh() {
     // Poll the bundle-scan announcement faster than the table, so the
     // "UPDATE SUCCESSFULLY" sound lands right when the scan finishes.
     setInterval(checkScanEvent, 2000);
+    setInterval(loadConfigSources, 15000);
     console.log('🔄 Auto-refresh started (5s interval)');
 }
 
@@ -8164,6 +8288,7 @@ loadParallelRetryMode();
 refresh();
 startAutoRefresh();
 loadRoutingStatus();
+loadConfigSources();
 loadSingleHitConfig();
 loadSingleHitRetryConfig();
 loadTraditionalParallelConfig();
@@ -8397,6 +8522,9 @@ func main() {
 	http.HandleFunc("/api/manualIds", adminOnly(handleManualIDs))
 	http.HandleFunc("/api/cleanCache", adminOnly(handleCleanCache))
 	http.HandleFunc("/api/scanEvent", adminOnly(handleScanEvent))
+	http.HandleFunc("/api/importCaptured", adminOnly(handleImportCaptured))
+	http.HandleFunc("/api/clearImport", adminOnly(handleClearImport))
+	http.HandleFunc("/api/configSources", adminOnly(handleConfigSources))
 
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════╗")
@@ -8443,6 +8571,7 @@ func main() {
 	loadManualIDs()
 	RegisterCaptchaRoutes()
 	go StartCaptchaQueue()
+	LoadCapturedConfig()      // restore a previously imported RJ SLOT capture (safety net)
 	StartInvoiceDoneWatcher() // auto-confirm payments (every 20s) → payment hub ✓ Done
 
 	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()

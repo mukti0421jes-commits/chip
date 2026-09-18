@@ -24,6 +24,14 @@ type Config struct {
 	ForcedSlotID   string
 	ForcedDgepayID string
 
+	// Imported is the config captured from a real browser session (the RJ SLOT
+	// userscript export). It is a SAFETY NET only: ApplyImportGaps fills from it
+	// exclusively where THIS run's live scan resolved nothing. See imported.go.
+	Imported *Imported
+	// Source records where each resolved value came from ("manual"/"scan"/
+	// "import"/"built-in"), so the dashboard can show a gap before a run starts.
+	Source map[string]string
+
 	// dynamic headers learned from the bundle / site traffic
 	NavState     string // x-sec-navigation-state
 	RuntimeState string // x-sec-runtime-state
