@@ -261,10 +261,18 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
    <div id="tpl" class="dim">bundle দিলে এখানে সব ধাপের endpoint + header + body দেখা যাবে।</div>
  </div>
 
- <div class="card"><h2>Cipher <span class="dim" style="font-size:11px">— প্রতিটা step-এর cipher field, skip (startAt), length, algorithm</span></h2>
-   <table id="cipher-table"><thead><tr><th>step</th><th>field</th><th>skip</th><th>length</th><th>algorithm</th></tr></thead>
-     <tbody id="cipher-body"><tr><td colspan="5" class="dim">bundle চালালে এখানে প্রতিটা cipher field-এর skip / length / algorithm দেখা যাবে।</td></tr></tbody>
-   </table>
+ <div class="card"><h2>Cipher</h2>
+   <div id="cipher-box" class="dim">bundle চালালে প্রতিটা role-এর cipher (version · startAt · length · algorithm + cipher string) এখানে দেখা যাবে।</div>
+
+   <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px">
+     <div class="stat" style="padding-bottom:0">
+       <span>🔑 standalone algorithm <span class="dim" style="font-size:11px">— টেবিল, Node ছাড়াই চলে</span></span>
+       <b id="a-state"><span class="dim">— function পরে</span></b>
+     </div>
+     <div class="dim" id="a-same" style="font-size:12px;margin:2px 0 8px"></div>
+     <div id="a-roles" class="dim" style="font-size:12.5px">bundle-এর cipher function যোগ হলে এখানে প্রতিটা role-এর (signin · reserve · upload · pay) standalone code — startAt · length · algorithm সহ — বসবে।</div>
+     <button id="a-run" class="ghost" style="margin-top:8px;font-size:12px;padding:6px 12px" disabled>দুইটাই আবার বের করো <span class="dim">(function পরে)</span></button>
+   </div>
  </div>
 
  <div class="card"><h2>সব API path <span class="dim" id="ep-count"></span></h2>
@@ -372,18 +380,22 @@ function stepName(url){
   return u.replace(/^\\/iams\\/api\\/v\\d+/,'')||u;
 }
 function renderCipher(c){
-  const rows=[];
+  let h='';
   for(const e of (c||[])){
     // a step carries a cipher when its body has "c" or it sends an x-token header
     const hasC=!!e.cipher, xtok=(e.headers&&e.headers['x-token'])||'';
     if(!hasC && !xtok)continue;
     const field=hasC?'c':'x-token';
     const val=hasC?e.cipher:xtok;
-    // skip (startAt) and algorithm need the cipher-solver — added later; length is known now
-    rows.push('<tr><td>'+esc(stepName(e.url))+'</td><td class="mono">'+field+'</td>'+
-      '<td class="dim">—</td><td class="mono">'+String(val||'').length+'</td><td class="dim">— (function পরে)</td></tr>');
+    // startAt (skip), version, algorithm need the cipher-solver — added later; field+length known now
+    h+='<div style="margin-bottom:8px">'+
+       '<b>'+esc(stepName(e.url))+'</b> <span class="badge ok">ধরা পড়েছে</span> '+
+       '<span class="badge">field '+field+' · startAt — · length '+String(val||'').length+' · algorithm —</span> '+
+       '<span class="dim" style="font-size:11px">(startAt/algorithm — function পরে)</span>'+
+       '<div class="mono dim" style="font-size:11px;word-break:break-all">'+esc(String(val||'').slice(0,64))+(String(val||'').length>64?'…':'')+'</div>'+
+       '</div>';
   }
-  $('cipher-body').innerHTML=rows.length?rows.join(''):'<tr><td colspan="5" class="dim">কোনো cipher field ধরা পড়েনি।</td></tr>';
+  $('cipher-box').innerHTML=h||'<span class="dim">কোনো cipher field ধরা পড়েনি।</span>';
 }
 function renderCap(c){
   renderProgress(c);
