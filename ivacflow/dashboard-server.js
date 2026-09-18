@@ -323,6 +323,14 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
    </div>
  </div>
 
+ <div class="card"><h2>Endpoint <span class="dim" style="text-transform:none;font-size:12px">— walk + bundle থেকে</span></h2>
+   <table id="ep-table"><tbody><tr><td colspan="2" class="dim">bundle চালালে এখানে প্রতিটা endpoint (verify badge সহ) দেখা যাবে।</td></tr></tbody></table>
+ </div>
+
+ <div class="card"><h2>Payload key · Extra header · Gating</h2>
+   <table id="dyn-table"><tbody><tr><td colspan="2" class="dim">bundle চালালে payload key / extra header / gating এখানে দেখা যাবে।</td></tr></tbody></table>
+ </div>
+
  <div class="card"><h2>সব API path <span class="dim" id="ep-count"></span></h2>
    <div id="eps" class="mono dim" style="font-size:12px">—</div>
  </div>
@@ -520,6 +528,8 @@ function render(j){
   $('c-uuid').innerHTML=val(c.dgepayUuid); $('c-init').innerHTML=val(c.initiatePath);
   renderTpl(j.template||[]);
   if(c.ciphers)renderCipherExtract(c.ciphers);
+  renderEndpoints(c);
+  renderDynamic(c);
   const eps=j.allEndpoints||[];
   $('ep-count').textContent='('+eps.length+')';
   $('eps').innerHTML=eps.length?eps.map(e=>esc(e)).join('<br>'):'—';
@@ -552,6 +562,56 @@ function renderCipherExtract(cx){
   });
   const runBtn=$('a-run'); if(runBtn)runBtn.disabled=false;
 }
+function epRow(key,value,badge){
+  const b=badge==='ok'?'<span class="badge ok">যাচাই ✓</span>':badge==='text'?'<span class="badge">লেখা থেকে</span>':badge==='miss'?'<span class="badge bad">পাওয়া যায়নি</span>':'';
+  return '<tr><td>'+esc(key)+' '+b+'</td><td><input type="text" data-ep="'+esc(key)+'" value="'+esc(value||'')+'"></td></tr>';
+}
+function renderEndpoints(cfg){
+  const eps=cfg.endpoints||{}, rows=[];
+  rows.push(epRow('baseUrl',cfg.apiBase,cfg.apiBase?'ok':'miss'));
+  // walk-verified endpoints
+  const seen={};
+  for(const k of Object.keys(eps)){ rows.push(epRow(k,eps[k],'ok')); seen[eps[k]]=1; }
+  if(cfg.slotId)rows.push(epRow('slotId',cfg.slotId,'ok'));
+  if(cfg.dgepayUuid)rows.push(epRow('dgepayUuid',cfg.dgepayUuid,'ok'));
+  if(cfg.initiatePath)rows.push(epRow('initiatePath',cfg.initiatePath,'ok'));
+  // from-bundle static paths not already shown
+  for(const p of (cfg.allEndpoints||[])){ if(seen[p])continue; rows.push(epRow(p,p,'text')); }
+  $('ep-table').innerHTML='<tbody>'+(rows.join('')||'<tr><td colspan=2 class="dim">—</td></tr>')+'</tbody>';
+}
+function dynRow(key,value,note){
+  return '<tr><td>'+esc(key)+(note?' <span class="badge">'+esc(note)+'</span>':'')+'</td><td><input type="text" data-dyn="'+esc(key)+'" value="'+esc(value||'')+'"></td></tr>';
+}
+function renderDynamic(cfg){
+  // known-from-template values; deeper extraction (epHeaders/secRuntimeState/sitekey) — function পরে
+  const rows=[
+    dynRow('signinCaptchaKey','c'),
+    dynRow('verifyOtpChannel','PHONE'),
+    dynRow('uploadFileField','files'),
+    dynRow('uploadPrimaryField','isPrimary'),
+    dynRow('epHeaders','','function পরে'),
+    dynRow('secRuntimeState','','function পরে'),
+    dynRow('sitekey','','function পরে'),
+    dynRow('(gating path)','','function পরে'),
+  ];
+  $('dyn-table').innerHTML='<tbody>'+rows.join('')+'</tbody>';
+}
+// ── button wiring (cipher copy / re-run) ──
+document.addEventListener('click',async(ev)=>{
+  const t=ev.target.closest('button'); if(!t)return;
+  if(t.classList.contains('a-copy')){
+    const box=t.closest('.a-box'); const ta=box&&box.querySelector('.a-code');
+    if(ta&&ta.value){try{await navigator.clipboard.writeText(ta.value);const o=t.textContent;t.textContent='✅ কপি হয়েছে';setTimeout(()=>t.textContent=o,1200);}catch(_){ta.select();document.execCommand('copy');}}
+    return;
+  }
+  if(t.classList.contains('a-one')||t.id==='a-run'){
+    t.disabled=true;const o=t.textContent;t.textContent='চলছে…';
+    const r=await fetch('/api/recipher',{method:'POST'}).then(x=>x.json()).catch(()=>null);
+    if(r&&r.ok&&r.config===undefined){renderCipherExtract(r.ciphers);}
+    t.textContent=o;t.disabled=false;
+    return;
+  }
+});
 function renderTpl(t){
   let h='';
   for(const s of t){
@@ -623,6 +683,13 @@ const server = http.createServer(async (req, res) => {
       snapshot = { config, template, allEndpoints: config.allEndpoints || [], bundleName: name, at: new Date().toLocaleString() };
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(snapshot));
+    }
+    if (u === '/api/recipher' && req.method === 'POST') {
+      if (!lastBundle.src) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'আগে bundle load করুন' })); }
+      const ciphers = extractCiphers(lastBundle.src);
+      if (snapshot.config) snapshot.config.ciphers = ciphers;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, ciphers }));
     }
     if (u === '/api/fetch-bundle' && req.method === 'POST') {
       const raw = await body(req); let site = SITE;
