@@ -184,6 +184,7 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
  button:disabled{opacity:.45;cursor:not-allowed}
  table{width:100%;border-collapse:collapse;font-size:13px}
  td{padding:5px 8px 5px 0;border-bottom:1px solid var(--line);vertical-align:middle}
+ th{text-align:left;color:var(--dim);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;padding:5px 8px 5px 0;border-bottom:1px solid var(--line)}
  td:first-child{width:180px;color:var(--dim);font-size:12.5px}
  .drop{border:2px dashed var(--line);border-radius:11px;padding:16px;text-align:center;cursor:pointer;font-size:14px}
  .drop:hover,.drop.over{border-color:var(--accent)}
@@ -258,6 +259,12 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
 
  <div class="card"><h2>Request ছাঁচ <span class="dim" style="font-size:11px">— সাইট যেভাবে পাঠায়, bot এতে শুধু মান বসায়</span></h2>
    <div id="tpl" class="dim">bundle দিলে এখানে সব ধাপের endpoint + header + body দেখা যাবে।</div>
+ </div>
+
+ <div class="card"><h2>Cipher <span class="dim" style="font-size:11px">— প্রতিটা step-এর cipher field, skip (startAt), length, algorithm</span></h2>
+   <table id="cipher-table"><thead><tr><th>step</th><th>field</th><th>skip</th><th>length</th><th>algorithm</th></tr></thead>
+     <tbody id="cipher-body"><tr><td colspan="5" class="dim">bundle চালালে এখানে প্রতিটা cipher field-এর skip / length / algorithm দেখা যাবে।</td></tr></tbody>
+   </table>
  </div>
 
  <div class="card"><h2>সব API path <span class="dim" id="ep-count"></span></h2>
@@ -355,8 +362,32 @@ function renderProgress(captured){
   setBar(pct, done+'/'+total+' ধাপ সম্পন্ন — '+pct+'%', rem===0?'✅ সম্পূর্ণ':'বাকি '+rem+'%', chips);
 }
 function resetProgress(){renderProgress([]);}
+function stepName(url){
+  const u=String(url||'');
+  if(/sign-?in/i.test(u))return'SIGN IN';
+  if(/otp\\/verif/i.test(u))return'VERIFY OTP';
+  if(/reserve-slot/i.test(u))return'RESERVE';
+  if(/payment\\/.*initiate/i.test(u))return'PAYMENT INITIATE';
+  if(/upload/i.test(u))return'PRIMARY UPLOAD';
+  return u.replace(/^\\/iams\\/api\\/v\\d+/,'')||u;
+}
+function renderCipher(c){
+  const rows=[];
+  for(const e of (c||[])){
+    // a step carries a cipher when its body has "c" or it sends an x-token header
+    const hasC=!!e.cipher, xtok=(e.headers&&e.headers['x-token'])||'';
+    if(!hasC && !xtok)continue;
+    const field=hasC?'c':'x-token';
+    const val=hasC?e.cipher:xtok;
+    // skip (startAt) and algorithm need the cipher-solver — added later; length is known now
+    rows.push('<tr><td>'+esc(stepName(e.url))+'</td><td class="mono">'+field+'</td>'+
+      '<td class="dim">—</td><td class="mono">'+String(val||'').length+'</td><td class="dim">— (function পরে)</td></tr>');
+  }
+  $('cipher-body').innerHTML=rows.length?rows.join(''):'<tr><td colspan="5" class="dim">কোনো cipher field ধরা পড়েনি।</td></tr>';
+}
 function renderCap(c){
   renderProgress(c);
+  renderCipher(c);
   if(!c.length){$('cap').innerHTML='<span class="dim">কোনো request ধরা পড়েনি (selector মিলল না, বা সাইট লোড হয়নি)।</span>';return;}
   let h='';
   for(const e of c){
