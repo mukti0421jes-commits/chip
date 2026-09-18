@@ -284,9 +284,8 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
    <div class="log" id="log"></div>
  </div>
 
- <div class="card"><h2>Probe result <span class="dim" style="font-size:11px">— "browser-এ চালাও": signin→initiate mock data দিয়ে, যা ধরা পড়ল</span></h2>
-   <div id="cap" class="dim">"🖐 browser-এ চালাও" চাপলে এখানে প্রতিটা ধাপের endpoint + payload + extra header + cipher "c" দেখা যাবে।</div>
- </div>
+ <!-- Probe result runs internally (drives progress + cipher); hidden from the UI. -->
+ <div class="card hide"><h2>Probe result</h2><div id="cap" class="dim"></div></div>
 
  <div class="card"><h2>Request ছাঁচ <span class="dim" style="font-size:11px">— সাইট যেভাবে পাঠায়, bot এতে শুধু মান বসায়</span></h2>
    <div id="tpl" class="dim">bundle দিলে এখানে সব ধাপের endpoint + header + body দেখা যাবে।</div>

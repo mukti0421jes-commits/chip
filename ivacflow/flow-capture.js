@@ -167,8 +167,8 @@ const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '';
 const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || '';
 
 const NOW_ISO = new Date().toISOString();
-const FUTURE_DATE = '2026-09-15';
-const FUTURE_DATES = ['2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18', '2026-09-19'];
+const FUTURE_DATE = '2026-09-20';
+const FUTURE_DATES = ['2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24'];
 
 // Bundles read list data from differently-named properties, and the names are
 // obfuscated so we cannot know which one a given bundle picked. Reading the
@@ -328,7 +328,7 @@ function mockBodyFor(url) {
         commissionName: 'Dhaka',
         dob: '01-JAN-1990',
         email: 'MOCK@TEST.COM',
-        fullName: 'MOCK USER',
+        fullName: 'Mohammad Rahman',
         ivacCenter: null,
         nidOrBr: '1234567890123',
         passport: 'AB1234567',
@@ -389,7 +389,7 @@ function mockBodyFor(url) {
       data: {
         fileId: 'mock-file-id', confirmed: true, slotAvailable: true,
         status: 'CONFIRMED', confirmationId: 'mock-confirmation-id',
-        applicantName: 'MOCK USER', passportNumber: 'AB1234567',
+        applicantName: 'Mohammad Rahman', passportNumber: 'AB1234567',
         visaType: 'TOURIST', mission: 'Indian High Commission',
         ivacCenter: 'IVAC Dhaka', slot_status: 'AVAILABLE',
         fileUploadConfirmed: true, fileConfirmed: true,
@@ -536,7 +536,7 @@ function mockBodyFor(url) {
   if (/\/profile/i.test(url)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
-      data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER', email: 'mock@test.com', status: 'ACTIVE' },
+      data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'Mohammad Rahman', email: 'mock@test.com', status: 'ACTIVE' },
     };
   }
 
@@ -566,10 +566,10 @@ function mockBodyFor(url) {
       fileId: 'mock-file-id', paymentAmount: 8200, amount: 8200,
       reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
       appointmentDate: FUTURE_DATES, webview_url: 'https://mock.gateway/pay',
-      userId: 'mock-user-id', phone: MOCK.phone, fullName: 'MOCK USER',
+      userId: 'mock-user-id', phone: MOCK.phone, fullName: 'Mohammad Rahman',
       slotOpen: true, fileUploadOpen: true, uploadWindowOpen: true,
       fileUploadConfirmed: flowState.fileUploaded,
-      data: [{ fullName: 'MOCK USER', primary: true, commissionName: 'Dhaka', ivacCenter: null }],
+      data: [{ fullName: 'Mohammad Rahman', primary: true, commissionName: 'Dhaka', ivacCenter: null }],
     },
   };
 }
@@ -1001,7 +1001,7 @@ function findChromeExe() {
       else if (/password|pass/.test(h) || info.type === 'password') val = MOCK.password;
       else if (/otp|verify|code|token/.test(h) || info.inputMode === 'numeric' || info.maxLength == 6 || info.maxLength == 4) val = MOCK.otp;
       else if (/email/.test(h) || info.type === 'email') val = 'mock@test.com';
-      else if (/name|full.?name/.test(h)) val = 'MOCK USER';
+      else if (/name|full.?name/.test(h)) val = 'Mohammad Rahman';
       else if (/passport/.test(h)) val = 'AB1234567';
       else if (/date|dob|birth|expir/.test(h) || info.type === 'date') val = FUTURE_DATE;
       else val = MOCK.phone;
