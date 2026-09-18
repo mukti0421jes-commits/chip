@@ -45,14 +45,14 @@ const STEPS = [
   { name: 'AMOUNT', method: 'GET', epKey: 'getBookingConfig', fallback: '/iams/api/v1/appointment/get-booking-config',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'RESERVE', method: 'POST', slotPath: true, fallback: '/iams/api/v1/slots/{id}/reserve-slot',
+  { name: 'RESERVE', method: 'POST', slotPath: true, fallback: '/iams/api/v1/slots/reserve-slot',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json', 'x-v-request-meta': '{{ivac:reqMeta}}' },
     body: { c: '{{ivac:captcha}}', appointmentDate: '{{ivac:appointmentDate}}' } },
 
   { name: 'PAYMENT AMOUNT', method: 'GET', epKey: 'paymentAmount', fallback: '/iams/api/v1/file/payment-amount',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'PAYMENT INITIATE', method: 'POST', initiatePath: true, fallback: '/iams/api/v1/payment/{uuid}/dg-epay/initiate',
+  { name: 'PAYMENT INITIATE', method: 'POST', initiatePath: true, fallback: '/iams/api/v1/payment/dg-epay/initiate',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json' },
     body: { reservationId: '{{ivac:reservationId}}', amount: '{{ivac:amount}}' } },
 ];
@@ -67,11 +67,15 @@ function buildTemplate(ex) {
     let path = '', found = false;
     if (s.literal) { path = s.literal; found = true; }
     else if (s.slotPath) {
-      const id = (ex && ex.slotId) || '{id}';
-      path = prefix + '/slots/' + id + '/reserve-slot'; found = !!(ex && ex.slotId);
+      // With a slotId → /slots/<id>/reserve-slot; without one the bundle is the
+      // older plain style → /slots/reserve-slot (no placeholder segment).
+      if (ex && ex.slotId) { path = prefix + '/slots/' + ex.slotId + '/reserve-slot'; found = true; }
+      else { path = prefix + '/slots/reserve-slot'; found = false; }
     } else if (s.initiatePath) {
+      // Captured path wins (plain or uuid, exactly as the bundle calls it);
+      // otherwise the older plain style /payment/dg-epay/initiate.
       if (ex && ex.initiatePath) { path = norm(ex.initiatePath); found = true; }
-      else { path = s.fallback; found = false; }
+      else { path = prefix + '/payment/dg-epay/initiate'; found = false; }
     } else if (s.epKey && eps[s.epKey]) { path = norm(eps[s.epKey]); found = true; }
     else { path = s.fallback; found = false; }
     return { name: s.name, method: s.method, path, found,
