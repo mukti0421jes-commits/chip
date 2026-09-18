@@ -123,6 +123,33 @@ function killWalk() {
 
 function body(req) { return new Promise((res) => { let d = ''; req.on('data', (c) => d += c); req.on('end', () => res(d)); }); }
 
+// Run extract-ciphers.js on the loaded bundle (static, ~0.2s) and return the
+// per-role ciphers (algo · skip · len · key) plus the generated standalone
+// cipher.js code, so the dashboard can auto-fill the Cipher table on load.
+function extractCiphers(srcText) {
+  const out = { roles: [], code: '', verified: '' };
+  try {
+    const bundleFile = path.join(__dirname, '.cipher-bundle.js');
+    const outFile = path.join(__dirname, '.cipher-out.js');
+    fs.writeFileSync(bundleFile, srcText);
+    const r = cp.spawnSync('node', [path.join(__dirname, 'extract-ciphers.js'), bundleFile, outFile],
+      { cwd: __dirname, encoding: 'utf8', timeout: 30000, windowsHide: true });
+    const so = (r.stdout || '') + '\n' + (r.stderr || '');
+    const re = /role=(\S+)\s+version=(\S+)\s+algo=(\S+)\s+skip=(\d+)\s+len=(\d+)/g;
+    const keyByIdx = [];
+    for (const m of so.matchAll(/key=("(?:\\.|[^"])*")/g)) { try { keyByIdx.push(JSON.parse(m[1])); } catch (_) { keyByIdx.push(''); } }
+    let i = 0, mm;
+    while ((mm = re.exec(so))) {
+      out.roles.push({ role: mm[1], version: mm[2], algo: mm[3], skip: +mm[4], len: +mm[5], key: keyByIdx[i] || '' });
+      i++;
+    }
+    const gm = so.match(/GUARANTEE:\s*([\d/]+)\s*verified/);
+    if (gm) out.verified = gm[1];
+    try { out.code = fs.readFileSync(outFile, 'utf8'); } catch (_) {}
+  } catch (_) {}
+  return out;
+}
+
 // read flow.json → per-call endpoint + payload fields + extra headers + cipher "c"
 function readCaptured(dir) {
   let flow; try { flow = JSON.parse(fs.readFileSync(path.join(dir, 'flow.json'), 'utf8')); } catch (_) { return []; }
@@ -492,9 +519,38 @@ function render(j){
   $('c-api').innerHTML=val(c.apiBase); $('c-slot').innerHTML=val(c.slotId);
   $('c-uuid').innerHTML=val(c.dgepayUuid); $('c-init').innerHTML=val(c.initiatePath);
   renderTpl(j.template||[]);
+  if(c.ciphers)renderCipherExtract(c.ciphers);
   const eps=j.allEndpoints||[];
   $('ep-count').textContent='('+eps.length+')';
   $('eps').innerHTML=eps.length?eps.map(e=>esc(e)).join('<br>'):'—';
+}
+function renderCipherExtract(cx){
+  const roles=(cx&&cx.roles)||[];
+  if(!roles.length)return;   // keep the captured-based summary if extractor found nothing
+  // top summary
+  let h='';
+  for(const r of roles){
+    h+='<div style="margin-bottom:8px"><b>'+esc(r.role)+'</b> <span class="badge ok">যাচাই ✓</span> '+
+       '<span class="badge">v'+esc(r.version)+' · startAt '+r.skip+' · length '+r.len+' · '+esc(r.algo)+'</span>'+
+       '<div class="mono dim" style="font-size:11px;word-break:break-all">key: '+esc(String(r.key).slice(0,48))+(String(r.key).length>48?'…':'')+'</div></div>';
+  }
+  $('cipher-box').innerHTML=h;
+  if(cx.verified)$('a-state').innerHTML='<span class="ok">যাচাই হয়েছে ✓ '+esc(cx.verified)+'</span>';
+  // per-role standalone code boxes
+  const byRole={}; for(const r of roles)byRole[(r.role||'').toLowerCase()]=r;
+  document.querySelectorAll('#a-roles .a-box').forEach(box=>{
+    const rk=box.getAttribute('data-role');
+    const r=byRole[rk];
+    const badges=box.querySelectorAll('.badge');
+    const ta=box.querySelector('.a-code');
+    if(r){
+      if(badges[0])badges[0].textContent=r.algo;
+      if(badges[1])badges[1].textContent='startAt '+r.skip+' · length '+r.len;
+      if(ta&&cx.code){ta.value=cx.code;ta.placeholder='';}
+      box.querySelectorAll('button').forEach(b=>b.disabled=false);
+    }
+  });
+  const runBtn=$('a-run'); if(runBtn)runBtn.disabled=false;
 }
 function renderTpl(t){
   let h='';
@@ -561,6 +617,7 @@ const server = http.createServer(async (req, res) => {
       const src = await body(req);
       const name = decodeURIComponent((req.url.split('name=')[1] || '').split('&')[0] || 'bundle.js');
       const config = extract(src, { skipInitiate: true });
+      config.ciphers = extractCiphers(src);   // instant per-role cipher extract (parallel to the walk)
       const template = buildTemplate(config);
       lastBundle = { name, src };   // keep raw source so "browser-এ চালাও" can run THIS bundle
       snapshot = { config, template, allEndpoints: config.allEndpoints || [], bundleName: name, at: new Date().toLocaleString() };

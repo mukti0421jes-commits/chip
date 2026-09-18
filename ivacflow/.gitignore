@@ -19,3 +19,5 @@ _progress.log
 .host-bundle.js
 .auto-cfg.json
 flow.json
+.cipher-bundle.js
+.cipher-out.js
