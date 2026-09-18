@@ -1271,8 +1271,11 @@ function findChromeExe() {
     // 7. Handle time-slot page: BY component renders an inline calendar grid with day buttons (1-30).
     //    No dropdown trigger needed — days are already visible.
     if (curPath.includes('time-slot') && _samePathCount >= 1) {
-      // Step 7a: Click an available day in the calendar
-      const dayPicked = await page.evaluate(() => {
+      // Step 7a: Click an available day in the calendar. Prefer the days our
+      // mock marks available (derived from FUTURE_DATES) so the app accepts the
+      // pick and advances; otherwise fall back to any enabled day.
+      const availDays = FUTURE_DATES.map((d) => parseInt(String(d).slice(-2), 10));
+      const dayPicked = await page.evaluate((AVAIL) => {
         const btns = [...document.querySelectorAll('button')];
         // Find day buttons (single/double digit text, reasonable size)
         for (const b of btns) {
@@ -1280,7 +1283,7 @@ function findChromeExe() {
           const r = b.getBoundingClientRect();
           if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
             const day = parseInt(txt, 10);
-            if (day >= 15 && day <= 19) {
+            if (AVAIL.includes(day)) {
               b.setAttribute('data-iflow-day', txt);
               return txt;
             }
@@ -1296,7 +1299,7 @@ function findChromeExe() {
           }
         }
         return '';
-      }).catch(() => '');
+      }, availDays).catch(() => '');
 
       if (dayPicked) {
         try {
