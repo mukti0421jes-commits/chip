@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ Automation</title>
+<style>
+  :root{--bg:#f1f5f4;--card:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--brand:#0e7c5a;--brand2:#12b886;--accent:#0e7c5a;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans Bengali","Segoe UI",Arial,sans-serif;font-size:15px;}
+  header{background:#fff;border-bottom:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5}
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;letter-spacing:.5px}
+  .brand b{font-size:17px}.brand small{display:block;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+  .wrap{max-width:720px;margin:0 auto;padding:24px 16px 60px}
+  .eyebrow{text-align:center;color:var(--muted);letter-spacing:3px;font-size:11px;font-weight:700;text-transform:uppercase;margin:8px 0}
+  h1{text-align:center;font-size:30px;margin:4px 0 6px;line-height:1.25}
+  h1 .g{color:var(--brand)}
+  .lead{text-align:center;color:var(--muted);margin:0 auto 22px;max-width:520px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  #drop{border:2px dashed #cbd5e1;border-radius:14px;padding:40px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  #drop.drag{border-color:var(--brand);background:#ecfdf5;color:var(--ink)}
+  #drop .ic{font-size:34px}
+  button{font-family:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 14px;font-size:14px}
+  button:hover{border-color:var(--brand)}
+  .btn-primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+  .btn-primary:hover{background:#0b6349}
+  .btn-block{width:100%;padding:13px;font-size:15px}
+  .hidden{display:none!important}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
+  .modal{background:#fff;border-radius:16px;max-width:460px;width:100%;max-height:90vh;overflow:auto;padding:22px}
+  .modal .step{color:var(--brand);font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+  .modal h2{margin:6px 0 2px;font-size:20px}
+  .modal .sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+  .opt{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
+  .opt:hover{border-color:#a7f3d0}
+  .opt.sel{border-color:var(--brand);background:#ecfdf5}
+  .opt .ic{width:34px;height:34px;border-radius:9px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:17px}
+  .opt .nm{font-weight:700}.opt .tag{font-size:10px;background:#e2e8f0;border-radius:5px;padding:1px 6px;margin-left:6px;color:#475569;font-weight:700}
+  .opt .d{color:var(--muted);font-size:12px}
+  .opt .go{margin-left:auto;color:var(--brand);font-weight:800}
+  .row-end{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .rowbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .sig-btn{flex:1;min-width:120px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 8px}
+  .sig-btn .ic{font-size:20px}
+  .note{font-size:12px;color:var(--muted)}
+  .pill{display:inline-block;background:#ecfdf5;color:var(--brand);border:1px solid #a7f3d0;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:700}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+  input,select{font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px;width:100%}
+  /* signature editor */
+  .sigwrap{background:repeating-conic-gradient(#eee 0% 25%,#fff 0% 50%) 50%/18px 18px;border:1px solid var(--line);border-radius:10px;position:relative;overflow:hidden;touch-action:none}
+  .sigwrap canvas{display:block;max-width:100%}
+  .crop{position:absolute;border:2px dashed var(--brand);background:rgba(14,124,90,.08);cursor:move}
+  .crop .h{position:absolute;width:12px;height:12px;background:#fff;border:2px solid var(--brand);border-radius:3px}
+  .sld{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .sld label{flex:0 0 150px;font-size:13px}
+  .sld input{flex:1}
+  video{width:100%;border-radius:10px;background:#000}
+  #status{min-height:18px;font-size:13px;margin-top:10px}
+  .ok{color:var(--brand)}.err{color:#dc2626}
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#0b1220;--card:#111a2b;--ink:#e2e8f0;--muted:#94a3b8;--line:#233047}
+    input,select,button{background:#0b1526;color:#e2e8f0}
+    .opt .ic{background:#233047}.opt .tag{background:#233047;color:#cbd5e1}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ Automation</b><small>Undertaking · Consent Letter</small></div></div>
+  <div><span class="pill" id="modeBadge">Medical / Ayush</span></div>
+</header>
+
+<div class="wrap">
+  <div class="eyebrow">Undertaking · Concern Letter</div>
+  <h1>অটোমেটিক তৈরি করুন <span class="g">অঙ্গিকারনামা, সম্মতিপত্র</span></h1>
+  <p class="lead">Medical/Ayush ভিসার <b>Invitation Letter (PDF)</b> দিন — ডাউনলোড করে নিন প্রয়োজনীয় অঙ্গিকারনামা, সম্মতিপত্র।</p>
+
+  <div class="card">
+    <div id="drop">
+      <div class="ic">📄</div>
+      <div style="margin-top:8px;font-weight:600">ইনভাইটেশন লেটার টেনে আনুন বা ক্লিক করুন</div>
+      <div class="note" style="margin-top:4px">শুধু .pdf গ্রহণযোগ্য</div>
+    </div>
+    <input type="file" id="invFile" accept="application/pdf" class="hidden">
+  </div>
+  <div id="status"></div>
+</div>
+
+<!-- STEP modal -->
+<div class="overlay hidden" id="overlay"><div class="modal" id="modalBody"></div></div>
+
+<!-- Signature editor modal -->
+<div class="overlay hidden" id="sigOverlay"><div class="modal" id="sigModal" style="max-width:520px">
+  <div class="step">স্বাক্ষর এডিটর</div>
+  <h2>স্বাক্ষর ক্রপ ও এডিট</h2>
+  <div class="sub">ক্রপ: সবুজ বাক্সের প্রান্ত/মাঝ টেনে ছোট-বড় ও সরান। তারপর "ক্রপ প্রয়োগ"। White→Transparent দিয়ে সাদা ব্যাকগ্রাউন্ড সরান।</div>
+  <div class="sigwrap" id="sigWrap"><canvas id="sigCanvas"></canvas><div class="crop hidden" id="cropBox"><div class="h" style="right:-6px;bottom:-6px;cursor:nwse-resize" data-h="br"></div></div></div>
+  <div class="sld"><label>ঘুরান (Rotate)</label><input type="range" id="sRot" min="-180" max="180" value="0"><span id="vRot">0°</span></div>
+  <div class="sld"><label>উজ্জ্বলতা (Brightness)</label><input type="range" id="sBri" min="-100" max="100" value="0"><span id="vBri">0</span></div>
+  <div class="sld"><label>কন্ট্রাস্ট (Contrast)</label><input type="range" id="sCon" min="-100" max="100" value="0"><span id="vCon">0</span></div>
+  <div class="sld"><label>সাদা সরান (White→Transparent)</label><input type="range" id="sWhite" min="0" max="255" value="0"><span id="vWhite">0</span></div>
+  <div class="rowbtns" style="margin-top:8px">
+    <button id="cropApply">✂ ক্রপ প্রয়োগ</button>
+    <button id="cropReset">↺ রিসেট</button>
+    <button class="btn-primary" id="sigDone" style="margin-left:auto">✔ সম্পন্ন</button>
+    <button id="sigCancel">✕ বাতিল</button>
+  </div>
+  <div class="note" id="sigHint" style="margin-top:8px"></div>
+</div></div>
+
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="lib/jsQR.js"></script>
+<script type="module" src="docgen-page.js"></script>
+</body>
+</html>

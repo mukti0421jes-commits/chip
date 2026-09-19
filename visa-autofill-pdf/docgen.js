@@ -104,14 +104,19 @@ function makeWriter(doc, sig) {
     y += lines.length * size * 1.45 + gap;
   }
   function gapY(h) { y += h; }
-  return { para, gapY, get y() { return y; }, doc, M, W };
+  function img(dataUrl, w = 120, h = 45) {
+    if (!dataUrl) return;
+    ensure(h + 4);
+    try { doc.addImage(dataUrl, 'PNG', M, y, w, h); y += h; } catch (e) { try { doc.addImage(dataUrl, 'JPEG', M, y, w, h); y += h; } catch (_) {} }
+  }
+  return { para, gapY, img, get y() { return y; }, doc, M, W };
 }
 
 // প্যাসেঞ্জারের নাম দিয়ে ফাইলনেম
 const fname = (kind, p) => (kind + '_' + full(p)).replace(/[^A-Za-z0-9]+/g, '_') + '.pdf';
 
 // ১) রোগীর Undertaking (Medical Visa)
-export function buildPatientUndertaking(data, mission) {
+export function buildPatientUndertaking(data, mission, sig) {
   const doc = newDoc(); const w = makeWriter(doc);
   const p = data.patient, ms = MISSIONS[mission] || MISSIONS.BGDD;
   const hosp = data.hospital;
@@ -142,7 +147,8 @@ export function buildPatientUndertaking(data, mission) {
   w.gapY(6);
   w.para('I respectfully request the High Commission of India to kindly consider our visa applications and grant the necessary Medical Visa and Medical Attendant Visas.');
   w.para('Thank you for your kind consideration.', { gap: 18 });
-  w.para('Yours faithfully,', { gap: 22 });
+  w.para('Yours faithfully,', { gap: sig ? 6 : 22 });
+  if (sig) w.img(sig);
   w.para(full(p), { bold: true, gap: 2 });
   w.para('Passport No: ' + p.passport, { gap: 2 });
   w.para('Date: ' + today(), { gap: 2 });
@@ -151,7 +157,7 @@ export function buildPatientUndertaking(data, mission) {
 }
 
 // ২) সহযাত্রীর Undertaking (Medical Attendant Visa)
-export function buildAttendantUndertaking(data, att, mission) {
+export function buildAttendantUndertaking(data, att, mission, sig) {
   const doc = newDoc(); const w = makeWriter(doc);
   const p = data.patient, ms = MISSIONS[mission] || MISSIONS.BGDD, hosp = data.hospital;
   w.para('To', { gap: 2 });
@@ -177,7 +183,8 @@ export function buildAttendantUndertaking(data, att, mission) {
   w.gapY(6);
   w.para('I respectfully request the High Commission of India to kindly consider this application and grant the necessary Medical Attendant Visa.');
   w.para('Thank you for your kind consideration.', { gap: 18 });
-  w.para('Yours faithfully,', { gap: 22 });
+  w.para('Yours faithfully,', { gap: sig ? 6 : 22 });
+  if (sig) w.img(sig);
   w.para(full(att), { bold: true, gap: 2 });
   w.para('Passport No: ' + att.passport, { gap: 2 });
   w.para('Date: ' + today(), { gap: 2 });
@@ -186,8 +193,9 @@ export function buildAttendantUndertaking(data, att, mission) {
 }
 
 // ৩) নাবালকের Parental Consent Letter
-export function buildParentalConsent(data, child, mission) {
+export function buildParentalConsent(data, child, mission, sigs) {
   const doc = newDoc(); const w = makeWriter(doc);
+  sigs = sigs || {};
   const ms = MISSIONS[mission] || MISSIONS.BGDD, hosp = data.hospital;
   // বাবা = রোগী (পুরুষ) নাহলে স্বামী; মা = WIFE/মহিলা attendant
   const people = [data.patient, ...data.attendants];
@@ -207,12 +215,15 @@ export function buildParentalConsent(data, child, mission) {
   w.para('Name: ' + full(father), { gap: 3 });
   w.para('Passport No.: ' + father.passport, { gap: 3 });
   w.para('Mobile No.: ' + (father.contactNative || ''), { gap: 3 });
-  w.para('Signature:', { gap: 16 });
+  w.para('Signature:', { gap: sigs.father ? 4 : 16 });
+  if (sigs.father) w.img(sigs.father, 110, 40);
+  w.gapY(6);
   w.para('Mother’s Details', { bold: true, gap: 4 });
   w.para('Name: ' + full(mother), { gap: 3 });
   w.para('Passport No.: ' + (mother.passport || ''), { gap: 3 });
   w.para('Mobile No.: ' + (mother.contactNative || father.contactNative || ''), { gap: 3 });
-  w.para('Signature:', { gap: 16 });
+  w.para('Signature:', { gap: sigs.mother ? 4 : 16 });
+  if (sigs.mother) w.img(sigs.mother, 110, 40);
   w.para('Place: ' + ms.city + ', Bangladesh', { gap: 2 });
   return { doc, filename: fname('Parental_Consent', child) };
 }

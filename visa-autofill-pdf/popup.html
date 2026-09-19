@@ -47,10 +47,7 @@
   <h1>Visa Autofill (PDF)</h1>
   <div class="sub">Indian Visa ফর্ম — অফলাইন অটো-ফিল</div>
 
-  <div class="tabs" style="margin-bottom:10px">
-    <button id="tabAutofill" class="on" style="flex:1">⚡ Autofill</button>
-    <button id="tabDocgen" style="flex:1">📝 Undertaking / Consent</button>
-  </div>
+  <button id="openRJ" class="primary" style="width:100%;margin-bottom:10px">📝 RJ Automation — Undertaking / Consent (নতুন ট্যাবে)</button>
 
   <div id="autofillView">
   <div class="card" style="border-color:#0e7490;background:#0b2530">
@@ -166,34 +163,6 @@ KOLKATA, WEST BENGAL
   <div id="status"></div>
   </div><!-- end autofillView -->
 
-  <div id="docgenView" class="hidden">
-    <div class="card" style="border-color:#7c3aed;background:#1a1330">
-      <h2>📝 Medical/Ayush — Undertaking ও Consent</h2>
-      <div class="sub" style="margin:0 0 8px">Invitation Letter (PDF) দিন — প্রতিজন আবেদনকারীর জন্য Undertaking, আর ১২ বছরের নিচে হলে Parental Consent তৈরি করে ডাউনলোড করবে। সব আপনার ব্রাউজারেই হয়।</div>
-      <div id="invDrop" style="border:2px dashed var(--line);border-radius:8px;padding:16px;text-align:center;color:var(--muted);cursor:pointer">📄 Invitation Letter <b>PDF</b> টেনে আনুন বা ক্লিক করুন<br><span style="font-size:11px">শুধু .pdf</span></div>
-      <input type="file" id="invFile" accept="application/pdf" style="display:none">
-    </div>
-
-    <div class="card hidden" id="invResult">
-      <div class="fld full" style="margin-bottom:10px">
-        <label style="font-size:11px;color:#cbd5e1;margin-bottom:3px">কোন মিশনে আবেদন?</label>
-        <select id="dgMission" style="background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:12px">
-          <option value="BGDD">Dhaka — High Commission of India</option>
-          <option value="BGDC">Chittagong — AHCI</option>
-          <option value="BGDR">Rajshahi — AHCI</option>
-          <option value="BGDS">Sylhet — AHCI</option>
-          <option value="BGDK">Khulna — AHCI</option>
-        </select>
-      </div>
-      <div id="dgHospital" class="sub" style="margin:0 0 8px"></div>
-      <h2 style="font-size:13px">কার জন্য ফাইল বানাবেন?</h2>
-      <div id="dgApplicants"></div>
-    </div>
-
-    <div id="dgStatus" style="font-size:12px;min-height:16px;margin-top:6px"></div>
-  </div>
-
-  <script src="lib/jspdf.umd.min.js"></script>
   <script src="lib/tesseract.min.js"></script>
   <script type="module" src="popup.js"></script>
 </body>
