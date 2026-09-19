@@ -271,9 +271,26 @@ export function parseVisaPdf(rawText) {
     const CITY = { DHAKA: 'BGDD', CHITTAGONG: 'BGDC', CHATTOGRAM: 'BGDC', RAJSHAHI: 'BGDR', KHULNA: 'BGDK', SYLHET: 'BGDS', RANGPUR: 'BGDG', BARISAL: 'BGDB', MYMENSINGH: 'BGDM' };
     values['missioncode_id'] = CITY[hdr] || 'BGDD';
   }
-  const vtype = grab(/Type Of Visa Required\s+([A-Z0-9 ()-]+?)\s+No of Entries/);
+  // Visa type: আগে explicit "Type Of Visa Required"; না থাকলে Purpose লেখা থেকে অনুমান;
+  // সবশেষে "Required Detail of" (এটা কখনো medical section-এর residual হতে পারে, তাই শেষে)
+  let vtype = grab(/Type Of Visa Required\s+([A-Z][A-Z /()-]*?VISA)\s+No of Entries/i);
+  if (!vtype) {
+    const purp = grab(/Purpose of Visit\s*:?\s*([^\n]+)/i).toUpperCase();
+    if (/TOURIS|SIGHTSEEING|FRIENDS OR RELATIVES|RECREATION/.test(purp)) vtype = 'TOURIST VISA';
+    else if (/MEDICAL TREATMENT|MEDICAL/.test(purp)) vtype = 'MEDICAL VISA';
+    else if (/ATTENDANT|MEDICAL ATTENDANT/.test(purp)) vtype = 'MEDICAL ATTENDANT VISA';
+    else if (/BUSINESS/.test(purp)) vtype = 'BUSINESS VISA';
+    else if (/STUDENT|STUDY/.test(purp)) vtype = 'STUDENT VISA';
+    else if (/TRANSIT/.test(purp)) vtype = 'TRANSIT VISA';
+    else if (/CONFERENCE/.test(purp)) vtype = 'CONFERENCE VISA';
+    else if (/EMPLOYMENT/.test(purp)) vtype = 'EMPLOYMENT VISA';
+    else if (/DOUBLE ENTRY|APPLY FOR|MISCELLANEOUS/.test(purp)) vtype = 'MISCELLANEOUS VISA';
+  }
+  if (!vtype) vtype = grab(/Required Detail of\s+([A-Z][A-Z /()-]*?VISA)/i);
+  if (vtype) values['visaTypeText'] = clean(vtype);   // সাইটের dropdown-এর লেখা মিলিয়ে সেট হবে
+  // জানা কয়েকটি টাইপ → সরাসরি কোড (দ্রুত), বাকিগুলো text-মিলে হবে
   const pmap = { TOURIST: '544', MEDICAL: '545', BUSINESS: '537', STUDENT: '540', TRANSIT: '233', JOURNALIST: '228' };
-  for (const k in pmap) if (vtype && vtype.includes(k)) { values['visaPurposeDropdown'] = pmap[k]; break; }
+  for (const k in pmap) if (vtype && vtype.toUpperCase().includes(k)) { values['visaPurposeDropdown'] = pmap[k]; break; }
 
   const name = clean((values['givenName'] || '') + ' ' + (values['surname'] || '')) || 'New Profile';
   return { values, flags, name };

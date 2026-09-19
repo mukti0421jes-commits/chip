@@ -40,11 +40,24 @@
     var $ = window.jQuery || window.$;
     try {
       if ($) {
-        // Purpose (chosen) — কোড থাকলে সিলেক্ট করে cascade চালাও
-        if (d.purpose) {
-          $('#visaPurposeDropdown').val(d.purpose).trigger('chosen:updated');
+        // Purpose (chosen) — কোড থাকলে সরাসরি; নাহলে dropdown-এর লেখা মিলিয়ে কোড বের করি
+        var code = d.purpose || '';
+        if (!code && d.purposeText) {
+          var want = String(d.purposeText).toUpperCase().replace(/\s+/g, ' ').trim();
+          var opts = document.querySelectorAll('#visaPurposeDropdown option');
+          var best = '';
+          for (var i = 0; i < opts.length; i++) {
+            var t = (opts[i].textContent || '').toUpperCase().replace(/\s+/g, ' ').trim();
+            if (!opts[i].value) continue;
+            if (t === want) { best = opts[i].value; break; }                       // হুবহু মিল
+            if (!best && (t.indexOf(want) >= 0 || want.indexOf(t) >= 0)) best = opts[i].value; // আংশিক মিল
+          }
+          code = best;
+        }
+        if (code) {
+          $('#visaPurposeDropdown').val(code).trigger('chosen:updated');
           $('#visaPurposeDropdown').trigger('change');
-          if (typeof window.visit_purpose === 'function') { try { window.visit_purpose(d.purpose); } catch (_) {} }
+          if (typeof window.visit_purpose === 'function') { try { window.visit_purpose(code); } catch (_) {} }
         }
         // options AJAX-এ এলে chosen যাতে সেগুলো দেখায় / খোলে
         $('.chosen-select').trigger('chosen:updated');

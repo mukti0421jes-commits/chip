@@ -11,7 +11,8 @@ const TABS = [
     ['countryname_id', 'Country you apply from', 'BGD = Bangladesh'],
     ['missioncode_id', 'Indian Mission/Office', 'BGDD Dhaka, BGDC Chittagong...'],
     ['nationality_id', 'Nationality', 'BGD = Bangladesh'],
-    ['visaPurposeDropdown', 'Visiting India for (purpose code)', '544=TOURIST T1, 545=MEDICAL M1, 546=MEDICAL M2, 537=BUSINESS B1, 233=TRANSIT'],
+    ['visaTypeText', 'Visa Type (dropdown লেখা)', 'যেমন TOURIST VISA / MEDICAL VISA / MISCELLANEOUS VISA — সাইটের লেখা মিলিয়ে বসে'],
+    ['visaPurposeDropdown', 'Visiting India for (purpose code)', 'কোড জানা থাকলে; খালি থাকলে উপরের লেখা দিয়ে মিলবে। 544=TOURIST, 545=MEDICAL, 537=BUSINESS'],
   ]},
   { t: 'A. Personal', f: [
     ['surname', 'Surname'], ['givenName', 'Given Name'],

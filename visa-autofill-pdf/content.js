@@ -139,10 +139,10 @@
       fillById('jouryney_id', v.jouryney_id);
     };
     setTexts();
-    mainWorld({ purpose: v.visaPurposeDropdown || '' }); // chosen Purpose + datepicker বন্ধ
+    mainWorld({ purpose: v.visaPurposeDropdown || '', purposeText: v.visaTypeText || '' }); // chosen Purpose + datepicker বন্ধ
     await sleep(700);
     setTexts(); // AJAX reset ঠেকাতে আবার
-    mainWorld({ purpose: v.visaPurposeDropdown || '' });
+    mainWorld({ purpose: v.visaPurposeDropdown || '', purposeText: v.visaTypeText || '' });
 
     const cap = document.getElementById('captcha');
     if (cap) cap.focus();
@@ -212,6 +212,7 @@
       const isRegistration = /Registration/i.test(path);
       setAutoConfirm(true);
       const purpose = (active.values || {}).visaPurposeDropdown || '';
+      const purposeText = (active.values || {}).visaTypeText || '';
       try {
         // Registration পেজ আলাদা — cascading dropdown ক্রম মেনে ভরতে হয়
         if (isRegistration) {
@@ -224,8 +225,8 @@
         await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
 
         // chosen Purpose সেট + খোলা datepicker বন্ধ (পেজের jQuery দিয়ে, MAIN world)
-        mainWorld({ purpose });
-        setTimeout(() => mainWorld({ purpose }), 1500); // purpose option AJAX-এ এলে আবার
+        mainWorld({ purpose, purposeText });
+        setTimeout(() => mainWorld({ purpose, purposeText }), 1500); // purpose option AJAX-এ এলে আবার
 
         if (res.vaAutoContinue === true) {
           await sleep(500);
