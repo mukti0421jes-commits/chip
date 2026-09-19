@@ -25,6 +25,8 @@ async function loadPdf(file) {
   status('✔ লোড হয়েছে — যেকোনো লেখায় ক্লিক করে বদলান, বা "নতুন লেখা" যোগ করুন।');
 }
 
+function markSel(el) { document.querySelectorAll('.t.sel,.newbox.sel').forEach((e) => e.classList.remove('sel')); el.classList.add('sel'); }
+
 function itemBox(pg, it) {
   const tx = pdfjsLib.Util.transform(pg._vp.transform, it.transform);
   const fh = Math.hypot(tx[2], tx[3]);
@@ -65,8 +67,10 @@ async function renderAll() {
       span.textContent = edited ? pg.edits.get(idx) : it.str;
       span.style.color = edited ? '#000' : 'transparent';
       span.contentEditable = editing ? 'true' : 'false';
+      const selectThis = () => { focused = { type: 'item', pg, idx, el: span }; markSel(span); };
+      span.addEventListener('pointerdown', selectThis);   // ক্লিক করলেই সিলেক্ট (নির্ভরযোগ্য)
       span.addEventListener('focus', () => {
-        focused = { type: 'item', pg, idx, el: span };
+        selectThis();
         if (!pg.edits.has(idx)) { pg.edits.set(idx, it.str); whiteout(pg, it); span.style.color = '#000'; span.classList.add('edited'); }
       });
       span.addEventListener('input', () => { pg.edits.set(idx, span.textContent); });
@@ -82,7 +86,9 @@ function makeNewEl(pg, nb) {
   el.textContent = nb.text || 'নতুন লেখা';
   el.style.left = (nb.x * zoom) + 'px'; el.style.top = (nb.y * zoom) + 'px'; el.style.fontSize = (nb.size * zoom) + 'px';
   el.addEventListener('input', () => { nb.text = el.textContent; });
-  el.addEventListener('focus', () => { focused = { type: 'new', pg, nb, el }; });
+  const selN = () => { focused = { type: 'new', pg, nb, el }; markSel(el); };
+  el.addEventListener('pointerdown', selN);
+  el.addEventListener('focus', selN);
   let drag = false, sx, sy, ox, oy;
   el.addEventListener('pointerdown', (e) => { if (document.activeElement === el) return; drag = true; sx = e.clientX; sy = e.clientY; ox = nb.x; oy = nb.y; e.preventDefault(); });
   window.addEventListener('pointermove', (e) => { if (!drag) return; nb.x = ox + (e.clientX - sx) / zoom; nb.y = oy + (e.clientY - sy) / zoom; el.style.left = (nb.x * zoom) + 'px'; el.style.top = (nb.y * zoom) + 'px'; });
