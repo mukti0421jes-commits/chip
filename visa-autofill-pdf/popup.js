@@ -107,8 +107,9 @@ let indRefs = [];   // [{name, addr, state, dist, phone}]
 function parseBulk(text) {
   const refs = [];
   // reference আলাদা করার লাইন: খালি লাইন, অথবা শুধু ড্যাশ/সমান/আন্ডারস্কোর/তারা দেওয়া লাইন
+  // সেপারেটর লাইন: ASCII ড্যাশ/সমান/ইত্যাদি বা ইউনিকোড box-drawing (─ ━ ═ …) দিয়ে বানানো
   const norm = String(text || '').replace(/\r/g, '')
-    .replace(/^[ \t]*[-–—_=*.]{3,}[ \t]*$/gm, '');
+    .replace(/^[ \t]*[-–—_=*.·•~‐-―─-╿]{3,}[ \t]*$/gm, '');
   const blocks = norm.split(/\n[ \t]*\n+/);
   for (const block of blocks) {
     // পুরনো "|" ফরম্যাটও চলে — pipe সরিয়ে লাইনগুলোকেই ধরি
