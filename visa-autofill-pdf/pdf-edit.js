@@ -6,13 +6,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.m
 const $ = (id) => document.getElementById(id);
 let pages = [];   // {page,w,h,items,edits:Map(idx->text),newboxes:[], _canvas,_ctx,_vp}
 let zoom = 1, editing = true, focused = null; // focused: {type:'item',pg,idx,el} | {type:'new',pg,nb,el}
+let srcBytes = null; // আসল PDF bytes (vector ডাউনলোডের জন্য)
 
 $('home').onclick = () => { location.href = chrome.runtime.getURL('docgen.html'); };
 function status(m, ok = true) { $('status').textContent = m; $('status').className = ok ? 'ok' : 'err'; }
 
 async function loadPdf(file) {
   const buf = await file.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+  srcBytes = new Uint8Array(buf).slice(0); // আসল bytes রাখি (pdf.js buffer neuter করতে পারে)
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
   pages = [];
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
@@ -136,34 +138,39 @@ $('tApply').onclick = () => {
   status('✔ সংরক্ষণ হয়েছে — এখন "Download" চাপুন। আবার এডিট করতে "লেখা এডিট" চালু করুন।');
 };
 
+// শুধু WinAnsi-এনকোডযোগ্য অক্ষর রাখি (Helvetica), নাহলে drawText ভাঙে
+function ansi(s) { return String(s || '').replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); }
+
 $('tDownload').onclick = async () => {
+  if (!srcBytes) { status('আগে একটি PDF লোড করুন।', false); return; }
   status('⏳ ফাইল তৈরি হচ্ছে...');
   try {
-    const { jsPDF } = window.jspdf; const FS = 2; let pdf = null;
-    for (let pi = 0; pi < pages.length; pi++) {
-      const pg = pages[pi];
-      const vp = pg.page.getViewport({ scale: FS });
-      const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
-      const ctx = c.getContext('2d');
-      await pg.page.render({ canvasContext: ctx, viewport: vp }).promise;
-      ctx.textBaseline = 'alphabetic';
+    const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+    const out = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
+    const helv = await out.embedFont(StandardFonts.Helvetica);
+    const opages = out.getPages();
+    const white = rgb(1, 1, 1), black = rgb(0, 0, 0);
+    pages.forEach((pg, pi) => {
+      const page = opages[pi]; if (!page) return; const H = page.getHeight();
+      // edited / erased items — আসল লেখার উপর সাদা বক্স, তারপর নতুন লেখা (থাকলে)
       pg.items.forEach((it, idx) => {
         if (!pg.edits.has(idx)) return;
-        const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
-        const fh = Math.hypot(tx[2], tx[3]);
-        const w = Math.max((it.width || 0) * FS, fh);
-        ctx.fillStyle = '#fff'; ctx.fillRect(tx[4] - 1, tx[5] - fh - 1, w + 4, fh + 5);
-        const t = pg.edits.get(idx);
-        if (t) { ctx.fillStyle = '#000'; ctx.font = fh + 'px sans-serif'; ctx.fillText(t, tx[4], tx[5]); }
+        const x = it.transform[4], yb = it.transform[5], fh = Math.hypot(it.transform[2], it.transform[3]);
+        const w = Math.max(it.width || 0, fh);
+        page.drawRectangle({ x: x - 1, y: yb - fh * 0.3, width: w + 2, height: fh * 1.35, color: white });
+        const t = ansi(pg.edits.get(idx));
+        if (t) { try { page.drawText(t, { x, y: yb, size: fh * 0.9, font: helv, color: black }); } catch (_) {} }
       });
-      ctx.textBaseline = 'top';
-      pg.newboxes.forEach((nb) => { ctx.fillStyle = '#000'; ctx.font = (nb.size * FS) + 'px sans-serif'; (nb.text || '').split('\n').forEach((ln, i) => ctx.fillText(ln, nb.x * FS, nb.y * FS + i * nb.size * FS * 1.25)); });
-      const img = c.toDataURL('image/jpeg', 0.92);
-      if (!pdf) pdf = new jsPDF({ unit: 'pt', format: [pg.w, pg.h] }); else pdf.addPage([pg.w, pg.h]);
-      pdf.addImage(img, 'JPEG', 0, 0, pg.w, pg.h);
-    }
-    pdf.save('RJ_edited.pdf');
-    status('✔ ডাউনলোড হয়েছে (RJ_edited.pdf)।');
+      // new text boxes (top-left, points) → pdf-lib bottom-left
+      pg.newboxes.forEach((nb) => {
+        const size = nb.size; const lines = ansi(nb.text).split('\n');
+        lines.forEach((ln, i) => { try { page.drawText(ln, { x: nb.x, y: H - nb.y - size * (i + 1), size, font: helv, color: black }); } catch (_) {} });
+      });
+    });
+    const bytes = await out.save();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    a.download = 'RJ_edited.pdf'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    status('✔ ডাউনলোড হয়েছে — এই ফাইল আবার এডিট করা যাবে (text layer অক্ষত)।');
   } catch (e) { console.error(e); status('✘ তৈরি হয়নি: ' + e.message, false); }
 };
 
