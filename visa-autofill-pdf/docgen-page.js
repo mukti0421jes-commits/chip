@@ -280,7 +280,7 @@ $('sigDone').onclick = () => {
 };
 
 // ---------------- tool buttons ----------------
-const PAGES = { editpdf: 'pdf-edit.html', compress: 'pdf-compress.html' };
+const PAGES = { editpdf: 'pdf-edit.html', compress: 'pdf-compress.html', split: 'pdf-split.html', img2pdf: 'img2pdf.html' };
 document.querySelectorAll('[data-todo]').forEach((b) => b.addEventListener('click', () => {
   const t = b.dataset.todo;
   if (PAGES[t]) { window.open(chrome.runtime.getURL(PAGES[t]), '_blank'); return; }
