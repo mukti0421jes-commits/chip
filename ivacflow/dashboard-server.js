@@ -679,18 +679,21 @@ let syncTimer=null,lastBundleName='';
 $('sync').onclick=()=>{
   if(syncTimer){clearInterval(syncTimer);syncTimer=null;$('sync').textContent='▶ Sync চালু';$('sync-note').textContent='বন্ধ';return;}
   $('sync').textContent='⏸ Sync বন্ধ';$('sync-note').innerHTML='<span class="warn">দেখছি…</span>';
+  let syncFetched=false, syncBusy=false;
   const tick=async()=>{
+    if(syncBusy||syncFetched)return;
     const site=$('site').value.trim();
     let s=null; try{s=await fetch('/api/server-status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({site})}).then(r=>r.json());}catch(_){}
     if(!s||!s.open){$('sync-note').innerHTML='<span class="bad">সার্ভার বন্ধ</span> <span class="dim">'+((s&&s.error)||'')+'</span>';return;}
-    $('sync-note').innerHTML='<span class="ok">open</span> <span class="dim">'+(s.bundleName||'')+'</span>';
-    if(s.bundleName && s.bundleName!==lastBundleName){
-      lastBundleName=s.bundleName;
-      addLog('🔔 সার্ভার open — bundle: '+s.bundleName+' — auto extract…');
-      const j=await fetch('/api/fetch-bundle',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({site})}).then(r=>r.json()).catch(()=>null);
-      if(j&&j.ok){render(j);$('save').disabled=false;addLog('✅ auto extract হলো — '+j.bundleName);$('sync-note').innerHTML='<span class="ok">synced ✓</span> <span class="dim">'+s.bundleName+'</span>';}
-      else{addLog('❌ auto extract fail — নিচে ম্যানুয়ালি bundle দিন');}
-    }
+    // open — Cloudflare-protected sites return no bundleName here, but the
+    // browser fetch will find it. Fetch once as soon as the site is reachable.
+    $('sync-note').innerHTML='<span class="ok">open</span> <span class="dim">'+(s.cf?'(Cloudflare — browser দিয়ে নামছে)':(s.bundleName||''))+'</span>';
+    syncBusy=true;
+    addLog('🔔 সার্ভার open — auto নামাচ্ছি (browser দিয়ে)…');
+    const j=await fetch('/api/fetch-bundle',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({site})}).then(r=>r.json()).catch(()=>null);
+    if(j&&j.ok){syncFetched=true;lastBundleName=j.bundleName;render(j);$('save').disabled=false;startAutoWalk();addLog('✅ auto নামানো হলো — '+j.bundleName);$('sync-note').innerHTML='<span class="ok">synced ✓</span> <span class="dim">'+j.bundleName+'</span>';}
+    else{addLog('❌ auto নামানো fail — '+((j&&j.error)||'')+' — ম্যানুয়ালি bundle দিন');$('sync-note').innerHTML='<span class="warn">open কিন্তু নামানো fail</span>';}
+    syncBusy=false;
   };
   tick(); syncTimer=setInterval(tick,2000);
 };
@@ -767,8 +770,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, open: true, bundleName }));
       } catch (e) {
+        // A Cloudflare 403 (or any HTTP status) means the site IS up — it just
+        // blocks plain requests; the browser fetch will get through. Only a real
+        // network failure (ECONNREFUSED / timeout / DNS) means truly closed.
+        const msg = String(e.message || e);
+        const reachable = /HTTP\s+\d/.test(msg);
         res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ ok: true, open: false, error: String(e.message || e) }));
+        return res.end(JSON.stringify({ ok: true, open: reachable, bundleName: '', cf: reachable, error: msg }));
       }
     }
 
