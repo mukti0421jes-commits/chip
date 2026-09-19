@@ -105,7 +105,10 @@ let indRefs = [];   // [{name, addr, state, dist, phone}]
 // block-এর ভেতর: ১ম লাইন = নাম, শেষ সংখ্যা-লাইন = ফোন, মাঝেরগুলো = ঠিকানা।
 function parseBulk(text) {
   const refs = [];
-  const blocks = String(text || '').replace(/\r/g, '').split(/\n[ \t]*\n+/);
+  // reference আলাদা করার লাইন: খালি লাইন, অথবা শুধু ড্যাশ/সমান/আন্ডারস্কোর/তারা দেওয়া লাইন
+  const norm = String(text || '').replace(/\r/g, '')
+    .replace(/^[ \t]*[-–—_=*.]{3,}[ \t]*$/gm, '');
+  const blocks = norm.split(/\n[ \t]*\n+/);
   for (const block of blocks) {
     // পুরনো "|" ফরম্যাটও চলে — pipe সরিয়ে লাইনগুলোকেই ধরি
     const lines = block.split('\n')
