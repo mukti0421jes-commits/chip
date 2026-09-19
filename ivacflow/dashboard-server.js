@@ -74,15 +74,55 @@ function httpGet(url) {
 }
 
 // From the site HTML, find the big index-*.js asset URL and download it.
+// Plain-HTTP fetch is blocked by Cloudflare (403) because it can't pass the
+// browser challenge. Use the real browser (Playwright) to open the site, let
+// Cloudflare clear, find the index bundle, and download it through the page's
+// own (CF-cleared) session. Falls back to plain httpGet if the browser fails.
+async function fetchBundleViaBrowser(site) {
+  if (!chromiumLib) throw new Error('playwright নেই');
+  const args = ['--no-first-run', '--no-default-browser-check'];
+  let browser;
+  try { browser = await chromiumLib.launch({ headless: true, args }); }
+  catch (e) { const exe = findChromeExe(); if (!exe) throw e; browser = await chromiumLib.launch({ headless: true, args, executablePath: exe }); }
+  try {
+    const ctx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' });
+    const page = await ctx.newPage();
+    await page.goto(site, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    // give Cloudflare's challenge + the SPA time to inject the bundle <script>
+    let pick = '';
+    for (let i = 0; i < 20; i++) {
+      pick = await page.evaluate(() => {
+        const srcs = [...document.querySelectorAll('script[src]')].map((s) => s.src);
+        return srcs.find((s) => /assets\/index[-.]/i.test(s)) || srcs.reverse().find((s) => /\.js(\?|$)/.test(s)) || '';
+      }).catch(() => '');
+      if (pick) break;
+      await page.waitForTimeout(1000);
+    }
+    if (!pick) throw new Error('index-*.js পাওয়া যায়নি (Cloudflare/সাইট লোড হয়নি)');
+    const abs = new URL(pick, site).href;
+    // download the bundle through the page session (carries CF cookies)
+    const js = await page.evaluate(async (u) => { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.text(); }, abs);
+    return { name: abs.split('/').pop().split('?')[0], js };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
 async function fetchBundleFromSite(site) {
-  const html = await httpGet(site);
-  const srcs = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/g)].map((m) => m[1]);
-  // prefer an assets/index-*.js; else the last script
-  let pick = srcs.find((s) => /assets\/index[-.]/i.test(s)) || srcs.reverse().find((s) => /\.js(\?|$)/.test(s));
-  if (!pick) throw new Error('index-*.js পাওয়া যায়নি (page HTML-এ script src নেই — Cloudflare আটকাচ্ছে?)');
-  const abs = new URL(pick, site).href;
-  const js = await httpGet(abs);
-  return { name: abs.split('/').pop().split('?')[0], js };
+  // Prefer the browser (passes Cloudflare); fall back to plain HTTP.
+  try { return await fetchBundleViaBrowser(site); }
+  catch (eBrowser) {
+    try {
+      const html = await httpGet(site);
+      const srcs = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/g)].map((m) => m[1]);
+      let pick = srcs.find((s) => /assets\/index[-.]/i.test(s)) || srcs.reverse().find((s) => /\.js(\?|$)/.test(s));
+      if (!pick) throw new Error('index-*.js পাওয়া যায়নি');
+      const abs = new URL(pick, site).href;
+      const js = await httpGet(abs);
+      return { name: abs.split('/').pop().split('?')[0], js };
+    } catch (eHttp) {
+      throw new Error('browser: ' + eBrowser.message + ' | http: ' + eHttp.message + ' (Cloudflare আটকাচ্ছে হতে পারে)');
+    }
+  }
 }
 
 const PORT = process.env.PORT || 8777;
