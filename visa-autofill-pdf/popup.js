@@ -1,5 +1,6 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
+import { parseInvitation, isMinor, buildPatientUndertaking, buildAttendantUndertaking, buildParentalConsent } from './docgen.js';
 import { ocrImage, parsePassport } from './ocr.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
@@ -547,5 +548,74 @@ $('fillNow').onclick = async () => {
     status('এটা ভিসা ফর্মের পেজ নয়। "Visa Website খুলুন" চাপুন।', false);
   }
 };
+
+// ---------------- Undertaking/Consent tab ----------------
+$('tabAutofill').onclick = () => { $('autofillView').classList.remove('hidden'); $('docgenView').classList.add('hidden'); $('tabAutofill').className = 'on'; $('tabDocgen').className = ''; };
+$('tabDocgen').onclick = () => { $('autofillView').classList.add('hidden'); $('docgenView').classList.remove('hidden'); $('tabDocgen').className = 'on'; $('tabAutofill').className = ''; };
+
+function dgStatus(msg, ok = true) { const el = $('dgStatus'); el.textContent = msg; el.className = ok ? 'ok' : 'err'; }
+let dgData = null;
+
+const dgFull = (p) => ((p.given || '') + ' ' + (p.surname || '')).trim();
+
+async function importInvitation(file) {
+  try {
+    dgStatus('⏳ Invitation পড়া হচ্ছে...');
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+    const text = (await pdfText(doc)).split('<<<TABS>>>')[0];
+    dgData = parseInvitation(text);
+    renderDgApplicants();
+    $('invResult').classList.remove('hidden');
+    dgStatus('✔ পড়া হয়েছে — নিচে আবেদনকারী বেছে ফাইল বানান।');
+  } catch (e) { console.error(e); dgStatus('✘ পড়া যায়নি: ' + e.message, false); }
+}
+
+function renderDgApplicants() {
+  const h = dgData.hospital;
+  $('dgHospital').innerHTML = '🏥 <b>' + (h.name || '') + '</b> — ' + [h.city, h.state].filter(Boolean).join(', ') + '<br>রোগ/চিকিৎসা: ' + (dgData.diagnosis || '');
+  const box = $('dgApplicants'); box.innerHTML = '';
+  const mk = (person, role, kind) => {
+    const minor = kind === 'attendant' && isMinor(person);
+    const div = document.createElement('div');
+    div.className = 'prof';
+    div.innerHTML = '<div class="nm">' + dgFull(person) + '</div>' +
+      '<div class="sub" style="margin:2px 0 6px">' + role + (person.passport ? ' · ' + person.passport : '') + (minor ? ' · <span style="color:#fcd34d">১২র নিচে (minor)</span>' : '') + '</div>' +
+      '<div class="btns"></div>';
+    const btns = div.querySelector('.btns');
+    if (kind === 'patient') {
+      addGen(btns, '📄 Undertaking', () => buildPatientUndertaking(dgData, $('dgMission').value));
+    } else {
+      addGen(btns, '📄 Undertaking', () => buildAttendantUndertaking(dgData, person, $('dgMission').value));
+      if (minor) addGen(btns, '👶 Parental Consent', () => buildParentalConsent(dgData, person, $('dgMission').value));
+    }
+    box.appendChild(div);
+  };
+  mk(dgData.patient, 'রোগী / Patient', 'patient');
+  dgData.attendants.forEach((a, i) => mk(a, 'Attendant ' + (i + 1) + (a.relation ? ' · ' + a.relation : ''), 'attendant'));
+}
+
+function addGen(container, label, builder) {
+  const b = document.createElement('button');
+  b.textContent = label; b.style.fontSize = '11px';
+  b.onclick = () => {
+    try {
+      if (!window.jspdf) { dgStatus('✘ jsPDF লোড হয়নি।', false); return; }
+      const { doc, filename } = builder();
+      doc.save(filename);
+      dgStatus('✔ ' + filename + ' ডাউনলোড হয়েছে।');
+    } catch (e) { console.error(e); dgStatus('✘ তৈরি হয়নি: ' + e.message, false); }
+  };
+  container.appendChild(b);
+}
+
+(function wireInv() {
+  const drop = $('invDrop'), inp = $('invFile');
+  drop.onclick = () => inp.click();
+  inp.onchange = () => { if (inp.files[0]) importInvitation(inp.files[0]); };
+  ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; }));
+  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.style.borderColor = 'var(--line)'; }));
+  drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name))) importInvitation(f); });
+})();
 
 load();
