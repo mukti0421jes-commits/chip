@@ -269,6 +269,23 @@ $('saveBtn').onclick = () => {
 };
 $('closeEditor').onclick = closeEditor;
 
+// সব ঠিকানা-সম্পর্কিত ঘর খালি করি (working profile-এ; Save করলে স্থায়ী হবে)
+const ADDR_KEYS = [
+  'pres_add1', 'pres_add2', 'pres_add3', 'pincode',
+  'perm_address1', 'perm_address2', 'perm_address3',
+  'add1ofsponsor_ind', 'add2ofsponsor_ind', 'stateofsponsor_ind', 'districtofsponsor_ind',
+  'add1ofsponsor_msn', 'add2ofsponsor_msn',
+  'place_of_stay1', 'pos_address1', 'pos_state_id1', 'pos_dist_id1',
+  'prv_visit_add1', 'prv_visit_add2', 'prv_visit_add3',
+];
+$('clearAddrBtn').onclick = () => {
+  if (!working) return;
+  if (!confirm('এই profile-এর সব ঠিকানার ঘর খালি করবেন? (Save করলে স্থায়ী হবে)')) return;
+  for (const k of ADDR_KEYS) delete working.values[k];
+  renderFields();
+  status('🧹 সব ঠিকানা মুছে দেওয়া হয়েছে — এখন Save করুন।');
+};
+
 // ---------------- new / import ----------------
 function newId() { return 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6); }
 
