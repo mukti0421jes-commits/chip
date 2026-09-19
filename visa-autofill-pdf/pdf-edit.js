@@ -42,11 +42,15 @@ async function renderAll() {
   for (let pi = 0; pi < pages.length; pi++) {
     const pg = pages[pi];
     const vp = pg.page.getViewport({ scale: zoom }); pg._vp = vp;
+    const RES = Math.max(2, Math.min(3, window.devicePixelRatio || 1)); // শার্প রেন্ডার
     const num = document.createElement('div'); num.className = 'pagenum'; num.textContent = 'PAGE ' + (pi + 1) + ' / ' + pages.length; wrapbox.appendChild(num);
     const wrap = document.createElement('div'); wrap.className = 'page'; wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
-    const canvas = document.createElement('canvas'); canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(vp.width * RES); canvas.height = Math.ceil(vp.height * RES);
+    canvas.style.width = vp.width + 'px'; canvas.style.height = vp.height + 'px';
     pg._canvas = canvas; pg._ctx = canvas.getContext('2d');
-    await pg.page.render({ canvasContext: pg._ctx, viewport: vp }).promise;
+    await pg.page.render({ canvasContext: pg._ctx, viewport: vp, transform: [RES, 0, 0, RES, 0, 0] }).promise;
+    pg._ctx.setTransform(RES, 0, 0, RES, 0, 0); // পরবর্তী whiteout/erase CSS-px স্কেলে
     // white-out edited items + erases
     pg.items.forEach((it, idx) => { if (pg.edits.has(idx)) { const b = box(pg, it, zoom); pg._ctx.fillStyle = '#fff'; pg._ctx.fillRect(b.left - 1, b.top - 1, b.w + 3, b.fh + 4); } });
     pg.erases.forEach((e) => { pg._ctx.fillStyle = '#fff'; pg._ctx.fillRect(e.x * zoom, e.y * zoom, e.w * zoom, e.h * zoom); });
