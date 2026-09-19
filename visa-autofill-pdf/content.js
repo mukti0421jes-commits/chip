@@ -91,6 +91,24 @@
 
   // প্রশ্নের লেখা মিলিয়ে সেই radio-গ্রুপের "No" ক্লিক করি (ID নির্ভর নয়) —
   // Grandfather/Pakistan ও SAARC প্রশ্ন সবসময় No রাখতে
+  // একটা রেডিওর সাথে যুক্ত দৃশ্যমান লেখা (label[for] / মোড়ানো label / ঠিক পাশের টেক্সট)
+  function radioText(r) {
+    let t = '';
+    try {
+      if (r.id) { const l = document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(r.id) : r.id) + '"]'); if (l) t += ' ' + l.textContent; }
+    } catch (_) {}
+    let p = r.parentElement;
+    if (p && p.tagName === 'LABEL') t += ' ' + p.textContent;
+    // ঠিক পরের ভাই-নোড (টেক্সট বা এলিমেন্ট) — সাইট সাধারণত রেডিওর পরে "Yes"/"No" রাখে
+    let n = r.nextSibling, hop = 0;
+    while (n && hop < 3) {
+      const s = (n.nodeType === 3 ? n.textContent : (n.nodeType === 1 ? n.textContent : '')) || '';
+      if (s.trim()) { t += ' ' + s; break; }
+      n = n.nextSibling; hop++;
+    }
+    return t.replace(/\s+/g, ' ').trim();
+  }
+
   function forceNoByText(regexes) {
     const groups = {};
     document.querySelectorAll('input[type="radio"]').forEach((r) => {
@@ -101,21 +119,17 @@
       const rs = groups[k];
       // প্রশ্নের লেখা: রেডিও থেকে উপরে উঠে যথেষ্ট বড় লেখাওলা container
       let c = rs[0], qtext = '';
-      for (let i = 0; i < 6 && c && c.parentElement; i++) {
+      for (let i = 0; i < 7 && c && c.parentElement; i++) {
         c = c.parentElement;
         qtext = c.textContent || '';
         if (qtext.length > 40) break;
       }
       if (!regexes.some((re) => re.test(qtext))) continue;
-      const labelNo = (r) => {
-        const l = r.id && document.querySelector('label[for="' + r.id + '"]');
-        return l && /\bno\b/i.test(l.textContent || '');
-      };
-      const no = rs.find((r) => /^\s*no?\s*$/i.test(r.value)) ||
-                 rs.find((r) => /\bno\b/i.test(r.value)) ||
-                 rs.find(labelNo) ||
-                 (rs.length === 2 ? rs[1] : null); // Yes/No হলে দ্বিতীয়টা সাধারণত No
-      if (no && !no.checked) no.click();
+      // "No" রেডিও: পাশের লেখা "No", নাহলে value No/N, নাহলে Yes/No জোড়ার ২য়টা
+      const no = rs.find((r) => /^\s*no\b/i.test(radioText(r))) ||
+                 rs.find((r) => /^\s*no?\s*$/i.test(r.value) || /\bno\b/i.test(r.value)) ||
+                 (rs.length === 2 ? rs[1] : null);
+      if (no && !no.checked) { no.click(); no.checked = true; no.dispatchEvent(new Event('change', { bubbles: true })); }
     }
   }
 
