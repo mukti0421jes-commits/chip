@@ -97,14 +97,75 @@ let state = { profiles: {}, activeId: null };
 let working = null;   // {name, values, flags} — এডিটরে যেটা দেখাচ্ছে
 let workingId = null;
 let curTab = 0;
+let indRefs = [];   // [{name, addr, state, dist, phone}]
+
+// ---------- India reference bulk list ----------
+const ADDR_MAX = 35;
+function packAddr(text, maxLen, maxLines) {
+  const words = String(text || '').replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const lines = []; let cur = '';
+  for (const w of words) {
+    const t = cur ? cur + ' ' + w : w;
+    if (t.length <= maxLen) cur = t;
+    else if (lines.length < maxLines - 1) { lines.push(cur); cur = w; }
+    else cur = t;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, maxLines);
+}
+function parseRefLine(line) {
+  const p = line.split('|').map((s) => s.trim());
+  if (!p[0]) return null;
+  return { name: p[0] || '', addr: p[1] || '', state: p[2] || '', dist: p[3] || '', phone: (p[4] || '').replace(/[^0-9+]/g, '') };
+}
+function refToLine(r) {
+  return [r.name, r.addr, r.state, r.dist, r.phone].map((x) => x || '').join(' | ');
+}
+function renderIndRefPick() {
+  const sel = $('indRefPick');
+  sel.innerHTML = '<option value="">— বেছে নিন —</option>';
+  indRefs.forEach((r, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = r.name + (r.dist ? ' · ' + r.dist : '');
+    sel.appendChild(o);
+  });
+}
+function applyIndRef(r) {
+  // এডিটর খোলা থাকলে সেখানে, নাহলে সক্রিয় profile-এ India reference বসাই
+  const target = (working && workingId) ? working
+    : (state.activeId && state.profiles[state.activeId]) || null;
+  if (!target) { status('আগে একটা profile Active/Edit করুন।', false); return; }
+  const v = target.values;
+  v.nameofsponsor_ind = r.name;
+  if (r.state) v.stateofsponsor_ind = r.state;
+  if (r.dist) v.districtofsponsor_ind = r.dist;
+  if (r.phone) v.phoneofsponsor_ind = r.phone;
+  const packed = packAddr(r.addr, ADDR_MAX, 2);
+  v.add1ofsponsor_ind = packed[0] || '';
+  v.add2ofsponsor_ind = packed[1] || '';
+  if (working && workingId) {
+    // এডিটরে দেখাচ্ছে — ঘরগুলো রিফ্রেশ
+    if (TABS[curTab].t === 'I. References') renderFields();
+    status('✔ India reference বসানো হয়েছে — Save করুন।');
+  } else {
+    state.profiles[state.activeId] = target;
+    persist();
+    status('✔ "' + (target.name || '') + '" profile-এ India reference বসানো হয়েছে।');
+  }
+}
 
 // ---------------- storage ----------------
 function load() {
-  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue'], (r) => {
+  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate', 'vaIndRefs'], (r) => {
     state.profiles = r.vaProfiles || {};
     state.activeId = r.vaActiveId || null;
     $('enableToggle').checked = r.vaEnabled !== false;
     $('autoContinueToggle').checked = r.vaAutoContinue === true;
+    $('journeyDate').value = r.vaJourneyDate || '';
+    indRefs = Array.isArray(r.vaIndRefs) ? r.vaIndRefs : [];
+    $('indRefBulk').value = indRefs.map(refToLine).join('\n');
+    renderIndRefPick();
     renderProfiles();
   });
 }
@@ -305,6 +366,24 @@ fileInput.onchange = () => { if (fileInput.files[0]) importFile(fileInput.files[
 ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
 ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
 drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f && (f.type === 'application/pdf' || f.type.startsWith('image/'))) importFile(f); });
+
+// ---------------- journey date + india reference list ----------------
+$('journeyDate').oninput = (e) => chrome.storage.local.set({ vaJourneyDate: e.target.value.trim() });
+
+$('saveIndRefs').onclick = () => {
+  indRefs = ($('indRefBulk').value || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    .map(parseRefLine).filter(Boolean);
+  chrome.storage.local.set({ vaIndRefs: indRefs });
+  renderIndRefPick();
+  status('✔ ' + indRefs.length + ' টি India reference সেভ হয়েছে।');
+};
+
+$('indRefPick').onchange = (e) => {
+  const i = e.target.value;
+  if (i === '') return;
+  const r = indRefs[Number(i)];
+  if (r) applyIndRef(r);
+};
 
 // ---------------- toggles & actions ----------------
 $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.target.checked });

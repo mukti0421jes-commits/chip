@@ -47,6 +47,14 @@
   <h1>Visa Autofill (PDF)</h1>
   <div class="sub">Indian Visa ফর্ম — অফলাইন অটো-ফিল</div>
 
+  <div class="card" style="border-color:#0e7490;background:#0b2530">
+    <h2>🗓️ Expected Journey Date (সব profile-এ চলবে)</h2>
+    <div class="fld full">
+      <input type="text" id="journeyDate" placeholder="DD/MM/YYYY" style="background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:8px;font-size:13px;font-family:monospace;width:100%;box-sizing:border-box">
+      <div class="hint" style="font-size:10px;color:var(--muted);margin-top:4px">এখানে যে তারিখ দেবেন সেটাই নতুন ফাইলে "Expected Date of Journey" হিসেবে বসবে। খালি রাখলে PDF-এর তারিখ ব্যবহার হবে।</div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>📄 PDF / ছবি থেকে তথ্য নিন</h2>
     <div id="drop">visa application <b>PDF</b> অথবা passport-এর <b>ছবি/scan</b> এখানে ড্রপ করুন<br>অথবা ক্লিক করে বেছে নিন</div>
@@ -59,6 +67,21 @@
     <div id="profiles"></div>
     <div id="noProfiles" class="sub">এখনো কোনো profile নেই। PDF ড্রপ করুন বা নিচে নতুন তৈরি করুন।</div>
     <button id="newProfile" style="width:100%;margin-top:8px">+ খালি profile তৈরি করুন</button>
+  </div>
+
+  <div class="card">
+    <h2>🇮🇳 India Reference — একসাথে অনেক ঠিকানা</h2>
+    <div class="sub" style="margin:0 0 6px">প্রতি লাইনে একটি reference — এভাবে দিন:<br>
+      <code style="color:#93c5fd">Name | ঠিকানা | State | District | Phone</code></div>
+    <textarea id="indRefBulk" rows="4" placeholder="KARNO TOROFDER | VILLAGE JAGATPUR, POST ASWINI NAGAR, THANA BAGUIATI | WEST BENGAL | NORTH 24 PARGANAS | 919830565254"
+      style="width:100%;box-sizing:border-box;background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:11px;font-family:monospace"></textarea>
+    <button id="saveIndRefs" style="width:100%;margin-top:6px">💾 List সেভ করুন</button>
+    <div class="fld full" style="margin-top:8px">
+      <label style="font-size:11px;color:#cbd5e1;margin-bottom:3px">সেভ করা list থেকে একটি বেছে নিন → সক্রিয় profile-এ India reference বসবে</label>
+      <select id="indRefPick" style="background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:12px">
+        <option value="">— বেছে নিন —</option>
+      </select>
+    </div>
   </div>
 
   <div class="card hidden" id="editorCard">

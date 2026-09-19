@@ -7,6 +7,9 @@
 
 const MONTHS = { JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06', JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12' };
 
+// সাইটের ঠিকানা ঘরগুলোর সর্বোচ্চ দৈর্ঘ্য — এর বেশি হলে পরের ঘরে গড়িয়ে দিই
+const ADDR_MAX = 35;
+
 function toDate(s) {
   if (!s) return '';
   const m = String(s).trim().match(/(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{4})/);
@@ -109,7 +112,8 @@ export function parseVisaPdf(rawText) {
   // ঠিকানা লাইনগুলো → {a1,a2,state,pin}; ডান-কলামের label বাদ দিয়ে
   const parseAddr = (block) => {
     let lines = block.split('\n')
-      .map((l) => l.replace(/Phone No\s+[0-9+]+/, '').replace(/Mobile\s*\/?Cell No\s+[0-9+]+/, '').replace(/Email address\s+\S+@\S+/, ''))
+      // ডান-কলামের label (Phone No / Mobile / Email) — সংখ্যা থাকুক বা না থাকুক, বাদ
+      .map((l) => l.replace(/Phone No\b.*$/i, '').replace(/Mobile\s*\/?\s*Cell No\b.*$/i, '').replace(/Email address\b.*$/i, ''))
       .map((l) => l.replace(/^\s*(Present|Permanent|Address)\s*/, ''))
       .map(clean).filter(Boolean);
     let state = '', pin = '';
@@ -121,10 +125,10 @@ export function parseVisaPdf(rawText) {
       if (cc) { state = clean(cc[1]); pin = cc[2] || ''; lines = lines.slice(0, -1); }
       else if (/^[A-Z][A-Za-z ]+$/.test(last)) { state = last; lines = lines.slice(0, -1); }
     }
-    const half = Math.ceil(lines.length / 2) || 1;
-    const a1 = lines.slice(0, half).join(' ');
-    const a2 = lines.slice(half).join(' ');
-    return { a1, a2, state, pin };
+    // সব ঠিকানা-লাইন এক করে ঘরের ক্ষমতা (৩৫) অনুযায়ী ২ ঘরে ভাগ করি —
+    // যাতে সব লেখা এক ঘরে ঢুকে না যায় (প্রতি placeholder তার নিজের সীমা পর্যন্ত)
+    const packed = packInto(lines.join(' '), ADDR_MAX, 2);
+    return { a1: packed[0] || '', a2: packed[1] || '', state, pin };
   };
 
   const pres = parseAddr(rawBlock(/C\. Applicant's Contact Details/, /Permanent/));
@@ -287,11 +291,11 @@ function assignRef(segs, values, ids) {
     const dt = WB_DIST.find((d) => addr.toUpperCase().includes(d));
     if (dt) { values[ids.dist] = dt; addr = rclean(addr.replace(new RegExp(dt, 'i'), '')); }
   }
-  const parts = addr.split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length) {
-    const half = Math.ceil(parts.length / 2);
-    values[ids.a1] = parts.slice(0, half).join(', ');
-    if (parts.length > half) values[ids.a2] = parts.slice(half).join(', ');
+  // ঠিকানা ঘরের ক্ষমতা (৩৫) অনুযায়ী ২ ঘরে ভাগ — সব এক ঘরে ঢুকে না যায়
+  if (addr) {
+    const packed = packInto(addr, ADDR_MAX, 2);
+    if (packed[0]) values[ids.a1] = packed[0];
+    if (packed[1]) values[ids.a2] = packed[1];
   }
 }
 

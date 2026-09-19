@@ -178,10 +178,15 @@
   }
 
   async function run() {
-    chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue'], async (res) => {
+    chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate'], async (res) => {
       if (res.vaEnabled === false) return;
       const profiles = res.vaProfiles || {};
       const active = res.vaActiveId && profiles[res.vaActiveId];
+      // উপরের আলাদা ঘরে দেওয়া Expected Journey Date থাকলে সেটাই সব profile-এ চলে
+      if (active && res.vaJourneyDate) {
+        active.values = active.values || {};
+        active.values.jouryney_id = res.vaJourneyDate;
+      }
       if (!active) {
         showBadge('⚠ কোনো profile সিলেক্ট করা নেই — extension আইকনে ক্লিক করুন', '#c0392b');
         return;
