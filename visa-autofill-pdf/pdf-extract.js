@@ -303,14 +303,16 @@ function assignRef(segs, values, ids) {
 function parseReferences(T, values) {
   const m = T.match(/I\. Details of Two Reference([\s\S]*?)(?:\n\s*I\. DOCUMENTS|\n\s*K\. DECLARATION|$)/);
   if (!m) return;
+  // পেজের হেডার/ওয়াটারমার্ক লাইন (ডান কলামে পড়ে) — reference নয়, বাদ
+  const noise = (s) => /^(Application Id|Web Registration|Page\b|BGDD?V|BGDRV)/i.test(s) || /Application Id\s*:/i.test(s);
   const indSegs = [], bdSegs = [];
   for (const raw of m[1].split('\n')) {
     const parts = raw.split('\t');
     // কমা রেখে দিই (ঠিকানার অংশ যেন না মেশে), শুধু whitespace trim
     const ind = (parts[1] || '').replace(/\s+/g, ' ').trim();
     const bd = (parts[2] || '').replace(/\s+/g, ' ').trim();
-    if (ind && !/^In India$/i.test(ind)) indSegs.push(ind);
-    if (bd && !/^In BANGLADESH$/i.test(bd)) bdSegs.push(bd);
+    if (ind && !/^In India$/i.test(ind) && !noise(ind)) indSegs.push(ind);
+    if (bd && !/^In BANGLADESH$/i.test(bd) && !noise(bd)) bdSegs.push(bd);
   }
   assignRef(indSegs, values, { name: 'nameofsponsor_ind', a1: 'add1ofsponsor_ind', a2: 'add2ofsponsor_ind', phone: 'phoneofsponsor_ind', state: 'stateofsponsor_ind', dist: 'districtofsponsor_ind' });
   assignRef(bdSegs, values, { name: 'nameofsponsor_msn', a1: 'add1ofsponsor_msn', a2: 'add2ofsponsor_msn', phone: 'phoneofsponsor_msn' });
