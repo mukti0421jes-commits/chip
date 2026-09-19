@@ -1,0 +1,403 @@
+/* ===================================================================
+   Visa Autofill (PDF) — content script
+   indianvisa-bangladesh.nic.in ফর্মে সেভ করা তথ্য অটো-ফিল করে।
+   প্রতিটা পেজে যেসব field id আছে শুধু সেগুলোই ভরে (page-router লাগে না)।
+   =================================================================== */
+
+(function () {
+  'use strict';
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // data URL → File
+  function dataURLtoFile(dataurl, filename, mime) {
+    const arr = String(dataurl).split(',');
+    const type = mime || (arr[0].match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+    const bstr = atob(arr[1]);
+    let n = bstr.length; const u8 = new Uint8Array(n);
+    while (n--) u8[n] = bstr.charCodeAt(n);
+    return new File([u8], filename, { type });
+  }
+  // programmatically একটা <input type=file>-এ ফাইল বসাই (DataTransfer দিয়ে)
+  function injectFile(input, dataurl, filename, mime) {
+    if (!input || !dataurl) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(dataURLtoFile(dataurl, filename, mime));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return input.files && input.files.length === 1;
+    } catch (e) { console.error('[Visa Autofill] file inject failed:', e); return false; }
+  }
+
+  // Photo Upload পেজ: popup-এ রাখা ছবি ফাইল-ইনপুটে বসাই
+  function handlePhotoUpload() {
+    chrome.storage.local.get(['vaPhotoData', 'vaPhotoName', 'vaPhotoType'], (r) => {
+      if (!r.vaPhotoData) { showBadge('⚠ ছবি আপলোড ম্যানুয়াল — popup-এ ছবি দিলে অটো বসবে', '#e67e22'); return; }
+      const inp = document.getElementById('image_error_id') || document.querySelector('input[type="file"][name="appl.image"]');
+      const ok = injectFile(inp, r.vaPhotoData, r.vaPhotoName || 'photo.jpg', r.vaPhotoType || 'image/jpeg');
+      showBadge(ok ? '✔ ছবি বসানো হয়েছে — দরকারে crop করে Save/Upload চাপুন' : '⚠ ছবি বসানো যায়নি — ম্যানুয়ালি দিন', ok ? '#27ae60' : '#c0392b');
+    });
+  }
+
+  // Document Upload পেজ: প্রতিটা সারির পাশে একটা dropdown বসাই — সেখান থেকে
+  // popup-এ রাখা যেকোনো ফাইল বেছে দিলে ঐ সারির ইনপুটে বসে। সব mFile একই নামের,
+  // তাই Upload চাপার সময় শুধু ঐ সারির ফাইল রেখে বাকিগুলো ফাঁকা করি।
+  function handleDocumentUpload() {
+    chrome.storage.local.get(['vaPassportData', 'vaPassportName', 'vaPassportType', 'vaDocs'], (r) => {
+      const allDocs = Array.isArray(r.vaDocs) ? r.vaDocs.slice() : [];
+      if (r.vaPassportData) allDocs.unshift({ label: 'Passport (personal details page)', filename: r.vaPassportName || 'passport.pdf', type: r.vaPassportType || 'application/pdf', data: r.vaPassportData, _passport: true });
+      if (!allDocs.length) { showBadge('⚠ popup-এ ছবি/পাসপোর্ট/অন্যান্য ডকুমেন্ট যোগ করুন — তারপর এখানে বসাতে পারবেন', '#e67e22'); return; }
+
+      const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const allFiles = () => document.querySelectorAll('input[type="file"][name="mFile"]');
+      const rows = [...document.querySelectorAll('table tbody tr')];
+      let placed = 0;
+
+      rows.forEach((tr) => {
+        const input = tr.querySelector('input[type="file"]');
+        if (!input || input.dataset.vafillPicker) return;
+        input.dataset.vafillPicker = '1';
+        const cell = tr.querySelector('td:nth-child(2)');
+        const desc = norm(cell && cell.textContent);
+
+        // সারির পাশে dropdown
+        const sel = document.createElement('select');
+        sel.style.cssText = 'display:block;margin-top:6px;max-width:220px;padding:4px;border:2px solid #2563eb;border-radius:6px;background:#eff6ff;color:#111;font-size:12px';
+        let html = '<option value="">📎 এখানে বসান…</option>';
+        allDocs.forEach((d, i) => { html += '<option value="' + i + '">' + (d.label || d.filename || ('ডকুমেন্ট ' + (i + 1))).replace(/</g, '&lt;') + '</option>'; });
+        sel.innerHTML = html;
+
+        const place = (d) => {
+          allFiles().forEach((fi) => { if (fi !== input) { try { fi.value = ''; } catch (_) {} } });
+          injectFile(input, d.data, d.filename || 'document.pdf', d.type);
+        };
+        sel.onchange = () => { if (sel.value === '') return; place(allDocs[+sel.value]); };
+        input.insertAdjacentElement('afterend', sel);
+
+        // নাম সারির বিবরণের সাথে মিললে আগেই বেছে বসিয়ে রাখি (passport সাধারণত সারি ১)
+        let autoIdx = allDocs.findIndex((d) => { const dn = norm(d.label); return dn && dn.length >= 4 && (desc.indexOf(dn) >= 0 || dn.indexOf(desc) >= 0); });
+        if (autoIdx < 0) { const pi = allDocs.findIndex((d) => d._passport); if (pi >= 0 && /passport page containing personal|personal particulars/.test(desc)) autoIdx = pi; }
+        if (autoIdx >= 0) { sel.value = String(autoIdx); injectFile(input, allDocs[autoIdx].data, allDocs[autoIdx].filename || 'document.pdf', allDocs[autoIdx].type); placed++; }
+
+        // Upload চাপার সময় শুধু এই সারির ফাইল থাকবে
+        const btn = tr.querySelector('input[type="submit"], button[type="submit"]');
+        if (btn) btn.addEventListener('click', () => { if (input.files && input.files.length) allFiles().forEach((fi) => { if (fi !== input) { try { fi.value = ''; } catch (_) {} } }); }, true);
+      });
+
+      showBadge('📎 প্রতিটা সারির পাশের নীল dropdown থেকে ফাইল বেছে "Upload Document" চাপুন' + (placed ? ' (' + placed + 'টি আগেই বসানো)' : ''), '#2563eb');
+    });
+  }
+
+  function showBadge(text, color = '#e67e22') {
+    let b = document.getElementById('vafill-badge');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'vafill-badge';
+      b.style.cssText =
+        'position:fixed;top:10px;right:10px;z-index:2147483647;padding:8px 14px;' +
+        'border-radius:6px;color:#fff;font:13px Arial,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+      document.body.appendChild(b);
+    }
+    b.style.background = color;
+    b.textContent = text;
+  }
+
+  // select-এ value মিললে value দিয়ে, নাহলে দৃশ্যমান লেখা (option text) দিয়ে মেলায়।
+  // ফলে "BANGLADESH" বা "BGD" — দুটোর যেকোনোটাই কাজ করে।
+  function setValueSmart(el, raw) {
+    if (el == null || raw == null || raw === '') return false;
+    const val = String(raw).trim();
+    if (el.tagName === 'SELECT') {
+      const opts = Array.from(el.options);
+      let opt = opts.find((o) => o.value === val);
+      if (!opt) opt = opts.find((o) => o.value.toUpperCase() === val.toUpperCase());
+      if (!opt) opt = opts.find((o) => (o.textContent || '').trim().toUpperCase() === val.toUpperCase());
+      if (!opt) opt = opts.find((o) => (o.textContent || '').trim().toUpperCase().includes(val.toUpperCase()) && val.length > 2);
+      if (!opt) return false;
+      el.value = opt.value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    el.value = val;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function fillById(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return false;
+    return setValueSmart(el, value);
+  }
+
+  function clickRadio(id, shouldWant) {
+    const el = document.getElementById(id);
+    if (!el) return false;
+    if (!el.checked) el.click();
+    return true;
+  }
+
+  function setCheckbox(id, want) {
+    const el = document.getElementById(id);
+    if (!el) return false;
+    if (!!el.checked !== !!want) el.click();
+    return true;
+  }
+
+  function setAutoConfirm(enabled) {
+    document.dispatchEvent(new CustomEvent('ivac-macros-autoconfirm', { detail: { enabled } }));
+  }
+
+  // MAIN world-এ jQuery কাজ চালাতে (chosen Purpose + datepicker বন্ধ)
+  function mainWorld(detail) {
+    document.dispatchEvent(new CustomEvent('vafill-main', { detail }));
+  }
+
+  // state বদলানোর পর AJAX-এ district আসতে সময় লাগে — option না আসা পর্যন্ত অপেক্ষা
+  async function waitAndSet(id, value, timeoutMs = 6000) {
+    if (!value) return false;
+    const start = Date.now();
+    await sleep(400);
+    while (Date.now() - start < timeoutMs) {
+      const el = document.getElementById(id);
+      if (el && el.options && el.options.length > 1) {
+        if (setValueSmart(el, value)) return true;
+      }
+      await sleep(250);
+    }
+    return fillById(id, value);
+  }
+
+  // প্রশ্নের লেখা মিলিয়ে সেই radio-গ্রুপের "No" ক্লিক করি (ID নির্ভর নয়) —
+  // Grandfather/Pakistan ও SAARC প্রশ্ন সবসময় No রাখতে
+  // একটা রেডিওর সাথে যুক্ত দৃশ্যমান লেখা (label[for] / মোড়ানো label / ঠিক পাশের টেক্সট)
+  function radioText(r) {
+    let t = '';
+    try {
+      if (r.id) { const l = document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(r.id) : r.id) + '"]'); if (l) t += ' ' + l.textContent; }
+    } catch (_) {}
+    let p = r.parentElement;
+    if (p && p.tagName === 'LABEL') t += ' ' + p.textContent;
+    // ঠিক পরের ভাই-নোড (টেক্সট বা এলিমেন্ট) — সাইট সাধারণত রেডিওর পরে "Yes"/"No" রাখে
+    let n = r.nextSibling, hop = 0;
+    while (n && hop < 3) {
+      const s = (n.nodeType === 3 ? n.textContent : (n.nodeType === 1 ? n.textContent : '')) || '';
+      if (s.trim()) { t += ' ' + s; break; }
+      n = n.nextSibling; hop++;
+    }
+    return t.replace(/\s+/g, ' ').trim();
+  }
+
+  function forceNoByText(regexes) {
+    const groups = {};
+    document.querySelectorAll('input[type="radio"]').forEach((r) => {
+      const k = r.name || r.id; if (!k) return;
+      (groups[k] = groups[k] || []).push(r);
+    });
+    for (const k in groups) {
+      const rs = groups[k];
+      // প্রশ্নের লেখা: রেডিও থেকে উপরে উঠে যথেষ্ট বড় লেখাওলা container
+      let c = rs[0], qtext = '';
+      for (let i = 0; i < 7 && c && c.parentElement; i++) {
+        c = c.parentElement;
+        qtext = c.textContent || '';
+        if (qtext.length > 40) break;
+      }
+      if (!regexes.some((re) => re.test(qtext))) continue;
+      // "No" রেডিও: পাশের লেখা "No", নাহলে value No/N, নাহলে Yes/No জোড়ার ২য়টা
+      const no = rs.find((r) => /^\s*no\b/i.test(radioText(r))) ||
+                 rs.find((r) => /^\s*no?\s*$/i.test(r.value) || /\bno\b/i.test(r.value)) ||
+                 (rs.length === 2 ? rs[1] : null);
+      if (no && !no.checked) { no.click(); no.checked = true; no.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
+  }
+
+  // একটা রেডিওকে সিলেক্ট করি — click() (সাইটের onclick চলে) + checked + change
+  function pickRadio(el) {
+    if (!el) return false;
+    if (!el.checked) { try { el.click(); } catch (_) {} }
+    el.checked = true;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  // group name + value ধরে সঠিক রেডিও সিলেক্ট (সবচেয়ে নির্ভরযোগ্য)
+  function setRadioByValue(name, val) {
+    let done = false;
+    document.querySelectorAll('input[type="radio"][name="' + name + '"]').forEach((el) => {
+      if ((el.value || '').trim().toUpperCase() === val) done = pickRadio(el) || done;
+    });
+    return done;
+  }
+
+  // Grandparent (সবসময় No) ও SAARC (flag থেকে, ডিফল্ট No) — name+value, নাহলে id, নাহলে লেখা
+  function enforceKeyRadios(flags) {
+    const saarc = (flags && flags.saarc === 'YES') ? 'YES' : 'NO';
+    if (!setRadioByValue('appl.grandparent_flag', 'NO')) pickRadio(document.getElementById('grandparent_flag2'));
+    if (!setRadioByValue('appl.saarc_flag', saarc)) pickRadio(document.getElementById(saarc === 'YES' ? 'saarc_flag1' : 'saarc_flag2'));
+    // ব্যাকআপ: প্রশ্নের লেখা মিলিয়ে (শুধু No-গুলোর জন্য)
+    const noRegexes = [/grand ?father|grand ?mother|pakistan/i];
+    if (saarc === 'NO') noRegexes.push(/saarc|south asian/i);
+    forceNoByText(noRegexes);
+  }
+
+  // flags → সঠিক radio/checkbox
+  async function applyFlags(flags) {
+    if (!flags) return;
+    if (flags.changedName) { setCheckbox('changedSurnameCheck', true); await sleep(200); }
+    if (flags.sameAddress) setCheckbox('sameAddress_id', true);
+
+    if (flags.otherPassport) clickRadio(flags.otherPassport === 'YES' ? 'other_ppt_1' : 'other_ppt_2');
+    // Grandfather (সবসময় No) ও SAARC (flag থেকে, ডিফল্ট No)
+    enforceKeyRadios(flags);
+    if (flags.visitedIndia) { clickRadio(flags.visitedIndia === 'YES' ? 'old_visa_flag1' : 'old_visa_flag2'); await sleep(200); }
+    if (flags.refused) clickRadio(flags.refused === 'YES' ? 'refuse_flag1' : 'refuse_flag2');
+    if (flags.military) clickRadio(flags.military === 'YES' ? 'prev_org1' : 'prev_org2');
+  }
+
+  // Additional Questions পেজ: প্রতিটা প্রশ্নের radio "No" + declaration checkbox টিক
+  function fillAdditionalQuestions() {
+    const groups = {};
+    document.querySelectorAll('input[type="radio"]').forEach((r) => {
+      const k = r.name || r.id;
+      (groups[k] = groups[k] || []).push(r);
+    });
+    let n = 0;
+    for (const k in groups) {
+      const no = groups[k].find((r) => /^\s*n(o)?\s*$/i.test(r.value)) ||
+        groups[k].find((r) => /\bno\b/i.test(r.value)) ||
+        groups[k].find((r) => /\bno\b/i.test((document.querySelector('label[for="' + r.id + '"]') || {}).textContent || ''));
+      if (no) { if (!no.checked) no.click(); n++; }
+    }
+    // declaration checkbox (নিচের "I ... hereby declare")
+    document.querySelectorAll('input[type="checkbox"]').forEach((c) => { if (!c.disabled && !c.checked) c.click(); });
+    showBadge('✔ সব প্রশ্ন No + declaration টিক — যাচাই করে Continue চাপুন', '#27ae60');
+    return n;
+  }
+
+  // Registration পেজ: dropdown গুলো ধাপে ধাপে AJAX-এ লোড হয়, তাই ক্রম মেনে অপেক্ষা করে ভরি
+  async function fillRegistration(data) {
+    const v = data.values || {};
+    if (v.countryname_id) { fillById('countryname_id', v.countryname_id); await sleep(700); }
+    if (v.missioncode_id) { fillById('missioncode_id', v.missioncode_id); await sleep(500); }
+    // Nationality option AJAX-এ আসে — অপেক্ষা করে সেট (এতে Purpose AJAX-ও শুরু হয়)
+    if (v.nationality_id) { await waitAndSet('nationality_id', v.nationality_id, 8000); await sleep(500); }
+
+    const setTexts = () => {
+      fillById('dob_id', v.dob_id);
+      fillById('email_id', v.email_id);
+      fillById('email_re_id', v.email_re_id || v.email_id);
+      fillById('jouryney_id', v.jouryney_id);
+    };
+    setTexts();
+    mainWorld({ purpose: v.visaPurposeDropdown || '', purposeText: v.visaTypeText || '' }); // chosen Purpose + datepicker বন্ধ
+    await sleep(700);
+    setTexts(); // AJAX reset ঠেকাতে আবার
+    mainWorld({ purpose: v.visaPurposeDropdown || '', purposeText: v.visaTypeText || '' });
+
+    const cap = document.getElementById('captcha');
+    if (cap) cap.focus();
+    showBadge('✔ ফিল হয়েছে — CAPTCHA টাইপ করে Continue চাপুন', '#27ae60');
+  }
+
+  async function fillPage(data) {
+    const values = data.values || {};
+    const flags = data.flags || {};
+
+    // radio/checkbox আগে সেট করি (এগুলো লুকানো field দেখায়/লুকায়)
+    await applyFlags(flags);
+    await sleep(150);
+
+    // প্রথমে present-country/state জাতীয় dropdown সেট, যাতে dependent AJAX শুরু হয়
+    if (values.pres_country) { fillById('pres_country', values.pres_country); await sleep(300); }
+    if (values.stateofsponsor_ind) { fillById('stateofsponsor_ind', values.stateofsponsor_ind); }
+    if (values.marital_status) { fillById('marital_status', values.marital_status); await sleep(250); }
+    if (values.occupation) { fillById('occupation', values.occupation); await sleep(200); }
+
+    // dependent district আলাদাভাবে অপেক্ষা করে সেট করি
+    const deferred = new Set(['districtofsponsor_ind', 'pos_dist_id1', 'pos_dist_id2']);
+
+    for (const [id, val] of Object.entries(values)) {
+      if (deferred.has(id)) continue;
+      fillById(id, val);
+    }
+
+    if (values.districtofsponsor_ind) await waitAndSet('districtofsponsor_ind', values.districtofsponsor_ind);
+    if (values.pos_dist_id1) await waitAndSet('pos_dist_id1', values.pos_dist_id1);
+
+    showBadge('✔ ফিল হয়েছে — যাচাই করে Continue চাপুন', '#27ae60');
+  }
+
+  async function run() {
+    chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate'], async (res) => {
+      if (res.vaEnabled === false) return;
+      const profiles = res.vaProfiles || {};
+      const active = res.vaActiveId && profiles[res.vaActiveId];
+      // উপরের আলাদা ঘরে দেওয়া Expected Journey Date থাকলে সেটাই সব profile-এ চলে
+      if (active && res.vaJourneyDate) {
+        active.values = active.values || {};
+        active.values.jouryney_id = res.vaJourneyDate;
+      }
+      if (!active) {
+        showBadge('⚠ কোনো profile সিলেক্ট করা নেই — extension আইকনে ক্লিক করুন', '#c0392b');
+        return;
+      }
+      const path = window.location.pathname;
+
+      // Photo/Document পেজে popup-এ রাখা ফাইল অটো-বসাই (আপলোড/সাবমিট নিজেই করতে হবে)
+      if (/PhotoUpload/i.test(path)) { handlePhotoUpload(); return; }
+      if (/DocumentUpload/i.test(path)) { handleDocumentUpload(); return; }
+      if (/Confirm/i.test(path)) { showBadge('👀 সব যাচাই করে তারপর Confirm করুন', '#e67e22'); return; }
+
+      // Additional Questions পেজ: ৬টা প্রশ্নই "No" + declaration checkbox টিক
+      if (/AdditionalQuestion/i.test(path)) {
+        fillAdditionalQuestions();
+        if (res.vaAutoContinue === true) {
+          await sleep(500);
+          const btn = document.getElementById('continue');
+          if (btn) { showBadge('➡ অটো-Continue...', '#2980b9'); await sleep(400); btn.click(); }
+        }
+        return;
+      }
+
+      const isRegistration = /Registration/i.test(path);
+      setAutoConfirm(true);
+      const purpose = (active.values || {}).visaPurposeDropdown || '';
+      const purposeText = (active.values || {}).visaTypeText || '';
+      try {
+        // Registration পেজ আলাদা — cascading dropdown ক্রম মেনে ভরতে হয়
+        if (isRegistration) {
+          await fillRegistration(active);
+          return; // Registration পেজে কখনো অটো-Continue নয়
+        }
+
+        await fillPage(active);
+        await sleep(1200);
+        await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
+
+        // Grandparent/SAARC — সাইট পরে reset করলেও যেন ঠিক থাকে, কয়েকবার নিশ্চিত করি
+        const kf = active.flags || {};
+        [800, 2000, 3500, 5000].forEach((t) => setTimeout(() => enforceKeyRadios(kf), t));
+
+        // chosen Purpose সেট + খোলা datepicker বন্ধ (পেজের jQuery দিয়ে, MAIN world)
+        mainWorld({ purpose, purposeText });
+        setTimeout(() => mainWorld({ purpose, purposeText }), 1500); // purpose option AJAX-এ এলে আবার
+
+        if (res.vaAutoContinue === true) {
+          await sleep(500);
+          const btn = document.getElementById('continue');
+          if (btn) { showBadge('➡ অটো-Continue...', '#2980b9'); await sleep(400); btn.click(); }
+        }
+      } catch (err) {
+        showBadge('✘ এরর — কনসোল দেখুন (F12)', '#c0392b');
+        console.error('[Visa Autofill] error:', err);
+      } finally {
+        setAutoConfirm(false);
+      }
+    });
+  }
+
+  if (document.readyState === 'complete') setTimeout(run, 500);
+  else window.addEventListener('load', () => setTimeout(run, 500));
+})();

@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Ivac Macros",
+  "version": "1.1",
+  "description": "Indian Visa Online (indianvisa-bangladesh.nic.in) ফর্মের জন্য অটো-ফিল সহায়ক। CAPTCHA ও ফাইল আপলোড সবসময় ম্যানুয়ালি করতে হয়।",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://indianvisa-bangladesh.nic.in/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Ivac Macros"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://indianvisa-bangladesh.nic.in/visa/*"],
+      "js": ["autoconfirm.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://indianvisa-bangladesh.nic.in/visa/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ Automation</title>
+<style>
+  :root{--bg1:#eef5f2;--bg2:#e6eef8;--card:#ffffff;--ink:#0b1220;--muted:#41506a;--line:#d7dee7;--brand:#0b6b4e;--brand2:#12b886;--accent:#0b6b4e;--headbg:linear-gradient(90deg,#0b6b4e,#0e7c5a 55%,#12b886);--grad:linear-gradient(135deg,#0b6b4e,#12b886);}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(160deg,var(--bg1),var(--bg2));background-attachment:fixed;min-height:100vh;color:var(--ink);font-family:"Noto Sans Bengali","Segoe UI",Arial,sans-serif;font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;}
+  header{background:var(--headbg);color:#fff;border-bottom:none;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+  header .brand b{color:#fff}header .brand small{color:rgba(255,255,255,.8)}
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{width:34px;height:34px;border-radius:9px;background:#fff;color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;letter-spacing:.5px;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+  .brand b{font-size:17px}.brand small{display:block;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+  .wrap{max-width:720px;margin:0 auto;padding:24px 16px 60px}
+  .eyebrow{text-align:center;color:var(--brand);letter-spacing:3px;font-size:12px;font-weight:800;text-transform:uppercase;margin:8px 0}
+  h1{text-align:center;font-size:30px;margin:4px 0 6px;line-height:1.25;color:var(--ink);font-weight:800}
+  h1 .g{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+  .lead{text-align:center;color:var(--ink);margin:0 auto 22px;max-width:520px;font-size:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 8px 24px rgba(15,23,42,.08)}
+  #drop{border:2px dashed #cbd5e1;border-radius:14px;padding:40px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  #drop.drag{border-color:var(--brand);background:#ecfdf5;color:var(--ink)}
+  #drop .ic{font-size:34px}
+  button{font-family:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 14px;font-size:14px}
+  button:hover{border-color:var(--brand)}
+  .btn-primary{background:var(--grad);border:none;color:#fff;font-weight:800;box-shadow:0 3px 10px rgba(11,107,78,.35)}
+  .btn-primary:hover{filter:brightness(1.06)}
+  .btn-block{width:100%;padding:13px;font-size:15px}
+  .hidden{display:none!important}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20;animation:fadeIn .18s ease}
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  .overlay .modal{animation:pop .2s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+  .modal{background:var(--card);color:var(--ink);border-radius:16px;max-width:460px;width:100%;max-height:90vh;overflow:auto;padding:22px;border:1px solid var(--line)}
+  .modal .step{color:var(--brand);font-size:12px;font-weight:800;letter-spacing:2px;text-transform:uppercase}
+  .modal h2{margin:6px 0 2px;font-size:21px;color:var(--ink);font-weight:800}
+  .modal .sub{color:var(--muted);font-size:14px;margin-bottom:14px}
+  .opt{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
+  .opt:hover{border-color:#a7f3d0}
+  .opt.sel{border-color:var(--brand);background:#ecfdf5}
+  .opt .ic{width:34px;height:34px;border-radius:9px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:17px}
+  .opt .nm{font-weight:800;font-size:16px;color:var(--ink)}.opt .tag{font-size:11px;background:#cbd5e1;border-radius:5px;padding:1px 7px;margin-left:6px;color:#0b1220;font-weight:800;vertical-align:middle}
+  .opt .d{color:var(--muted);font-size:13px}
+  .opt .go{margin-left:auto;color:var(--brand);font-weight:800}
+  .row-end{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .rowbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .sig-btn{flex:1;min-width:120px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 8px}
+  .sig-btn .ic{font-size:20px}
+  .note{font-size:12px;color:var(--muted)}
+  .pill{display:inline-block;background:#ecfdf5;color:var(--brand);border:1px solid #a7f3d0;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:700}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+  input,select{font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px;width:100%}
+  /* signature editor */
+  .sigwrap{background:repeating-conic-gradient(#eee 0% 25%,#fff 0% 50%) 50%/18px 18px;border:1px solid var(--line);border-radius:10px;position:relative;overflow:hidden;touch-action:none}
+  .sigwrap canvas{display:block;max-width:100%}
+  .crop{position:absolute;border:2px dashed var(--brand);background:rgba(14,124,90,.08);cursor:move}
+  .crop .h{position:absolute;width:12px;height:12px;background:#fff;border:2px solid var(--brand);border-radius:3px}
+  .sld{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .sld label{flex:0 0 150px;font-size:13px}
+  .sld input{flex:1}
+  video{width:100%;border-radius:10px;background:#000}
+  #status{min-height:18px;font-size:13px;margin-top:10px}
+  .ok{color:var(--brand)}.err{color:#dc2626}
+  /* header buttons */
+  .hbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .hb{font-weight:700;font-size:13px;border:none;color:#fff}
+  .hb-amber{background:linear-gradient(135deg,#f59e0b,#d97706)}.hb-green{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.5);color:#fff}
+  .hb-out{background:#fff;color:var(--brand);border:none;font-weight:800}
+  /* dividers */
+  .divider{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--brand);font-weight:800;font-size:13px;letter-spacing:1px;margin:26px 0 14px}
+  .divider span{white-space:nowrap}
+  /* promo */
+  .promo{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-left:5px solid var(--brand)}
+  .promo-logo{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .promo-txt{flex:1;min-width:200px}
+  .promo-head{font-weight:800;font-size:16px}
+  .promo-head .tag{font-size:10px;background:#e2e8f0;color:#334155;border-radius:5px;padding:1px 6px;margin-left:6px;vertical-align:middle}
+  .stars{color:#f59e0b;font-size:13px;margin-top:4px}
+  /* tool buttons */
+  .toolrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:8px}
+  .toolrow.center{margin-top:4px}
+  .tool{color:#fff;border:none;font-weight:700;font-size:13px;padding:10px 16px;border-radius:24px}
+  .t-indigo{background:#4f46e5}.t-orange{background:#ea580c}.t-violet{background:#7c3aed}.t-cyan{background:#0891b2}.t-green{background:#059669}.t-pink{background:#db2777}.t-wa{background:#16a34a}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:26px;padding-top:14px;border-top:1px solid var(--line)}
+  .tutorial{position:fixed;right:18px;bottom:18px;background:#0f172a;color:#fff;border:none;border-radius:22px;padding:10px 18px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:10}
+  @media (prefers-color-scheme: dark){
+    :root{--bg1:#0a1220;--bg2:#0e1a2e;--card:#16233b;--ink:#f2f6fc;--muted:#aab8cd;--line:#2b3a52;--brand:#34d399;--brand2:#5eead4;--accent:#34d399;
+      --headbg:linear-gradient(90deg,#065f46,#0b6b4e 55%,#0f766e);--grad:linear-gradient(135deg,#059669,#34d399);}
+    input,select{background:#0e1a2e;color:#f2f6fc;border-color:#2b3a52}
+    button{background:#22304a;color:#f2f6fc;border-color:#3a4c6a}
+    .sig-btn{background:#1b2740;border-color:#33507a}
+    .card,.modal{box-shadow:0 6px 24px rgba(0,0,0,.35)}
+    #drop{border-color:#33507a}
+    .opt{border-color:#2b3a52}
+    .opt .ic{background:#22304a}.opt .tag{background:#33507a;color:#f2f6fc}
+    .opt.sel{background:#0f2a20;border-color:var(--brand)}
+    #drop.drag{background:#0f2a20}
+    .pill{background:#0f2a20;border-color:#1f5e46;color:#34d399}
+    .hb-out{background:#16233b;color:#34d399}
+    .promo-head .tag{background:#33507a;color:#f2f6fc}
+    .tutorial{background:#22304a}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ Automation</b><small>Undertaking · Consent Letter</small></div></div>
+  <div class="hbtns">
+    <button class="hb hb-amber" data-todo="manual">✎ ম্যানুয়ালি করুন</button>
+    <button class="hb hb-green" data-todo="qr">▦ QR স্ক্যান</button>
+    <button class="hb hb-out" data-todo="app">↓ ডাউনলোড অ্যাপ</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="eyebrow">Undertaking · Concern Letter</div>
+  <h1>অটোমেটিক তৈরি করুন <span class="g">অঙ্গিকারনামা, সম্মতিপত্র</span></h1>
+  <p class="lead">Medical/Ayush ভিসার <b>Invitation Letter (PDF)</b> দিন — ডাউনলোড করে নিন প্রয়োজনীয় অঙ্গিকারনামা, সম্মতিপত্র।</p>
+
+  <div class="card">
+    <div id="drop">
+      <div class="ic">📄</div>
+      <div style="margin-top:8px;font-weight:600">ইনভাইটেশন লেটার টেনে আনুন বা ক্লিক করুন</div>
+      <div class="note" style="margin-top:4px">শুধু .pdf গ্রহণযোগ্য</div>
+    </div>
+    <input type="file" id="invFile" accept="application/pdf" class="hidden">
+  </div>
+  <div id="status"></div>
+
+  <div class="divider"><span>❖❖ More ❖❖</span></div>
+
+  <div class="card promo">
+    <div class="promo-logo">RJ</div>
+    <div class="promo-txt">
+      <div class="promo-head">RJ Autofill <span class="tag">Extension</span></div>
+      <div class="note">সম্পূর্ণ ফাঁকা ইন্ডিয়ান ভিসা আবেদন ফর্ম নিজে থেকে পূরণ করে — মুহূর্তেই। সাথে প্রতিদিন নির্দিষ্ট সময়ে ক্যাপচা ফ্রি স্লট।</div>
+      <div class="stars">★★★★★ <span class="note">5.0 · Chrome Web Store</span></div>
+    </div>
+    <button class="btn-primary" data-todo="addext">↓ Chrome-এ যোগ করুন</button>
+  </div>
+
+  <div class="toolrow">
+    <button class="tool t-indigo" data-todo="editpdf">🖹 Edit PDF</button>
+    <button class="tool t-orange" data-todo="compress">🗜 Compress PDF</button>
+    <button class="tool t-violet" data-todo="split">✂ Split PDF</button>
+    <button class="tool t-cyan" data-todo="img2pdf">🖼 ছবি দিয়ে PDF</button>
+    <button class="tool t-green" data-todo="merge">🗎 Merge PDF</button>
+    <button class="tool t-pink" data-todo="invoice">🧾 Edit Invoice</button>
+  </div>
+
+  <div class="divider"><span>❖❖ যেকোন প্রয়োজন, পরামর্শে ❖❖</span></div>
+
+  <div class="toolrow center">
+    <button class="tool t-wa" data-todo="wa">✆ WhatsApp</button>
+    <button class="tool t-wa" data-todo="wagroup">✆ WhatsApp গ্রুপে জয়েন করুন</button>
+  </div>
+
+  <footer>© 2026 RJ Automation</footer>
+</div>
+
+<button class="tutorial" data-todo="tutorial">Tutorial</button>
+
+<!-- STEP modal -->
+<div class="overlay hidden" id="overlay"><div class="modal" id="modalBody"></div></div>
+
+<!-- Signature editor modal -->
+<div class="overlay hidden" id="sigOverlay"><div class="modal" id="sigModal" style="max-width:520px">
+  <div class="step">স্বাক্ষর এডিটর</div>
+  <h2>স্বাক্ষর ক্রপ ও এডিট</h2>
+  <div class="sub">ক্রপ: সবুজ বাক্সের প্রান্ত/মাঝ টেনে ছোট-বড় ও সরান। তারপর "ক্রপ প্রয়োগ"। White→Transparent দিয়ে সাদা ব্যাকগ্রাউন্ড সরান।</div>
+  <div class="sigwrap" id="sigWrap"><canvas id="sigCanvas"></canvas><div class="crop hidden" id="cropBox"><div class="h" style="right:-6px;bottom:-6px;cursor:nwse-resize" data-h="br"></div></div></div>
+  <div class="sld"><label>ঘুরান (Rotate)</label><input type="range" id="sRot" min="-180" max="180" value="0"><span id="vRot">0°</span></div>
+  <div class="sld"><label>উজ্জ্বলতা (Brightness)</label><input type="range" id="sBri" min="-100" max="100" value="0"><span id="vBri">0</span></div>
+  <div class="sld"><label>কন্ট্রাস্ট (Contrast)</label><input type="range" id="sCon" min="-100" max="100" value="0"><span id="vCon">0</span></div>
+  <div class="sld"><label>সাদা সরান (White→Transparent)</label><input type="range" id="sWhite" min="0" max="255" value="0"><span id="vWhite">0</span></div>
+  <div class="rowbtns" style="margin-top:8px">
+    <button id="cropApply">✂ ক্রপ প্রয়োগ</button>
+    <button id="cropReset">↺ রিসেট</button>
+    <button class="btn-primary" id="sigDone" style="margin-left:auto">✔ সম্পন্ন</button>
+    <button id="sigCancel">✕ বাতিল</button>
+  </div>
+  <div class="note" id="sigHint" style="margin-top:8px"></div>
+</div></div>
+
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="lib/jsQR.js"></script>
+<script type="module" src="docgen-page.js"></script>
+</body>
+</html>
