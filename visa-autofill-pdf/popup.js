@@ -159,7 +159,7 @@ function applyIndRef(r) {
 
 // ---------------- storage ----------------
 function load() {
-  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate', 'vaIndRefs'], (r) => {
+  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate', 'vaIndRefs', 'vaHotels', 'vaHotelsRaw'], (r) => {
     state.profiles = r.vaProfiles || {};
     state.activeId = r.vaActiveId || null;
     $('enableToggle').checked = r.vaEnabled !== false;
@@ -168,6 +168,9 @@ function load() {
     indRefs = Array.isArray(r.vaIndRefs) ? r.vaIndRefs : [];
     $('indRefBulk').value = r.vaIndRefsRaw || '';
     renderIndRefPick();
+    hotels = Array.isArray(r.vaHotels) ? r.vaHotels : [];
+    $('hotelBulk').value = r.vaHotelsRaw || '';
+    renderHotelPick();
     renderProfiles();
   });
 }
@@ -402,6 +405,51 @@ $('indRefPick').onchange = (e) => {
   if (i === '') return;
   const r = indRefs[Number(i)];
   if (r) applyIndRef(r);
+};
+
+// ---------------- hotel / place of stay bulk list ----------------
+let hotels = [];
+function renderHotelPick() {
+  const sel = $('hotelPick');
+  sel.innerHTML = '<option value="">— বেছে নিন —</option>';
+  hotels.forEach((h, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = h.name + (h.dist ? ' · ' + h.dist : '');
+    sel.appendChild(o);
+  });
+}
+function applyHotel(h) {
+  const target = (working && workingId) ? working
+    : (state.activeId && state.profiles[state.activeId]) || null;
+  if (!target) { status('আগে একটা profile Active/Edit করুন।', false); return; }
+  const v = target.values;
+  v.place_of_stay1 = h.name;
+  v.pos_address1 = h.addr || '';
+  if (h.state) v.pos_state_id1 = h.state;
+  if (h.dist) v.pos_dist_id1 = h.dist;
+  if (h.phone) v.pos_phone1 = h.phone;
+  if (working && workingId) {
+    if (TABS[curTab].t === 'H. Stay/Hotel') renderFields();
+    status('✔ Hotel/Stay বসানো হয়েছে — Save করুন।');
+  } else {
+    state.profiles[state.activeId] = target;
+    persist();
+    status('✔ "' + (target.name || '') + '" profile-এ Hotel/Stay বসানো হয়েছে।');
+  }
+}
+$('saveHotels').onclick = () => {
+  const raw = $('hotelBulk').value || '';
+  hotels = parseBulk(raw);
+  chrome.storage.local.set({ vaHotels: hotels, vaHotelsRaw: raw });
+  renderHotelPick();
+  status('✔ ' + hotels.length + ' টি Hotel/Stay সেভ হয়েছে।');
+};
+$('hotelPick').onchange = (e) => {
+  const i = e.target.value;
+  if (i === '') return;
+  const h = hotels[Number(i)];
+  if (h) applyHotel(h);
 };
 
 // ---------------- pre-loaded photo & passport pdf ----------------

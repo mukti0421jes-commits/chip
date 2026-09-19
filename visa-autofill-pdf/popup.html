@@ -111,6 +111,28 @@ north 24 parganas
     </div>
   </div>
 
+  <div class="card">
+    <h2>🏨 Hotel / Place of Stay — একসাথে অনেক ঠিকানা</h2>
+    <div class="sub" style="margin:0 0 6px">India reference-এর মতোই: ১ম লাইন = <b>হোটেল/জায়গার নাম</b>, তারপর <b>ঠিকানা</b>, শেষ লাইন = <b>ফোন</b>। দুইটির মাঝে খালি লাইন বা <b>-----</b>। State/District ঠিকানা থেকে বেছে নেয়।</div>
+    <textarea id="hotelBulk" rows="6" placeholder="DIP GUEST HOUSE
+54, EKBALPUR ROAD
+KOLKATA, WEST BENGAL
+9870010241
+-----
+HOTEL ORIEN
+9/A MARQUIS STREET
+KOLKATA, WEST BENGAL
+03322174536"
+      style="width:100%;box-sizing:border-box;background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:11px;font-family:monospace;white-space:pre"></textarea>
+    <button id="saveHotels" style="width:100%;margin-top:6px">💾 List সেভ করুন</button>
+    <div class="fld full" style="margin-top:8px">
+      <label style="font-size:11px;color:#cbd5e1;margin-bottom:3px">সেভ করা list থেকে একটি বেছে নিন → সক্রিয় profile-এ Hotel/Stay বসবে</label>
+      <select id="hotelPick" style="background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:12px">
+        <option value="">— বেছে নিন —</option>
+      </select>
+    </div>
+  </div>
+
   <div class="card hidden" id="editorCard">
     <h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>✏️ তথ্য এডিট — <span id="editName" style="color:var(--accent)"></span></span>
