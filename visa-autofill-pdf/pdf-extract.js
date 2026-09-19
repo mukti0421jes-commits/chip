@@ -225,28 +225,28 @@ export function parseVisaPdf(rawText) {
   const mil = grab(/Armed forces\/\s*Police[^\n]*?\b(YES|NO)\b/i);
   if (mil) flags.military = mil.toUpperCase();
 
-  // ---------- H. Place of Stay / Hotel (best-effort, প্রথম row) ----------
+  // ---------- H. Place of Stay / Hotel (প্রথম row) — নির্দিষ্ট কাঠামোয় ভাগ ----------
+  // পুরো row একটা লাইন: "1 <হোটেল নাম> <ঠিকানা> <District> <State>. <Phone>,"
+  // guard: State আলাদা করি (dropdown), District WB-লজিকে, Phone শেষে, নাম=প্রথম ২ শব্দ, বাকিটা ঠিকানা
   const hotel = grab(/Place\/Hotel Name[\s\S]*?\n\s*1\s+([^\n]+)/);
   if (hotel) {
-    // "SRIDHAM MAYAPUR MAYAPUR-741313 NADIA WEST BENGAL. 919593400990,"
-    const phoneM = hotel.match(/([0-9]{6,})\s*,?\s*$/);
-    if (phoneM) values['pos_phone1'] = phoneM[1];
-    let rest = hotel.replace(/([0-9]{6,})\s*,?\s*$/, '').trim().replace(/\.\s*$/, '');
-    const stM = rest.match(/([A-Z][A-Z ]+)$/);
-    if (stM) {
-      const words = clean(stM[1]).split(/\s+/);
-      // দিক-শব্দ থাকলে শেষ ২ শব্দ = state (WEST BENGAL), তার আগের শব্দ = district
-      if (words.length >= 3 && /^(WEST|EAST|NORTH|SOUTH)$/.test(words[words.length - 2])) {
-        values['pos_state_id1'] = words.slice(-2).join(' ');
-        values['pos_dist_id1'] = words[words.length - 3];
-        rest = rest.slice(0, stM.index).trim() + ' ' + words.slice(0, -3).join(' ');
-      } else {
-        values['pos_state_id1'] = words.slice(-1)[0];
-        if (words.length >= 2) values['pos_dist_id1'] = words[words.length - 2];
-        rest = rest.slice(0, stM.index).trim() + ' ' + words.slice(0, -2).join(' ');
-      }
-    }
-    values['place_of_stay1'] = clean(rest); // Place + Address মিলিয়ে — edit করে ভাগ করা যায়
+    let s = clean(hotel);
+    // Phone — শেষে ৬+ সংখ্যা (কমা/ডট বাদ)
+    const phoneM = s.match(/([0-9]{6,})[\s.,]*$/);
+    if (phoneM) { values['pos_phone1'] = phoneM[1]; s = clean(s.slice(0, phoneM.index)); }
+    s = clean(s.replace(/[.,]+\s*$/, ''));
+    // State — সাইটের STATES তালিকা থেকে (দীর্ঘতমটা আগে)
+    const st = STATES.find((x) => new RegExp('\\b' + x.replace(/[-/]/g, '\\$&') + '\\b').test(s.toUpperCase()));
+    if (st) { values['pos_state_id1'] = st; s = clean(s.replace(new RegExp(st + '\\.?', 'i'), '')); }
+    // District — reference-এর মতোই WB তালিকা থেকে (WB district পেলে state ধরে নিই WEST BENGAL)
+    const dt = WB_DIST.find((d) => s.toUpperCase().includes(d));
+    if (dt) { values['pos_dist_id1'] = dt; s = clean(s.replace(new RegExp(dt, 'i'), '')); }
+    if (dt && !values['pos_state_id1']) values['pos_state_id1'] = 'WEST BENGAL';
+    // বাকি অংশ = হোটেল নাম + ঠিকানা → প্রথম ২ শব্দ নাম, বাকিটা ঠিকানা
+    s = clean(s.replace(/[.,]+$/, ''));
+    const w = s.split(/\s+/).filter(Boolean);
+    values['place_of_stay1'] = w.slice(0, 2).join(' ');
+    if (w.length > 2) values['pos_address1'] = w.slice(2).join(' ');
   }
 
   // ---------- I. References (দুই কলাম: India | Bangladesh, Tab দিয়ে আলাদা) ----------
