@@ -279,8 +279,11 @@ $('sigDone').onclick = () => {
   const cb = sigTarget.onDone; sigTarget = null; if (cb) cb();
 };
 
-// ---------------- placeholder buttons (functions added later) ----------------
+// ---------------- tool buttons ----------------
+const PAGES = { editpdf: 'pdf-edit.html', compress: 'pdf-compress.html' };
 document.querySelectorAll('[data-todo]').forEach((b) => b.addEventListener('click', () => {
-  status('⏳ এই ফিচারটি শীঘ্রই যোগ হবে (' + b.dataset.todo + ')।');
+  const t = b.dataset.todo;
+  if (PAGES[t]) { window.open(chrome.runtime.getURL(PAGES[t]), '_blank'); return; }
+  status('⏳ এই ফিচারটি শীঘ্রই যোগ হবে (' + t + ')।');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }));
