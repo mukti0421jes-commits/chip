@@ -59,6 +59,29 @@
   video{width:100%;border-radius:10px;background:#000}
   #status{min-height:18px;font-size:13px;margin-top:10px}
   .ok{color:var(--brand)}.err{color:#dc2626}
+  /* header buttons */
+  .hbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .hb{font-weight:700;font-size:13px;border:none;color:#fff}
+  .hb-amber{background:#d97706}.hb-green{background:var(--brand)}
+  .hb-out{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  /* dividers */
+  .divider{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--brand);font-weight:800;font-size:13px;letter-spacing:1px;margin:26px 0 14px}
+  .divider span{white-space:nowrap}
+  /* promo */
+  .promo{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-left:5px solid var(--brand)}
+  .promo-logo{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .promo-txt{flex:1;min-width:200px}
+  .promo-head{font-weight:800;font-size:16px}
+  .promo-head .tag{font-size:10px;background:#e2e8f0;color:#334155;border-radius:5px;padding:1px 6px;margin-left:6px;vertical-align:middle}
+  .stars{color:#f59e0b;font-size:13px;margin-top:4px}
+  /* tool buttons */
+  .toolrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:8px}
+  .toolrow.center{margin-top:4px}
+  .tool{color:#fff;border:none;font-weight:700;font-size:13px;padding:10px 16px;border-radius:24px}
+  .t-indigo{background:#4f46e5}.t-orange{background:#ea580c}.t-violet{background:#7c3aed}.t-cyan{background:#0891b2}.t-green{background:#059669}.t-pink{background:#db2777}.t-wa{background:#16a34a}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:26px;padding-top:14px;border-top:1px solid var(--line)}
+  .tutorial{position:fixed;right:18px;bottom:18px;background:#0f172a;color:#fff;border:none;border-radius:22px;padding:10px 18px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:10}
+  @media (prefers-color-scheme: dark){ .hb-out{background:#0b1526;color:#f1f5f9} .promo-head .tag{background:#334155;color:#f1f5f9} }
   @media (prefers-color-scheme: dark){
     :root{--bg:#0b1220;--card:#141f33;--ink:#f1f5f9;--muted:#b6c2d4;--line:#2b3a52;--brand:#34d399;--brand2:#12b886}
     header{background:#141f33}
@@ -73,7 +96,11 @@
 <body>
 <header>
   <div class="brand"><div class="logo">RJ</div><div><b>RJ Automation</b><small>Undertaking · Consent Letter</small></div></div>
-  <div><span class="pill" id="modeBadge">Medical / Ayush</span></div>
+  <div class="hbtns">
+    <button class="hb hb-amber" data-todo="manual">✎ ম্যানুয়ালি করুন</button>
+    <button class="hb hb-green" data-todo="qr">▦ QR স্ক্যান</button>
+    <button class="hb hb-out" data-todo="app">↓ ডাউনলোড অ্যাপ</button>
+  </div>
 </header>
 
 <div class="wrap">
@@ -90,7 +117,39 @@
     <input type="file" id="invFile" accept="application/pdf" class="hidden">
   </div>
   <div id="status"></div>
+
+  <div class="divider"><span>❖❖ More ❖❖</span></div>
+
+  <div class="card promo">
+    <div class="promo-logo">RJ</div>
+    <div class="promo-txt">
+      <div class="promo-head">RJ Autofill <span class="tag">Extension</span></div>
+      <div class="note">সম্পূর্ণ ফাঁকা ইন্ডিয়ান ভিসা আবেদন ফর্ম নিজে থেকে পূরণ করে — মুহূর্তেই। সাথে প্রতিদিন নির্দিষ্ট সময়ে ক্যাপচা ফ্রি স্লট।</div>
+      <div class="stars">★★★★★ <span class="note">5.0 · Chrome Web Store</span></div>
+    </div>
+    <button class="btn-primary" data-todo="addext">↓ Chrome-এ যোগ করুন</button>
+  </div>
+
+  <div class="toolrow">
+    <button class="tool t-indigo" data-todo="editpdf">🖹 Edit PDF</button>
+    <button class="tool t-orange" data-todo="compress">🗜 Compress PDF</button>
+    <button class="tool t-violet" data-todo="split">✂ Split PDF</button>
+    <button class="tool t-cyan" data-todo="img2pdf">🖼 ছবি দিয়ে PDF</button>
+    <button class="tool t-green" data-todo="merge">🗎 Merge PDF</button>
+    <button class="tool t-pink" data-todo="invoice">🧾 Edit Invoice</button>
+  </div>
+
+  <div class="divider"><span>❖❖ যেকোন প্রয়োজন, পরামর্শে ❖❖</span></div>
+
+  <div class="toolrow center">
+    <button class="tool t-wa" data-todo="wa">✆ WhatsApp</button>
+    <button class="tool t-wa" data-todo="wagroup">✆ WhatsApp গ্রুপে জয়েন করুন</button>
+  </div>
+
+  <footer>© 2026 RJ Automation</footer>
 </div>
+
+<button class="tutorial" data-todo="tutorial">Tutorial</button>
 
 <!-- STEP modal -->
 <div class="overlay hidden" id="overlay"><div class="modal" id="modalBody"></div></div>

@@ -278,3 +278,9 @@ $('sigDone').onclick = () => {
   $('sigOverlay').classList.add('hidden');
   const cb = sigTarget.onDone; sigTarget = null; if (cb) cb();
 };
+
+// ---------------- placeholder buttons (functions added later) ----------------
+document.querySelectorAll('[data-todo]').forEach((b) => b.addEventListener('click', () => {
+  status('⏳ এই ফিচারটি শীঘ্রই যোগ হবে (' + b.dataset.todo + ')।');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}));
