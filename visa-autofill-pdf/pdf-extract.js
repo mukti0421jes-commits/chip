@@ -125,10 +125,10 @@ export function parseVisaPdf(rawText) {
       if (cc) { state = clean(cc[1]); pin = cc[2] || ''; lines = lines.slice(0, -1); }
       else if (/^[A-Z][A-Za-z ]+$/.test(last)) { state = last; lines = lines.slice(0, -1); }
     }
-    // সব ঠিকানা-লাইন এক করে ঘরের ক্ষমতা (৩৫) অনুযায়ী ২ ঘরে ভাগ করি —
-    // যাতে সব লেখা এক ঘরে ঢুকে না যায় (প্রতি placeholder তার নিজের সীমা পর্যন্ত)
-    const packed = packInto(lines.join(' '), ADDR_MAX, 2);
-    return { a1: packed[0] || '', a2: packed[1] || '', state, pin };
+    // প্রথম ঘরে প্রথম ২টি শব্দ (যেমন "NARIKELBARIA, BAGHERPARA,"),
+    // পরের ঘরে বাকিটুকু (district/state আগেই আলাদা করা হয়েছে)
+    const words = lines.join(' ').split(/\s+/).filter(Boolean);
+    return { a1: words.slice(0, 2).join(' '), a2: words.slice(2).join(' '), state, pin };
   };
 
   const pres = parseAddr(rawBlock(/C\. Applicant's Contact Details/, /Permanent/));
