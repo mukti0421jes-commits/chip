@@ -259,10 +259,18 @@ export function parseVisaPdf(rawText) {
     flags.sameAddress = true;
   }
 
-  // ---------- Registration (Mission) ডিফল্ট + Purpose কোড ----------
+  // ---------- Registration (Mission) — Application Id-র শুরুতে mission কোড ----------
   values['countryname_id'] = values['countryname_id'] || 'BGD';
   values['nationality_id'] = values['nationality_id'] || 'BGD';
-  values['missioncode_id'] = values['missioncode_id'] || 'BGDD';
+  // Application Id যেমন "BGDRV1E2E826" → প্রথম ৪ অক্ষর "BGDR" = Rajshahi mission
+  const appId = grab(/Application Id\s*:?\s*(BGD[A-Z][A-Z0-9]+)/i);
+  if (appId) values['missioncode_id'] = appId.slice(0, 4).toUpperCase();
+  if (!values['missioncode_id']) {
+    // ফলব্যাক: হেডারের শহরের নাম থেকে
+    const hdr = grab(/(?:HIGH|ASSISTANT HIGH) COMMISSION OF INDIA\s+([A-Z]+)/i).toUpperCase();
+    const CITY = { DHAKA: 'BGDD', CHITTAGONG: 'BGDC', CHATTOGRAM: 'BGDC', RAJSHAHI: 'BGDR', KHULNA: 'BGDK', SYLHET: 'BGDS', RANGPUR: 'BGDG', BARISAL: 'BGDB', MYMENSINGH: 'BGDM' };
+    values['missioncode_id'] = CITY[hdr] || 'BGDD';
+  }
   const vtype = grab(/Type Of Visa Required\s+([A-Z0-9 ()-]+?)\s+No of Entries/);
   const pmap = { TOURIST: '544', MEDICAL: '545', BUSINESS: '537', STUDENT: '540', TRANSIT: '233', JOURNALIST: '228' };
   for (const k in pmap) if (vtype && vtype.includes(k)) { values['visaPurposeDropdown'] = pmap[k]; break; }
