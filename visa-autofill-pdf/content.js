@@ -9,6 +9,49 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // data URL → File
+  function dataURLtoFile(dataurl, filename, mime) {
+    const arr = String(dataurl).split(',');
+    const type = mime || (arr[0].match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+    const bstr = atob(arr[1]);
+    let n = bstr.length; const u8 = new Uint8Array(n);
+    while (n--) u8[n] = bstr.charCodeAt(n);
+    return new File([u8], filename, { type });
+  }
+  // programmatically একটা <input type=file>-এ ফাইল বসাই (DataTransfer দিয়ে)
+  function injectFile(input, dataurl, filename, mime) {
+    if (!input || !dataurl) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(dataURLtoFile(dataurl, filename, mime));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return input.files && input.files.length === 1;
+    } catch (e) { console.error('[Visa Autofill] file inject failed:', e); return false; }
+  }
+
+  // Photo Upload পেজ: popup-এ রাখা ছবি ফাইল-ইনপুটে বসাই
+  function handlePhotoUpload() {
+    chrome.storage.local.get(['vaPhotoData', 'vaPhotoName', 'vaPhotoType'], (r) => {
+      if (!r.vaPhotoData) { showBadge('⚠ ছবি আপলোড ম্যানুয়াল — popup-এ ছবি দিলে অটো বসবে', '#e67e22'); return; }
+      const inp = document.getElementById('image_error_id') || document.querySelector('input[type="file"][name="appl.image"]');
+      const ok = injectFile(inp, r.vaPhotoData, r.vaPhotoName || 'photo.jpg', r.vaPhotoType || 'image/jpeg');
+      showBadge(ok ? '✔ ছবি বসানো হয়েছে — দরকারে crop করে Save/Upload চাপুন' : '⚠ ছবি বসানো যায়নি — ম্যানুয়ালি দিন', ok ? '#27ae60' : '#c0392b');
+    });
+  }
+
+  // Document Upload পেজ: popup-এ রাখা পাসপোর্ট PDF সারি ১ (Passport) এ বসাই
+  function handleDocumentUpload() {
+    chrome.storage.local.get(['vaPassportData', 'vaPassportName', 'vaPassportType'], (r) => {
+      if (!r.vaPassportData) { showBadge('⚠ ডকুমেন্ট আপলোড ম্যানুয়াল — popup-এ পাসপোর্ট PDF দিলে অটো বসবে', '#e67e22'); return; }
+      const inp = document.querySelector('input[type="file"][name="mFile"]'); // সারি ১ = passport
+      const doc = document.getElementById('doc_id'); if (doc) doc.value = '1';
+      const ok = injectFile(inp, r.vaPassportData, r.vaPassportName || 'passport.pdf', r.vaPassportType || 'application/pdf');
+      showBadge(ok ? '✔ পাসপোর্ট PDF বসানো হয়েছে — সারি ১-এর "Upload Document" চাপুন' : '⚠ বসানো যায়নি — ম্যানুয়ালি দিন', ok ? '#27ae60' : '#c0392b');
+    });
+  }
+
   function showBadge(text, color = '#e67e22') {
     let b = document.getElementById('vafill-badge');
     if (!b) {
@@ -253,9 +296,9 @@
       }
       const path = window.location.pathname;
 
-      // এই পেজগুলোতে CAPTCHA/আপলোড/চূড়ান্ত-রিভিউ — কখনো অটো-ক্লিক নয়
-      if (/PhotoUpload/i.test(path)) { showBadge('⚠ ছবি আপলোড ম্যানুয়ালি করুন', '#c0392b'); return; }
-      if (/DocumentUpload/i.test(path)) { showBadge('⚠ ডকুমেন্ট আপলোড ম্যানুয়ালি করুন', '#c0392b'); return; }
+      // Photo/Document পেজে popup-এ রাখা ফাইল অটো-বসাই (আপলোড/সাবমিট নিজেই করতে হবে)
+      if (/PhotoUpload/i.test(path)) { handlePhotoUpload(); return; }
+      if (/DocumentUpload/i.test(path)) { handleDocumentUpload(); return; }
       if (/Confirm/i.test(path)) { showBadge('👀 সব যাচাই করে তারপর Confirm করুন', '#e67e22'); return; }
 
       // Additional Questions পেজ: ৬টা প্রশ্নই "No" + declaration checkbox টিক

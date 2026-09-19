@@ -62,6 +62,17 @@
     <div class="sub" style="margin:8px 0 0">কোনো ইন্টারনেট/credit লাগে না — সব আপনার ব্রাউজারেই হয়। ছবি হলে OCR চলে (কয়েক সেকেন্ড)।</div>
   </div>
 
+  <div class="card" style="border-color:#7c3aed;background:#1a1330">
+    <h2>📎 ছবি ও পাসপোর্ট আগে থেকে লোড করুন</h2>
+    <div class="sub" style="margin:0 0 8px">এখানে একবার দিয়ে রাখলে — Photo Upload পেজে ছবি, Document Upload পেজে পাসপোর্ট PDF নিজে থেকে বসে যাবে (বারবার খুঁজতে হবে না)।</div>
+    <div id="photoDrop" style="border:2px dashed var(--line);border-radius:8px;padding:10px;text-align:center;color:var(--muted);cursor:pointer;font-size:12px">📷 Passport-size <b>ছবি (JPEG)</b> — ক্লিক/ড্রপ</div>
+    <input type="file" id="photoFile" accept="image/jpeg,image/*" style="display:none">
+    <div id="photoInfo" class="sub" style="margin:4px 0 10px"></div>
+    <div id="pdfDrop" style="border:2px dashed var(--line);border-radius:8px;padding:10px;text-align:center;color:var(--muted);cursor:pointer;font-size:12px">📄 Passport <b>PDF</b> (personal details page) — ক্লিক/ড্রপ</div>
+    <input type="file" id="pdfFile" accept="application/pdf" style="display:none">
+    <div id="pdfInfo" class="sub" style="margin:4px 0 0"></div>
+  </div>
+
   <div class="card">
     <h2>👤 সেভ করা Profiles</h2>
     <div id="profiles"></div>
@@ -109,7 +120,7 @@ north 24 parganas
     <div class="toggle"><span>অটো-ফিল চালু</span><input type="checkbox" id="enableToggle"></div>
     <div class="toggle"><span>প্রতি পেজে Continue অটো-ক্লিক</span><input type="checkbox" id="autoContinueToggle"></div>
     <div class="warn" style="background:#3a1010;border-color:#7f1d1d;color:#fca5a5">
-      ⚠️ CAPTCHA ও ছবি/PDF আপলোড সবসময় ম্যানুয়াল। Auto-Continue চালু থাকলে প্রতি পেজ ভরে নিজে থেকে পরের পেজে চলে যাবে (রিভিউয়ের সুযোগ কম)।
+      ⚠️ CAPTCHA ম্যানুয়াল। ছবি/PDF আগে থেকে দিলে পেজে অটো বসে, তবে Crop/Upload বোতাম নিজে চাপতে হবে। Auto-Continue চালু থাকলে প্রতি পেজ ভরে নিজে থেকে পরের পেজে চলে যাবে (রিভিউয়ের সুযোগ কম)।
     </div>
   </div>
 

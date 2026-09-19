@@ -404,6 +404,48 @@ $('indRefPick').onchange = (e) => {
   if (r) applyIndRef(r);
 };
 
+// ---------------- pre-loaded photo & passport pdf ----------------
+function fileToDataURL(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+}
+function kb(n) { return Math.round((n || 0) / 1024) + ' KB'; }
+
+function renderUploadInfo(r) {
+  if (r.vaPhotoName) $('photoInfo').innerHTML = '<span style="color:var(--accent2)">✔ ' + r.vaPhotoName + ' (' + kb(r.vaPhotoSize) + ')</span> <a href="#" id="photoClear" style="color:#f87171">মুছুন</a>';
+  else $('photoInfo').textContent = 'কোনো ছবি দেওয়া নেই।';
+  if (r.vaPassportName) $('pdfInfo').innerHTML = '<span style="color:var(--accent2)">✔ ' + r.vaPassportName + ' (' + kb(r.vaPassportSize) + ')</span> <a href="#" id="pdfClear" style="color:#f87171">মুছুন</a>';
+  else $('pdfInfo').textContent = 'কোনো PDF দেওয়া নেই।';
+  const pc = $('photoClear'); if (pc) pc.onclick = (e) => { e.preventDefault(); chrome.storage.local.remove(['vaPhotoData', 'vaPhotoName', 'vaPhotoType', 'vaPhotoSize'], loadUploads); };
+  const dc = $('pdfClear'); if (dc) dc.onclick = (e) => { e.preventDefault(); chrome.storage.local.remove(['vaPassportData', 'vaPassportName', 'vaPassportType', 'vaPassportSize'], loadUploads); };
+}
+function loadUploads() {
+  chrome.storage.local.get(['vaPhotoName', 'vaPhotoSize', 'vaPassportName', 'vaPassportSize'], renderUploadInfo);
+}
+async function saveUpload(file, kind) {
+  try {
+    const data = await fileToDataURL(file);
+    const keys = kind === 'photo'
+      ? { vaPhotoData: data, vaPhotoName: file.name, vaPhotoType: file.type || 'image/jpeg', vaPhotoSize: file.size }
+      : { vaPassportData: data, vaPassportName: file.name, vaPassportType: file.type || 'application/pdf', vaPassportSize: file.size };
+    chrome.storage.local.set(keys, () => {
+      if (chrome.runtime.lastError) { status('✘ সেভ হয়নি (ফাইল বড়?): ' + chrome.runtime.lastError.message, false); return; }
+      loadUploads();
+      status('✔ ' + (kind === 'photo' ? 'ছবি' : 'পাসপোর্ট PDF') + ' সেভ হয়েছে — পেজে গেলে নিজে বসবে।');
+    });
+  } catch (e) { status('✘ ফাইল পড়া যায়নি: ' + e.message, false); }
+}
+function wireUpload(dropId, inputId, kind, accept) {
+  const drop = $(dropId), inp = $(inputId);
+  drop.onclick = () => inp.click();
+  inp.onchange = () => { if (inp.files[0]) saveUpload(inp.files[0], kind); };
+  ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; }));
+  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.style.borderColor = 'var(--line)'; }));
+  drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f && accept(f)) saveUpload(f, kind); });
+}
+wireUpload('photoDrop', 'photoFile', 'photo', (f) => f.type.startsWith('image/'));
+wireUpload('pdfDrop', 'pdfFile', 'pdf', (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+loadUploads();
+
 // ---------------- toggles & actions ----------------
 $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.target.checked });
 $('autoContinueToggle').onchange = (e) => chrome.storage.local.set({ vaAutoContinue: e.target.checked });
