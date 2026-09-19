@@ -164,3 +164,92 @@ no change.
 `announce_test.go` — ten instances produce one announcement; a changed result
 still announces; the cooldown lapsing announces again; an incomplete scan never
 sounds.
+
+---
+
+# Round 3 — ivacflow pushes straight into the bot
+
+ivacflow is a separate Node + Playwright tool: it downloads the live bundle,
+hosts it locally, and walks signin→initiate headlessly with **mock** data. Because
+it RUNS the code instead of pattern-matching it, it resolves the two values the
+bot's own text scan cannot — the reserve slot id and the dg-epay uuid, both of
+which the site assembles at runtime and therefore never spells out in the bundle.
+
+It now POSTs its snapshot to the bot the moment an extraction finishes. No file
+to copy, no button to press.
+
+## The ladder
+
+    1. manual override (dashboard boxes)
+    2. live bundle scan        ← unchanged; still the normal path
+    3. ivacflow snapshot       ← new
+    4. RJ SLOT recorder capture
+    5. built-in fallback
+
+Rungs 3–5 only ever fill what rung 2 left unresolved, so a day when the scan
+works behaves exactly as before. `Config.Fallbacks` holds 3 and 4 in order;
+each capture gets a turn at whatever is still open.
+
+## Freshness is decided by the bundle, not the clock
+
+A snapshot carries the `bundleName` it was extracted from, and the scan now
+records the bundle URL it actually downloaded. If they disagree, IVAC redeployed
+since the extraction and the snapshot is stale by definition — it is skipped
+with a log line, whatever its timestamp claims.
+
+## Push authentication
+
+The endpoint rewrites the API config every instance runs against, so it is not
+open. Two gates, both required:
+
+* **loopback only** — the request must originate on this machine;
+* **shared token** — the bot writes `ivacflow_token.txt` (0600) on first start;
+  ivacflow reads it and sends `x-ivacflow-token`.
+
+A push that fails either gate changes nothing.
+
+## Template drift detection
+
+ivacflow also reports the body FIELD NAMES it observed per step.
+`compareTemplate` checks those against what the bot's builders actually send and
+reports the differences. It already found a real one:
+
+    PAYMENT INITIATE: ivacflow dekheche [reservationId amount], bot pathay [appointmentId]
+
+Nothing is changed automatically — the two captures disagree (the RJ SLOT
+recording said `appointmentId`), so this is reported for a human to settle
+against a real successful request.
+
+## Also in this round
+
+* the Import panel accepts **either** format — an ivacflow snapshot has no `_t`
+  but does have a `config` object, so they are told apart without asking
+* headers (`x-sec-navigation-state`, `x-sec-runtime-state`, `x-v-request-meta`)
+  now really do come from a capture. They previously could not: the code only
+  filled them when empty, and `NewConfig()` always pre-seeds them. The bundle
+  scan never produces headers, so there is no scan value to defend.
+* a capture that merely CONFIRMS a value is now recorded as its source, instead
+  of the dashboard reporting a confirmed value as "built-in"
+
+Endpoints: `POST /api/ivacflowPush`, `GET /api/ivacflowStatus`,
+`POST /api/clearIvacflow`.
+
+## ivacflow side
+
+`ivacflow-patch/` holds the two changed files. `dashboard-server.js` gains
+`pushToBot()` plus three call sites (after a walk, and after either bundle-load
+path). `config.json` gains `botUrl` / `botTokenFile`; clear `botUrl` to disable
+pushing. Node's built-in `http` only — no new dependency. If the bot is down or
+the token is missing, ivacflow logs a line and carries on.
+
+## Tests
+
+`flow/ivacflow_test.go` — endpoint-name mapping and prefix stripping, non-hex
+ids, placeholder headers never imported, format detection, bundle-match
+freshness, ivacflow outranking the recorder, the recorder still filling what
+ivacflow lacks, a stale-bundle capture being skipped entirely, headers
+outranking the built-in.
+
+`ivacflow_push_test.go` — a push with no token, a wrong token and a non-loopback
+address are all refused and change nothing; a valid push is stored and
+persisted; a walk that captured nothing is rejected; template drift is reported.

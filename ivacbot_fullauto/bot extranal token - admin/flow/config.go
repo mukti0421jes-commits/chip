@@ -24,10 +24,15 @@ type Config struct {
 	ForcedSlotID   string
 	ForcedDgepayID string
 
-	// Imported is the config captured from a real browser session (the RJ SLOT
-	// userscript export). It is a SAFETY NET only: ApplyImportGaps fills from it
-	// exclusively where THIS run's live scan resolved nothing. See imported.go.
-	Imported *Imported
+	// Fallbacks are captured configs consulted IN ORDER, after the live scan and
+	// before the built-in defaults: ivacflow first (it runs the bundle, so it is
+	// the more reliable of the two), then the RJ SLOT recorder capture. They are a
+	// SAFETY NET only — ApplyImportGaps fills from them exclusively where THIS
+	// run's live scan resolved nothing. See imported.go / ivacflow.go.
+	Fallbacks []*Imported
+	// LiveBundleURL is the bundle this run actually downloaded, used to tell a
+	// capture that describes the CURRENT bundle from one that has gone stale.
+	LiveBundleURL string
 	// Source records where each resolved value came from ("manual"/"scan"/
 	// "import"/"built-in"), so the dashboard can show a gap before a run starts.
 	Source map[string]string

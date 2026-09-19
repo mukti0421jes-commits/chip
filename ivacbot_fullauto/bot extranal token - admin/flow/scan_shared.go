@@ -67,6 +67,7 @@ func StartDgEpayResolve(combined string) *dgJob {
 
 type sharedScanResult struct {
 	done     chan struct{}
+	bundle   string // the bundle URL this scan actually downloaded
 	combined string
 	ep       EndpointScan
 	cipher   CipherScan
@@ -119,6 +120,7 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 		if len(urls) > 0 {
 			if c, _ := DownloadBundles(f, urls); c != "" {
 				combined = c
+				j.bundle = urls[0]
 				log("🔍 Bundle found (try " + itoa(attempt) + ", " + itoa(len(urls)) + " chunk) — scanning…")
 				break
 			}
@@ -183,12 +185,12 @@ func (r *Runner) ensureDgEpay() {
 			if r.OnScanIDs != nil {
 				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID) // auto-fill dashboard input
 			}
-		} else if imp := r.Config.ImportedDgepayID(); imp != "" {
+		} else if imp, origin := r.Config.ImportedDgepayID(); imp != "" {
 			// the bundle never carries this uuid in the clear, so a recorded real
 			// request is the only other place it can come from
 			r.Config.DgepayID = imp
-			r.Config.noteSource("dgepayId", SrcImport)
-			r.log("📥 import: dg-epay id → " + imp + " (bundle resolve korte pareni)")
+			r.Config.noteSource("dgepayId", origin)
+			r.log("📥 " + origin + ": dg-epay id → " + imp + " (bundle resolve korte pareni)")
 			if r.OnScanIDs != nil {
 				r.OnScanIDs(r.Config.SlotID, r.Config.DgepayID)
 			}

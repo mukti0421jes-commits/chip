@@ -43,6 +43,7 @@ func (r *Runner) Scan() {
 	r.dgJob = StartDgEpayResolve(combined)
 	r.log("💳 dg-epay resolving in background (won't block signin/upload)…")
 	// fill ONLY what this scan could not resolve — the scan always wins
+	r.Config.LiveBundleURL = sc.bundle
 	r.Config.ApplyImportGaps(sc.ep, sc.cipherOK, r.log)
 	r.applyForcedIDs()
 	r.log("🔍 Scan done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)

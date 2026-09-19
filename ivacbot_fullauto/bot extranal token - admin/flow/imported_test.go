@@ -114,7 +114,7 @@ func TestParseImportTolerantOfTrailingJunk(t *testing.T) {
 func TestImportFillsOnlyGaps(t *testing.T) {
 	imp, _ := ParseImport([]byte(realExport))
 	c := NewConfig()
-	c.Imported = imp
+	c.Fallbacks = []*Imported{imp}
 
 	// the scan resolved the signin endpoint and the cipher, but not the slot id
 	scan := EndpointScan{
@@ -150,7 +150,7 @@ func TestImportFillsOnlyGaps(t *testing.T) {
 func TestImportFillsCipherOnlyWhenScanFailed(t *testing.T) {
 	imp, _ := ParseImport([]byte(realExport))
 	c := NewConfig()
-	c.Imported = imp
+	c.Fallbacks = []*Imported{imp}
 	c.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, nil)
 
 	if c.Signin == nil || c.Signin.Key != "KEY-SIGNIN" {
@@ -159,8 +159,8 @@ func TestImportFillsCipherOnlyWhenScanFailed(t *testing.T) {
 	if c.Source["cipher"] != SrcImport {
 		t.Fatalf("cipher source mislabelled: %q", c.Source["cipher"])
 	}
-	if c.ImportedDgepayID() != "23228961-2326-3s28-861f-465bb28337a3" {
-		t.Fatalf("dg-epay id not exposed for the initiate fallback: %q", c.ImportedDgepayID())
+	if id, _ := c.ImportedDgepayID(); id != "23228961-2326-3s28-861f-465bb28337a3" {
+		t.Fatalf("dg-epay id not exposed for the initiate fallback: %q", id)
 	}
 }
 

@@ -32,19 +32,29 @@ import (
 // Source labels recorded in Config.Source, so the dashboard can show where each
 // resolved value actually came from.
 const (
-	SrcManual  = "manual"
-	SrcScan    = "scan"
-	SrcImport  = "import"
-	SrcBuiltIn = "built-in"
+	SrcManual   = "manual"
+	SrcScan     = "scan"
+	SrcIvacflow = "ivacflow"
+	SrcImport   = "import"
+	SrcBuiltIn  = "built-in"
 )
 
-// Imported is the technical config learned from a real browser session.
+// Imported is the technical config learned from a real browser session — either
+// the RJ SLOT userscript export or an ivacflow snapshot. Origin says which.
 type Imported struct {
+	Origin   string            // SrcImport (RJ SLOT) or SrcIvacflow
 	At       time.Time         // when the export was taken
 	Families map[string]string // endpoint family code -> live literal
 	Headers  map[string]string // fixed headers observed on real requests
 	SlotID   string            // from a recorded /slots/<id>/reserve-slot URL
 	DgepayID string            // from a recorded /payment/<uuid>/dg-epay/initiate URL
+	APIBase  string            // ivacflow only; "" when not reported
+	// BundleName is the bundle this capture describes (ivacflow only). It is the
+	// freshness test: a capture for a different bundle is stale by definition.
+	BundleName string
+	// Template is ivacflow's per-step request shape (method/path/header + body
+	// FIELD NAMES, never values), used to flag a builder that drifted.
+	Template []IvacflowStep
 	Signin   *PurposeCipher
 	Reserve  *PurposeCipher
 	Initiate *PurposeCipher
@@ -146,6 +156,7 @@ func ParseImport(raw []byte) (*Imported, error) {
 	}
 
 	imp := &Imported{
+		Origin:   SrcImport,
 		Families: map[string]string{},
 		Headers:  map[string]string{},
 		Records:  e.Records,
@@ -267,36 +278,57 @@ func (c *Config) markScanSources(s EndpointScan, cipherOK bool) {
 // log may be nil.
 func (c *Config) ApplyImportGaps(s EndpointScan, cipherOK bool, log func(string)) {
 	c.markScanSources(s, cipherOK)
-	imp := c.Imported
-	if imp == nil {
-		return
-	}
 	say := func(m string) {
 		if log != nil {
 			log(m)
 		}
 	}
+	// Each capture gets a turn, best source first. A later one can only fill what
+	// is still unresolved, so the order below IS the precedence.
+	for _, imp := range c.Fallbacks {
+		if imp == nil {
+			continue
+		}
+		if !imp.BundleMatches(c.LiveBundleURL) {
+			say("⚠ " + imp.Origin + " capture onno bundle-er (" + imp.BundleName +
+				") — skip kora holo, notun kore extract korun")
+			continue
+		}
+		c.fillFrom(imp, s, cipherOK, say)
+	}
+}
+
+// fillFrom applies one capture to whatever is still unresolved. Anything already
+// taken from the scan, or from an earlier (better) capture, is left alone.
+func (c *Config) fillFrom(imp *Imported, s EndpointScan, cipherOK bool, say func(string)) {
+	tag := "📥 " + imp.Origin + ": "
 
 	for _, f := range epFamilies {
-		if s.Families[f.Code] != "" {
-			continue // scan resolved it → scan wins
+		if s.Families[f.Code] != "" || c.Source["ep:"+f.Code] == SrcIvacflow {
+			continue // the scan, or a better capture, already settled this one
 		}
-		if lit := imp.Families[f.Code]; lit != "" && lit != c.Endpoints[f.Code] {
-			c.Endpoints[f.Code] = lit
-			c.noteSource("ep:"+f.Code, SrcImport)
-			say("📥 import: " + f.Code + " → " + lit)
+		// Record the source whenever the capture carries the value — even when it
+		// equals what was already there. It still came from the capture, and the
+		// dashboard would otherwise report a confirmed value as "built-in". Only a
+		// real change is worth a log line.
+		if lit := imp.Families[f.Code]; lit != "" {
+			if lit != c.Endpoints[f.Code] {
+				c.Endpoints[f.Code] = lit
+				say(tag + f.Code + " → " + lit)
+			}
+			c.noteSource("ep:"+f.Code, imp.Origin)
 		}
 	}
 
-	if s.SlotID == "" && imp.SlotID != "" {
+	if s.SlotID == "" && imp.SlotID != "" && c.Source["slotId"] != SrcIvacflow {
 		if c.SlotID != imp.SlotID {
-			say("📥 import: slot id → " + imp.SlotID + " (scan resolve korte pareni)")
+			say(tag + "slot id → " + imp.SlotID + " (scan resolve korte pareni)")
 		}
 		c.SlotID = imp.SlotID
-		c.noteSource("slotId", SrcImport)
+		c.noteSource("slotId", imp.Origin)
 	}
 
-	if !cipherOK && imp.Signin != nil {
+	if !cipherOK && imp.Signin != nil && c.Source["cipher"] != SrcIvacflow {
 		c.Signin = imp.Signin
 		if imp.Reserve != nil {
 			c.Reserve = imp.Reserve
@@ -304,26 +336,30 @@ func (c *Config) ApplyImportGaps(s EndpointScan, cipherOK bool, log func(string)
 		if imp.Initiate != nil {
 			c.Initiate = imp.Initiate
 		}
-		c.noteSource("cipher", SrcImport)
-		say("📥 import: cipher config (scan resolve korte pareni)")
+		c.noteSource("cipher", imp.Origin)
+		say(tag + "cipher config (scan resolve korte pareni)")
 	}
 
+	// Headers have NO scan competitor — the bundle scan never produces them — so a
+	// capture outranks the built-in default outright.
 	for k, v := range imp.Headers {
 		switch k {
 		case "x-sec-navigation-state":
-			if c.NavState == "" {
+			if c.Source["navState"] != SrcIvacflow && c.NavState != v {
 				c.NavState = v
-				c.noteSource("navState", SrcImport)
+				c.noteSource("navState", imp.Origin)
+				say(tag + "x-sec-navigation-state updated")
 			}
 		case "x-sec-runtime-state":
-			if c.RuntimeState == "" {
+			if c.Source["runtimeState"] != SrcIvacflow && c.RuntimeState != v {
 				c.RuntimeState = v
-				c.noteSource("runtimeState", SrcImport)
+				c.noteSource("runtimeState", imp.Origin)
+				say(tag + "x-sec-runtime-state updated")
 			}
 		case "x-v-request-meta":
-			if c.VRequestMeta == "" {
+			if c.Source["vRequestMeta"] != SrcIvacflow && c.VRequestMeta != v {
 				c.VRequestMeta = v
-				c.noteSource("vRequestMeta", SrcImport)
+				c.noteSource("vRequestMeta", imp.Origin)
 			}
 		}
 	}
@@ -332,9 +368,15 @@ func (c *Config) ApplyImportGaps(s EndpointScan, cipherOK bool, log func(string)
 // ImportedDgepayID returns the imported dg-epay uuid, or "" when there is none.
 // The Initiate step uses it only after the background bundle resolve came back
 // empty (see ensureDgEpay).
-func (c *Config) ImportedDgepayID() string {
-	if c.Imported == nil {
-		return ""
+func (c *Config) ImportedDgepayID() (id, origin string) {
+	for _, imp := range c.Fallbacks {
+		if imp == nil || imp.DgepayID == "" {
+			continue
+		}
+		if !imp.BundleMatches(c.LiveBundleURL) {
+			continue
+		}
+		return imp.DgepayID, imp.Origin
 	}
-	return c.Imported.DgepayID
+	return "", ""
 }

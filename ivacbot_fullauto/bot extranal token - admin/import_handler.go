@@ -26,15 +26,33 @@ const capturedConfigFile = "captured_config.json"
 
 var (
 	importMu      sync.RWMutex
-	importedCfg   *flow.Imported
-	importedSaved time.Time // when the active capture was imported
+	importedCfg   *flow.Imported // RJ SLOT userscript capture
+	importedSaved time.Time      // when the active capture was imported
+	ivacflowCfg   *flow.Imported // ivacflow snapshot (pushed or imported)
+	ivacflowAt    time.Time
 )
 
-// getImportedConfig returns the active imported config (nil when none).
+// getImportedConfig returns the active RJ SLOT capture (nil when none).
 func getImportedConfig() *flow.Imported {
 	importMu.RLock()
 	defer importMu.RUnlock()
 	return importedCfg
+}
+
+// getFallbackConfigs returns the captured configs in PRECEDENCE order, best
+// first. Both sit below the live scan: they only fill what it could not resolve.
+// ivacflow comes first because it runs the bundle instead of pattern-matching it.
+func getFallbackConfigs() []*flow.Imported {
+	importMu.RLock()
+	defer importMu.RUnlock()
+	var out []*flow.Imported
+	if ivacflowCfg != nil {
+		out = append(out, ivacflowCfg)
+	}
+	if importedCfg != nil {
+		out = append(out, importedCfg)
+	}
+	return out
 }
 
 // LoadCapturedConfig restores a previously imported config from disk. Called
@@ -167,7 +185,15 @@ func handleImportCaptured(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, importPreview{Error: "empty body — Export JSON paste korun"})
 		return
 	}
-	imp, perr := flow.ParseImport(raw)
+	// one box, either format: an ivacflow snapshot has no "_t" but does have a
+	// "config" object, so the two are told apart without asking the user.
+	var imp *flow.Imported
+	var perr error
+	if flow.LooksLikeIvacflow(raw) {
+		imp, perr = flow.ParseIvacflow(raw)
+	} else {
+		imp, perr = flow.ParseImport(raw)
+	}
 	if perr != nil {
 		writeJSON(w, importPreview{Error: perr.Error()})
 		return
@@ -178,12 +204,21 @@ func handleImportCaptured(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if werr := os.WriteFile(capturedConfigFile, raw, 0644); werr != nil {
+	// store each format in its own slot so the ladder keeps them apart
+	file := capturedConfigFile
+	if imp.Origin == flow.SrcIvacflow {
+		file = ivacflowConfigFile
+	}
+	if werr := os.WriteFile(file, raw, 0644); werr != nil {
 		writeJSON(w, importPreview{Error: "save failed: " + werr.Error()})
 		return
 	}
 	importMu.Lock()
-	importedCfg, importedSaved = imp, time.Now()
+	if imp.Origin == flow.SrcIvacflow {
+		ivacflowCfg, ivacflowAt = imp, time.Now()
+	} else {
+		importedCfg, importedSaved = imp, time.Now()
+	}
 	importMu.Unlock()
 	// a fresh import should be seen by the next run, not by a cached scan
 	flow.ClearScanCache()
@@ -215,7 +250,7 @@ func handleConfigSources(w http.ResponseWriter, r *http.Request) {
 	importMu.RUnlock()
 
 	cur := flow.NewConfig()
-	cur.Imported = imp
+	cur.Fallbacks = getFallbackConfigs()
 	cur.ForcedSlotID, cur.ForcedDgepayID = getOverrideIDs()
 
 	out := map[string]interface{}{

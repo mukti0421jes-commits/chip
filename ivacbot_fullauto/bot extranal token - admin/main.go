@@ -8525,6 +8525,12 @@ func main() {
 	http.HandleFunc("/api/importCaptured", adminOnly(handleImportCaptured))
 	http.HandleFunc("/api/clearImport", adminOnly(handleClearImport))
 	http.HandleFunc("/api/configSources", adminOnly(handleConfigSources))
+	// ivacflow pushes its snapshot here. The handler itself enforces loopback-only
+	// plus the shared token in ivacflow_token.txt (see authorizeIvacflowPush), so
+	// it is not behind the dashboard session ivacflow has no way to hold.
+	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)
+	http.HandleFunc("/api/ivacflowStatus", adminOnly(handleIvacflowStatus))
+	http.HandleFunc("/api/clearIvacflow", adminOnly(handleClearIvacflow))
 
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════╗")
@@ -8571,7 +8577,9 @@ func main() {
 	loadManualIDs()
 	RegisterCaptchaRoutes()
 	go StartCaptchaQueue()
+	LoadOrCreateIvacflowToken() // shared secret ivacflow authenticates its push with
 	LoadCapturedConfig()      // restore a previously imported RJ SLOT capture (safety net)
+	LoadIvacflowConfig()      // restore the last snapshot ivacflow pushed
 	StartInvoiceDoneWatcher() // auto-confirm payments (every 20s) → payment hub ✓ Done
 
 	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()
