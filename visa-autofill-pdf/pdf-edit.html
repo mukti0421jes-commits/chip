@@ -13,9 +13,9 @@
   .page{position:relative;margin:0 auto 18px;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.15)}
   .page canvas{display:block}
   .tlayer{position:absolute;inset:0;transform-origin:0 0}
-  .tlayer .t{position:absolute;white-space:pre;color:#000;background:transparent;outline:none;line-height:1;overflow:hidden;cursor:text}
-  .tlayer .t.edited{background:rgba(255,255,0,.18)}
-  .tlayer.editing .t{background:rgba(59,130,246,.08);border:1px dashed rgba(59,130,246,.5)}
+  .tlayer .t{position:absolute;white-space:pre;background:transparent;outline:none;line-height:1;cursor:text;border-radius:2px}
+  .tlayer.editing .t:hover{box-shadow:0 0 0 1px rgba(59,130,246,.6)}
+  .tlayer .t:focus{box-shadow:0 0 0 2px rgba(59,130,246,.8);background:#fff;color:#000!important}
   .newbox{position:absolute;color:#000;background:rgba(255,255,255,.7);border:1px dashed var(--brand);padding:2px 4px;outline:none;cursor:move;min-width:24px;font-size:14px}
   .pagenum{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--brand);margin:0 0 4px}
 </style>
@@ -47,6 +47,7 @@
       <button id="tDel">🗑 মুছুন</button>
       <div class="zoom sp"><button id="zOut">−</button><span id="zVal" style="font-weight:700">100%</span><button id="zIn">＋</button></div>
       <button id="tReset">↺ রিসেট</button>
+      <button class="btn-soft" id="tApply">✔ Apply / সংরক্ষণ</button>
       <button class="btn-primary" id="tDownload">↓ Download</button>
     </div>
     <div class="pagewrap" id="pages"></div>
