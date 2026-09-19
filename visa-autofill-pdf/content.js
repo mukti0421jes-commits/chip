@@ -203,21 +203,32 @@
     }
   }
 
-  // No রেডিও সিলেক্ট করি — click() করে (সাইটের onclick, যেমন add_saarc_rows(), চলে),
-  // সাথে checked + change যাতে নিশ্চিত থাকে
-  function pickNo(el) {
-    if (!el) return;
+  // একটা রেডিওকে সিলেক্ট করি — click() (সাইটের onclick চলে) + checked + change
+  function pickRadio(el) {
+    if (!el) return false;
     if (!el.checked) { try { el.click(); } catch (_) {} }
     el.checked = true;
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  // group name + value ধরে সঠিক রেডিও সিলেক্ট (সবচেয়ে নির্ভরযোগ্য)
+  function setRadioByValue(name, val) {
+    let done = false;
+    document.querySelectorAll('input[type="radio"][name="' + name + '"]').forEach((el) => {
+      if ((el.value || '').trim().toUpperCase() === val) done = pickRadio(el) || done;
+    });
+    return done;
   }
 
-  // Grandparent-Pakistan ও SAARC — সবসময় No. id (…_flag2) ধরে,
-  // নাহলে প্রশ্নের লেখা মিলিয়ে value=NO / পাশের "No" রেডিও।
-  function enforceDefaultNo() {
-    pickNo(document.getElementById('grandparent_flag2'));
-    pickNo(document.getElementById('saarc_flag2'));
-    forceNoByText([/grand ?father|grand ?mother|pakistan/i, /saarc|south asian/i]);
+  // Grandparent (সবসময় No) ও SAARC (flag থেকে, ডিফল্ট No) — name+value, নাহলে id, নাহলে লেখা
+  function enforceKeyRadios(flags) {
+    const saarc = (flags && flags.saarc === 'YES') ? 'YES' : 'NO';
+    if (!setRadioByValue('appl.grandparent_flag', 'NO')) pickRadio(document.getElementById('grandparent_flag2'));
+    if (!setRadioByValue('appl.saarc_flag', saarc)) pickRadio(document.getElementById(saarc === 'YES' ? 'saarc_flag1' : 'saarc_flag2'));
+    // ব্যাকআপ: প্রশ্নের লেখা মিলিয়ে (শুধু No-গুলোর জন্য)
+    const noRegexes = [/grand ?father|grand ?mother|pakistan/i];
+    if (saarc === 'NO') noRegexes.push(/saarc|south asian/i);
+    forceNoByText(noRegexes);
   }
 
   // flags → সঠিক radio/checkbox
@@ -227,8 +238,8 @@
     if (flags.sameAddress) setCheckbox('sameAddress_id', true);
 
     if (flags.otherPassport) clickRadio(flags.otherPassport === 'YES' ? 'other_ppt_1' : 'other_ppt_2');
-    // Grandfather/Grandmother Pakistan ও SAARC — সবসময় "No"
-    enforceDefaultNo();
+    // Grandfather (সবসময় No) ও SAARC (flag থেকে, ডিফল্ট No)
+    enforceKeyRadios(flags);
     if (flags.visitedIndia) { clickRadio(flags.visitedIndia === 'YES' ? 'old_visa_flag1' : 'old_visa_flag2'); await sleep(200); }
     if (flags.refused) clickRadio(flags.refused === 'YES' ? 'refuse_flag1' : 'refuse_flag2');
     if (flags.military) clickRadio(flags.military === 'YES' ? 'prev_org1' : 'prev_org2');
@@ -354,8 +365,9 @@
         await sleep(1200);
         await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
 
-        // Grandparent/SAARC No — সাইট পরে reset করলেও যেন No-ই থাকে, কয়েকবার নিশ্চিত করি
-        [800, 2000, 3500, 5000].forEach((t) => setTimeout(enforceDefaultNo, t));
+        // Grandparent/SAARC — সাইট পরে reset করলেও যেন ঠিক থাকে, কয়েকবার নিশ্চিত করি
+        const kf = active.flags || {};
+        [800, 2000, 3500, 5000].forEach((t) => setTimeout(() => enforceKeyRadios(kf), t));
 
         // chosen Purpose সেট + খোলা datepicker বন্ধ (পেজের jQuery দিয়ে, MAIN world)
         mainWorld({ purpose, purposeText });

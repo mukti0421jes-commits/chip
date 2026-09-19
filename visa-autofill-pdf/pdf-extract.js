@@ -172,6 +172,7 @@ export function parseVisaPdf(rawText) {
 
   const gp = grab(/Pakistan held area\s*:?\s*(YES|NO)/i);
   if (gp) flags.grandparent = gp.toUpperCase();
+  flags.saarc = flags.saarc || 'NO';   // SAARC ভিজিট — ডিফল্ট No (এডিটরে বদলানো যাবে)
 
   // ---------- E. Visa ----------
   put('visa_entry_id', grab(/No of Entries\s+([A-Za-z]+)/));
