@@ -1,5 +1,5 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
-import { parseVisaPdf } from './pdf-extract.js';
+import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
 import { ocrImage, parsePassport } from './ocr.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
@@ -100,26 +100,22 @@ let curTab = 0;
 let indRefs = [];   // [{name, addr, state, dist, phone}]
 
 // ---------- India reference bulk list ----------
-const ADDR_MAX = 35;
-function packAddr(text, maxLen, maxLines) {
-  const words = String(text || '').replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean);
-  const lines = []; let cur = '';
-  for (const w of words) {
-    const t = cur ? cur + ' ' + w : w;
-    if (t.length <= maxLen) cur = t;
-    else if (lines.length < maxLines - 1) { lines.push(cur); cur = w; }
-    else cur = t;
+// bulk টেক্সট → reference তালিকা।
+// প্রতিটি reference = কয়েকটি লাইনের একটি block; দুটি reference এর মাঝে একটি ফাঁকা লাইন।
+// block-এর ভেতর: ১ম লাইন = নাম, শেষ সংখ্যা-লাইন = ফোন, মাঝেরগুলো = ঠিকানা।
+function parseBulk(text) {
+  const refs = [];
+  const blocks = String(text || '').replace(/\r/g, '').split(/\n[ \t]*\n+/);
+  for (const block of blocks) {
+    // পুরনো "|" ফরম্যাটও চলে — pipe সরিয়ে লাইনগুলোকেই ধরি
+    const lines = block.split('\n')
+      .map((l) => l.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    if (!lines.length) continue;
+    const r = parseRefBlock(lines);
+    if (r && r.name) refs.push(r);
   }
-  if (cur) lines.push(cur);
-  return lines.slice(0, maxLines);
-}
-function parseRefLine(line) {
-  const p = line.split('|').map((s) => s.trim());
-  if (!p[0]) return null;
-  return { name: p[0] || '', addr: p[1] || '', state: p[2] || '', dist: p[3] || '', phone: (p[4] || '').replace(/[^0-9+]/g, '') };
-}
-function refToLine(r) {
-  return [r.name, r.addr, r.state, r.dist, r.phone].map((x) => x || '').join(' | ');
+  return refs;
 }
 function renderIndRefPick() {
   const sel = $('indRefPick');
@@ -141,9 +137,10 @@ function applyIndRef(r) {
   if (r.state) v.stateofsponsor_ind = r.state;
   if (r.dist) v.districtofsponsor_ind = r.dist;
   if (r.phone) v.phoneofsponsor_ind = r.phone;
-  const packed = packAddr(r.addr, ADDR_MAX, 2);
-  v.add1ofsponsor_ind = packed[0] || '';
-  v.add2ofsponsor_ind = packed[1] || '';
+  // প্রথম ঘরে প্রথম ২টি শব্দ, বাকিটা পরের ঘরে (present/permanent-এর মতো)
+  const w = String(r.addr || '').split(/\s+/).filter(Boolean);
+  v.add1ofsponsor_ind = w.slice(0, 2).join(' ');
+  v.add2ofsponsor_ind = w.slice(2).join(' ');
   if (working && workingId) {
     // এডিটরে দেখাচ্ছে — ঘরগুলো রিফ্রেশ
     if (TABS[curTab].t === 'I. References') renderFields();
@@ -164,7 +161,7 @@ function load() {
     $('autoContinueToggle').checked = r.vaAutoContinue === true;
     $('journeyDate').value = r.vaJourneyDate || '';
     indRefs = Array.isArray(r.vaIndRefs) ? r.vaIndRefs : [];
-    $('indRefBulk').value = indRefs.map(refToLine).join('\n');
+    $('indRefBulk').value = r.vaIndRefsRaw || '';
     renderIndRefPick();
     renderProfiles();
   });
@@ -371,9 +368,9 @@ drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f 
 $('journeyDate').oninput = (e) => chrome.storage.local.set({ vaJourneyDate: e.target.value.trim() });
 
 $('saveIndRefs').onclick = () => {
-  indRefs = ($('indRefBulk').value || '').split('\n').map((l) => l.trim()).filter(Boolean)
-    .map(parseRefLine).filter(Boolean);
-  chrome.storage.local.set({ vaIndRefs: indRefs });
+  const raw = $('indRefBulk').value || '';
+  indRefs = parseBulk(raw);
+  chrome.storage.local.set({ vaIndRefs: indRefs, vaIndRefsRaw: raw });
   renderIndRefPick();
   status('✔ ' + indRefs.length + ' টি India reference সেভ হয়েছে।');
 };

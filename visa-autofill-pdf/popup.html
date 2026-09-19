@@ -71,10 +71,19 @@
 
   <div class="card">
     <h2>🇮🇳 India Reference — একসাথে অনেক ঠিকানা</h2>
-    <div class="sub" style="margin:0 0 6px">প্রতি লাইনে একটি reference — এভাবে দিন:<br>
-      <code style="color:#93c5fd">Name | ঠিকানা | State | District | Phone</code></div>
-    <textarea id="indRefBulk" rows="4" placeholder="KARNO TOROFDER | VILLAGE JAGATPUR, POST ASWINI NAGAR, THANA BAGUIATI | WEST BENGAL | NORTH 24 PARGANAS | 919830565254"
-      style="width:100%;box-sizing:border-box;background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:11px;font-family:monospace"></textarea>
+    <div class="sub" style="margin:0 0 6px">প্রতিটি reference আলাদা লাইনে:<br>
+      ১ম লাইন = <b>নাম</b>, তারপর <b>ঠিকানা</b> (এক বা একাধিক লাইন), শেষ লাইন = <b>ফোন</b>।<br>
+      দুইটি reference-এর মাঝে <b>একটি খালি লাইন</b> দিন। State/District ঠিকানা থেকে নিজে বেছে নেয়।</div>
+    <textarea id="indRefBulk" rows="7" placeholder="krishna pado paul
+moddhamgram, doltola,
+barasat, north 24 parganas
+8515050657
+
+KARNO TOROFDER
+village jagatpur, post aswini nagar, thana baguiati
+north 24 parganas
+919830565254"
+      style="width:100%;box-sizing:border-box;background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:7px;font-size:11px;font-family:monospace;white-space:pre"></textarea>
     <button id="saveIndRefs" style="width:100%;margin-top:6px">💾 List সেভ করুন</button>
     <div class="fld full" style="margin-top:8px">
       <label style="font-size:11px;color:#cbd5e1;margin-bottom:3px">সেভ করা list থেকে একটি বেছে নিন → সক্রিয় profile-এ India reference বসবে</label>

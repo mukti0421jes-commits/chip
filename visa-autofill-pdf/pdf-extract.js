@@ -316,6 +316,29 @@ function parseReferences(T, values) {
   assignRef(bdSegs, values, { name: 'nameofsponsor_msn', a1: 'add1ofsponsor_msn', a2: 'add2ofsponsor_msn', phone: 'phoneofsponsor_msn' });
 }
 
+// একটি reference-এর কয়েকটি লাইন (নাম / ঠিকানা / ... / ফোন) → {name, addr, state, dist, phone}
+// State/District ঠিকানা থেকে নিজে খুঁজে আলাদা করে; WB district পেলে state ধরে নেয় WEST BENGAL
+export function parseRefBlock(lines) {
+  const ls = (Array.isArray(lines) ? lines : String(lines).split('\n')).map((x) => rclean(x)).filter(Boolean);
+  if (!ls.length) return null;
+  const name = ls[0];
+  let phone = '';
+  if (ls.length > 1 && /^[0-9+][0-9+\s-]{6,}$/.test(ls[ls.length - 1])) {
+    phone = ls.pop().replace(/[^0-9+]/g, '');
+  }
+  let addr = rclean(ls.slice(1).join(', '));
+  let state = '', dist = '';
+  if (addr) {
+    const st = STATES.find((s) => new RegExp('\\b' + s.replace(/[-/]/g, '\\$&') + '\\b').test(addr.toUpperCase()));
+    if (st) { state = st; addr = rclean(addr.replace(new RegExp(st, 'i'), '')); }
+    const dt = WB_DIST.find((d) => addr.toUpperCase().includes(d));
+    if (dt) { dist = dt; addr = rclean(addr.replace(new RegExp(dt, 'i'), '')); }
+    if (dist && !state) state = 'WEST BENGAL';
+  }
+  addr = rclean(addr.replace(/,\s*,+/g, ','));
+  return { name, addr, state, dist, phone };
+}
+
 function renameFamily(values, prefix, map) {
   for (const [suf, id] of Object.entries(map)) {
     const k = prefix + '_' + suf;
