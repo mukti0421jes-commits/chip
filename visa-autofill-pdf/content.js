@@ -89,6 +89,36 @@
     return fillById(id, value);
   }
 
+  // প্রশ্নের লেখা মিলিয়ে সেই radio-গ্রুপের "No" ক্লিক করি (ID নির্ভর নয়) —
+  // Grandfather/Pakistan ও SAARC প্রশ্ন সবসময় No রাখতে
+  function forceNoByText(regexes) {
+    const groups = {};
+    document.querySelectorAll('input[type="radio"]').forEach((r) => {
+      const k = r.name || r.id; if (!k) return;
+      (groups[k] = groups[k] || []).push(r);
+    });
+    for (const k in groups) {
+      const rs = groups[k];
+      // প্রশ্নের লেখা: রেডিও থেকে উপরে উঠে যথেষ্ট বড় লেখাওলা container
+      let c = rs[0], qtext = '';
+      for (let i = 0; i < 6 && c && c.parentElement; i++) {
+        c = c.parentElement;
+        qtext = c.textContent || '';
+        if (qtext.length > 40) break;
+      }
+      if (!regexes.some((re) => re.test(qtext))) continue;
+      const labelNo = (r) => {
+        const l = r.id && document.querySelector('label[for="' + r.id + '"]');
+        return l && /\bno\b/i.test(l.textContent || '');
+      };
+      const no = rs.find((r) => /^\s*no?\s*$/i.test(r.value)) ||
+                 rs.find((r) => /\bno\b/i.test(r.value)) ||
+                 rs.find(labelNo) ||
+                 (rs.length === 2 ? rs[1] : null); // Yes/No হলে দ্বিতীয়টা সাধারণত No
+      if (no && !no.checked) no.click();
+    }
+  }
+
   // flags → সঠিক radio/checkbox
   async function applyFlags(flags) {
     if (!flags) return;
@@ -96,11 +126,12 @@
     if (flags.sameAddress) setCheckbox('sameAddress_id', true);
 
     if (flags.otherPassport) clickRadio(flags.otherPassport === 'YES' ? 'other_ppt_1' : 'other_ppt_2');
-    // Grandfather/Grandmother Pakistan প্রশ্ন — নিয়ম অনুযায়ী সবসময় "No"
+    // Grandfather/Grandmother Pakistan ও SAARC — সবসময় "No" (ID + লেখা—দুইভাবেই)
     clickRadio('grandparent_flag2');
+    clickRadio('saarc_flag2');
+    forceNoByText([/grand ?father|grand ?mother|pakistan/i, /saarc|south asian/i]);
     if (flags.visitedIndia) { clickRadio(flags.visitedIndia === 'YES' ? 'old_visa_flag1' : 'old_visa_flag2'); await sleep(200); }
     if (flags.refused) clickRadio(flags.refused === 'YES' ? 'refuse_flag1' : 'refuse_flag2');
-    if (flags.saarc) clickRadio(flags.saarc === 'YES' ? 'saarc_flag1' : 'saarc_flag2');
     if (flags.military) clickRadio(flags.military === 'YES' ? 'prev_org1' : 'prev_org2');
   }
 
