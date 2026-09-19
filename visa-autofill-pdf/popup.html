@@ -70,7 +70,14 @@
     <div id="photoInfo" class="sub" style="margin:4px 0 10px"></div>
     <div id="pdfDrop" style="border:2px dashed var(--line);border-radius:8px;padding:10px;text-align:center;color:var(--muted);cursor:pointer;font-size:12px">📄 Passport <b>PDF</b> (personal details page) — ক্লিক/ড্রপ</div>
     <input type="file" id="pdfFile" accept="application/pdf" style="display:none">
-    <div id="pdfInfo" class="sub" style="margin:4px 0 0"></div>
+    <div id="pdfInfo" class="sub" style="margin:4px 0 10px"></div>
+
+    <div style="border-top:1px solid var(--line);padding-top:8px">
+      <div class="sub" style="margin:0 0 6px"><b>অন্যান্য ডকুমেন্ট</b> — নাম দিয়ে যোগ করুন। নামটা সাইটের সারির বিবরণের সাথে মিলিয়ে সঠিক ঘরে বসবে (যেমন "Entry Visa Undertaking", "National ID", "Invitation letter")।</div>
+      <div id="docList"></div>
+      <input type="file" id="docFile" accept="application/pdf" style="display:none">
+      <button id="addDoc" style="width:100%;margin-top:4px">+ ডকুমেন্ট যোগ করুন</button>
+    </div>
   </div>
 
   <div class="card">

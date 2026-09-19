@@ -446,6 +446,44 @@ wireUpload('photoDrop', 'photoFile', 'photo', (f) => f.type.startsWith('image/')
 wireUpload('pdfDrop', 'pdfFile', 'pdf', (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
 loadUploads();
 
+// ---- extra named documents (vaDocs: [{id,label,filename,type,size,data}]) ----
+let vaDocs = [];
+function persistDocs() { chrome.storage.local.set({ vaDocs }, () => { if (chrome.runtime.lastError) status('✘ সেভ হয়নি (ফাইল বড়?)', false); }); }
+function renderDocs() {
+  const box = $('docList'); box.innerHTML = '';
+  if (!vaDocs.length) { box.innerHTML = '<div class="sub">এখনো কোনো ডকুমেন্ট যোগ করা হয়নি।</div>'; return; }
+  vaDocs.forEach((d, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px';
+    const inp = document.createElement('input');
+    inp.value = d.label || ''; inp.placeholder = 'নাম (সাইটের বিবরণ)';
+    inp.style.cssText = 'flex:1;background:#0b1526;border:1px solid var(--line);border-radius:6px;color:#e2e8f0;padding:6px;font-size:11px';
+    inp.oninput = () => { d.label = inp.value; persistDocs(); };
+    const meta = document.createElement('span');
+    meta.className = 'sub'; meta.style.cssText = 'font-size:10px;white-space:nowrap'; meta.textContent = kb(d.size);
+    const del = document.createElement('button');
+    del.textContent = '🗑'; del.className = 'danger'; del.style.cssText = 'padding:4px 7px';
+    del.onclick = () => { vaDocs.splice(i, 1); persistDocs(); renderDocs(); };
+    row.appendChild(inp); row.appendChild(meta); row.appendChild(del);
+    box.appendChild(row);
+    const fn = document.createElement('div'); fn.className = 'sub'; fn.style.cssText = 'font-size:10px;margin:-3px 0 4px';
+    fn.textContent = '📎 ' + (d.filename || ''); box.appendChild(fn);
+  });
+}
+$('addDoc').onclick = () => $('docFile').click();
+$('docFile').onchange = async () => {
+  const f = $('docFile').files[0]; if (!f) return;
+  if (!(f.type === 'application/pdf' || /\.pdf$/i.test(f.name))) { status('✘ শুধু PDF দিন (ছবি ছাড়া বাকি সব PDF).', false); $('docFile').value = ''; return; }
+  try {
+    const data = await fileToDataURL(f);
+    vaDocs.push({ id: 'd_' + Date.now(), label: f.name.replace(/\.[^.]+$/, ''), filename: f.name, type: 'application/pdf', size: f.size, data });
+    persistDocs(); renderDocs();
+    status('✔ ডকুমেন্ট যোগ হয়েছে — নাম ঠিক করে দিন যেন সাইটের বিবরণের সাথে মেলে।');
+  } catch (e) { status('✘ ফাইল পড়া যায়নি: ' + e.message, false); }
+  $('docFile').value = '';
+};
+chrome.storage.local.get(['vaDocs'], (r) => { vaDocs = Array.isArray(r.vaDocs) ? r.vaDocs : []; renderDocs(); });
+
 // ---------------- toggles & actions ----------------
 $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.target.checked });
 $('autoContinueToggle').onchange = (e) => chrome.storage.local.set({ vaAutoContinue: e.target.checked });

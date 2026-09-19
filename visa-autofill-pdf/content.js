@@ -41,14 +41,41 @@
     });
   }
 
-  // Document Upload পেজ: popup-এ রাখা পাসপোর্ট PDF সারি ১ (Passport) এ বসাই
+  // Document Upload পেজ: popup-এ রাখা পাসপোর্ট + নাম-দেওয়া সব PDF মিলিয়ে সঠিক সারিতে বসাই।
+  // সব mFile একই নামের—তাই সাবমিটের সময় শুধু ঐ সারির ফাইল রেখে বাকিগুলো ফাঁকা করি।
   function handleDocumentUpload() {
-    chrome.storage.local.get(['vaPassportData', 'vaPassportName', 'vaPassportType'], (r) => {
-      if (!r.vaPassportData) { showBadge('⚠ ডকুমেন্ট আপলোড ম্যানুয়াল — popup-এ পাসপোর্ট PDF দিলে অটো বসবে', '#e67e22'); return; }
-      const inp = document.querySelector('input[type="file"][name="mFile"]'); // সারি ১ = passport
-      const doc = document.getElementById('doc_id'); if (doc) doc.value = '1';
-      const ok = injectFile(inp, r.vaPassportData, r.vaPassportName || 'passport.pdf', r.vaPassportType || 'application/pdf');
-      showBadge(ok ? '✔ পাসপোর্ট PDF বসানো হয়েছে — সারি ১-এর "Upload Document" চাপুন' : '⚠ বসানো যায়নি — ম্যানুয়ালি দিন', ok ? '#27ae60' : '#c0392b');
+    chrome.storage.local.get(['vaPassportData', 'vaPassportName', 'vaPassportType', 'vaDocs'], (r) => {
+      const docs = Array.isArray(r.vaDocs) ? r.vaDocs.slice() : [];
+      if (r.vaPassportData) docs.unshift({ label: 'Copy of Passport page containing personal particulars', filename: r.vaPassportName || 'passport.pdf', type: r.vaPassportType || 'application/pdf', data: r.vaPassportData });
+      if (!docs.length) { showBadge('⚠ ডকুমেন্ট আপলোড ম্যানুয়াল — popup-এ নাম দিয়ে PDF দিলে অটো বসবে', '#e67e22'); return; }
+
+      const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const allFiles = () => document.querySelectorAll('input[type="file"][name="mFile"]');
+      const rows = [...document.querySelectorAll('table tbody tr')];
+      let matched = 0;
+
+      rows.forEach((tr) => {
+        const input = tr.querySelector('input[type="file"]');
+        if (!input) return;
+        const cell = tr.querySelector('td:nth-child(2)');
+        const desc = norm(cell && cell.textContent);
+        if (!desc) return;
+        // এই সারির বিবরণের সাথে মেলে এমন ডকুমেন্ট খুঁজি (নাম সাবস্ট্রিং মিল)
+        const d = docs.find((x) => { const dn = norm(x.label); return dn && dn.length >= 4 && (desc.indexOf(dn) >= 0 || dn.indexOf(desc) >= 0); });
+        if (!d) return;
+        matched++;
+        injectFile(input, d.data, d.filename || 'document.pdf', d.type); // দেখার জন্য আগেই বসাই
+        // Upload চাপার মুহূর্তে শুধু এই সারির ফাইল রাখি
+        const ensure = () => {
+          allFiles().forEach((fi) => { if (fi !== input) { try { fi.value = ''; } catch (_) {} } });
+          injectFile(input, d.data, d.filename || 'document.pdf', d.type);
+        };
+        const btn = tr.querySelector('input[type="submit"], button[type="submit"]');
+        if (btn) btn.addEventListener('click', ensure, true);
+        input.addEventListener('click', ensure, true);
+      });
+
+      showBadge(matched ? ('✔ ' + matched + 'টি ডকুমেন্ট রেডি — প্রতিটির "Upload Document" আলাদা করে চাপুন' ) : '⚠ নাম মেলেনি — popup-এ নামটা সাইটের বিবরণের মতো দিন', matched ? '#27ae60' : '#e67e22');
     });
   }
 
