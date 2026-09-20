@@ -207,6 +207,12 @@ export function parseVisaPdf(rawText) {
   if (refused) flags.refused = refused.toUpperCase();
 
   // ---------- G. Profession ----------
+  // "Profession/Occupation Details : of Father/Mother/Spouse/Self" → occ_flag (F/M/S)
+  const occOf = grab(/Profession\/Occupation Details\s*:?\s*of\s+([A-Za-z]+)/i).toUpperCase();
+  if (occOf) {
+    const OMAP = { FATHER: 'F', MOTHER: 'M', SPOUSE: 'S', HUSBAND: 'S', WIFE: 'S', SELF: 'SELF', APPLICANT: 'SELF' };
+    values['occ_flag'] = OMAP[occOf] || occOf;
+  }
   // সাইটের occupation ড্রপডাউনের বৈধ মান — না মিললে OTHERS + specify (occupationOther)
   const OCC = ['AIR FORCE', 'BUSINESS PERSON', 'CAMERAMAN', 'CHARITY/SOCIAL WORKER', 'CHARTERED ACCOUNTANT', 'COLLEGE/UNIVERSITY TEACHER', 'DIPLOMAT', 'DOCTOR', 'ENGINEER', 'FILM PRODUCER', 'GOVERNMENT SERVICE', 'HOUSE WIFE', 'JOURNALIST', 'LABOUR', 'LAWYER', 'MEDIA', 'MILITARY', 'MISSIONARY', 'NAVY', 'NEWS BROADCASTER', 'OFFICIAL', 'OTHERS', 'POLICE', 'PRESS', 'PRIVATE SERVICE', 'PUBLISHER', 'REPORTER', 'RESEARCHER', 'RETIRED', 'SEA MAN', 'SELF EMPLOYED/ FREELANCER', 'STUDENT', 'TRADER', 'TV PRODUCER', 'UN-EMPLOYED', 'UN OFFICIAL', 'WORKER', 'WRITER'];
   const occ = grab(/Present Occupation\s+([A-Za-z0-9 /'&-]+?)\s+Designation\/Rank/);
