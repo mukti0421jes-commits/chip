@@ -130,22 +130,25 @@ $('zOut').onclick = () => { zoom = Math.max(0.5, +(zoom - 0.15).toFixed(2)); ren
 $('other').onclick = () => { $('editor').classList.add('hidden'); $('empty').classList.remove('hidden'); };
 
 function ansi(s) { return String(s || '').replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); }
+function saveBytes(bytes, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
 $('save').onclick = async () => {
   status('⏳ ফাইল তৈরি হচ্ছে...');
   try {
+    const changed = fields.filter((f) => f.value !== f.orig);
+    if (!changed.length) { saveBytes(srcBytes, 'RJ_invoice.pdf'); status('✔ ডাউনলোড হয়েছে (অপরিবর্তিত — সাইজ একই)।'); return; }
     const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
     const out = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
-    const helv = await out.embedFont(StandardFonts.Helvetica);
-    const times = await out.embedFont(StandardFonts.TimesRoman);
+    const needSerif = changed.some((f) => f.serif), needSans = changed.some((f) => !f.serif);
+    const helv = needSans ? await out.embedFont(StandardFonts.Helvetica) : null;
+    const times = needSerif ? await out.embedFont(StandardFonts.TimesRoman) : null;
     const p = out.getPages()[0];
-    fields.forEach((f) => {
-      if (f.value === f.orig) return;
+    changed.forEach((f) => {
       p.drawRectangle({ x: f.x - 1, y: f.yb - f.fh * 0.3, width: f.w + 4, height: f.fh * 1.35, color: rgb(1, 1, 1) });
       try { p.drawText(ansi(f.value), { x: f.x, y: f.yb, size: f.fh * 0.92, font: f.serif ? times : helv, color: rgb(0, 0, 0) }); } catch (_) {}
     });
-    const bytes = await out.save();
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })); a.download = 'RJ_invoice.pdf'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    status('✔ ডাউনলোড হয়েছে (RJ_invoice.pdf) — text layer অক্ষত।');
+    const bytes = await out.save({ useObjectStreams: true });
+    saveBytes(bytes, 'RJ_invoice.pdf');
+    status('✔ ডাউনলোড হয়েছে — সাইজ প্রায় একই, text layer অক্ষত।');
   } catch (e) { console.error(e); status('✘ ' + e.message, false); }
 };
 

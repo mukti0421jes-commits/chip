@@ -141,10 +141,15 @@ $('tApply').onclick = () => {
 // শুধু WinAnsi-এনকোডযোগ্য অক্ষর রাখি (Helvetica), নাহলে drawText ভাঙে
 function ansi(s) { return String(s || '').replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); }
 
+function saveBytes(bytes, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+
 $('tDownload').onclick = async () => {
   if (!srcBytes) { status('আগে একটি PDF লোড করুন।', false); return; }
   status('⏳ ফাইল তৈরি হচ্ছে...');
   try {
+    // কোনো পরিবর্তন না থাকলে আসল ফাইলটাই দিই — সাইজ হুবহু একই থাকবে
+    const changed = pages.some((p) => p.edits.size > 0 || p.newboxes.length > 0);
+    if (!changed) { saveBytes(srcBytes, 'RJ_edited.pdf'); status('✔ ডাউনলোড হয়েছে (অপরিবর্তিত — সাইজ একই)।'); return; }
     const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
     const out = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
     const helv = await out.embedFont(StandardFonts.Helvetica);
@@ -167,10 +172,9 @@ $('tDownload').onclick = async () => {
         lines.forEach((ln, i) => { try { page.drawText(ln, { x: nb.x, y: H - nb.y - size * (i + 1), size, font: helv, color: black }); } catch (_) {} });
       });
     });
-    const bytes = await out.save();
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-    a.download = 'RJ_edited.pdf'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    status('✔ ডাউনলোড হয়েছে — এই ফাইল আবার এডিট করা যাবে (text layer অক্ষত)।');
+    const bytes = await out.save({ useObjectStreams: true });
+    saveBytes(bytes, 'RJ_edited.pdf');
+    status('✔ ডাউনলোড হয়েছে — সাইজ প্রায় একই, text layer অক্ষত (আবার এডিটযোগ্য)।');
   } catch (e) { console.error(e); status('✘ তৈরি হয়নি: ' + e.message, false); }
 };
 
