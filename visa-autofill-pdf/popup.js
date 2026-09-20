@@ -539,16 +539,26 @@ $('openSite').onclick = () => chrome.tabs.create({ url: SITE });
 
 $('fillNow').onclick = async () => {
   if (!state.activeId) { status('আগে একটা profile Active করুন।', false); return; }
+  // যেকোনো উইন্ডোয় খোলা ভিসা-পেজ খুঁজি (popup বা RJ full-page — দুই জায়গা থেকেই কাজ করবে)
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: 'https://indianvisa-bangladesh.nic.in/*' }); } catch (_) {}
+  if (tabs.length) {
+    try { await chrome.tabs.update(tabs[0].id, { active: true }); } catch (_) {}
+    chrome.tabs.reload(tabs[0].id);
+    status('➡ ভিসা পেজ রিলোড হচ্ছে — তথ্য বসছে...');
+    return;
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab && /indianvisa-bangladesh\.nic\.in\/visa/.test(tab.url || '')) {
     chrome.tabs.reload(tab.id);
     status('➡ পেজ রিলোড হচ্ছে — তথ্য বসছে...');
   } else {
-    status('এটা ভিসা ফর্মের পেজ নয়। "Visa Website খুলুন" চাপুন।', false);
+    status('ভিসা ফর্মের পেজ খোলা নেই। "Visa Website খুলুন" চাপুন।', false);
   }
 };
 
 // ---------------- RJ Automation (full page in new tab) ----------------
-$('openRJ').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('docgen.html') });
+const openRJBtn = $('openRJ');
+if (openRJBtn) openRJBtn.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('docgen.html') });
 
 load();

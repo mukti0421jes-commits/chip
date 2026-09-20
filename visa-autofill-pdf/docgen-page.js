@@ -280,7 +280,7 @@ $('sigDone').onclick = () => {
 };
 
 // ---------------- tool buttons ----------------
-const PAGES = { editpdf: 'pdf-edit.html', compress: 'pdf-compress.html', split: 'pdf-split.html', img2pdf: 'img2pdf.html', merge: 'pdf-merge.html', invoice: 'invoice.html' };
+const PAGES = { webfile: 'webfile.html', editpdf: 'pdf-edit.html', compress: 'pdf-compress.html', split: 'pdf-split.html', img2pdf: 'img2pdf.html', merge: 'pdf-merge.html', invoice: 'invoice.html' };
 const WA = 'https://wa.me/qr/N3UUJFA3B6YUF1'; // uzzaldutto60
 const LINKS = { wa: WA, wagroup: WA };
 document.querySelectorAll('[data-todo]').forEach((b) => b.addEventListener('click', () => {
