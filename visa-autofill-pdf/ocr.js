@@ -184,21 +184,35 @@ export function parsePassport(text) {
   const nm = (re) => { const s = g(re); return /^[A-Z][A-Z]+(?:\s+[A-Z.]+){0,4}$/.test(s) && s.length <= 40 ? s : ''; };
 
   // ---- Data page (উপরের পাতা) ----
-  put('fthrname', nm(/Father'?s?\s+Na\w*[:.\s]+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,4})/i));
-  put('mother_name', nm(/Mother'?s?\s+Na\w*[:.\s]+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,4})/i));
-  put('spouse_name', nm(/Spouse'?s?\s+Na\w*[:.\s]+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,4})/i));
+  put('fthrname', nm(/Father'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
+  put('mother_name', nm(/Mother'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
+  put('spouse_name', nm(/Spouse'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
   const tel = g(/Telephone No[:.\s]+\+?([\d][\d\s]{8,})/i);
-  if (tel) { const d = tel.replace(/\s/g, ''); if (d.length >= 10) values['phoneofsponsor_msn'] = d; }
-  const emg = nm(/Emergency Contact[\s\S]{0,40}?Name[:.\s]+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,4})/i);
+  if (tel) {
+    let d = tel.replace(/\D/g, '');
+    d = d.replace(/^880/, '');           // ISD আলাদা
+    if (d.length >= 10) { values['mobile'] = d; values['isd_code1'] = '880'; values['phoneofsponsor_msn'] = tel.replace(/\D/g, ''); }
+  }
+  // Permanent Address: ... (Emergency Contact-এর আগ পর্যন্ত)
+  const permM = T.match(/Permanent Address[:.\s]+([\s\S]*?)(?:Emergency Contact|Name\s*:|\n\n|$)/i);
+  if (permM) {
+    const parts = clean(permM[1]).split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length) {
+      const w = clean(permM[1]).split(/\s+/).filter(Boolean);
+      values['perm_address1'] = w.slice(0, 2).join(' ');
+      const rest = w.slice(2).join(' ');
+      if (rest) values['perm_address2'] = rest.length > 35 ? rest.slice(0, 35) : rest;
+      const st = parts[parts.length - 1] || '';
+      if (/^[A-Z ]+$/.test(st.toUpperCase())) values['perm_address3'] = st.replace(/\s*-?\s*\d.*$/, '').trim();
+    }
+  }
 
   // ---- Passport page ----
-  put('surname', nm(/Surname\s+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,3})/));
-  put('givenName', nm(/Given Name\s+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,3})/));
+  put('surname', nm(/Surname[ \t]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,3})/));
+  put('givenName', nm(/Given Name[ \t]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,3})/));
   put('nic_number', g(/Personal No[.:]?\s*([0-9]{6,})/i));
-  // Bangladesh passport: B + ৮ সংখ্যা; মূলটা অগ্রাধিকার, প্রিভিয়াস আলাদা
-  const bd = T.match(/\bB\d{8}\b/);
-  put('passport_no', bd ? bd[0] : g(/\b([A-Z]{1,2}[0-9]{7,8})\b/));
-  put('birth_place', nm(/Place of Birth\s+([A-Z][A-Z]+(?:\s+[A-Z.]+){0,2})/i));
+  put('passport_no', g(/Passport Number[ \t]+([A-Z]{1,2}[0-9]{6,8})/i) || (T.match(/\b[A-Z]{1,2}\d{7}\b/) || [])[0] || '');
+  put('birth_place', nm(/Place of Birth[ \t]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,2})/i));
   put('dob_id', dmy(g(/Date of Birth\s*([0-9]{1,2}\s+[A-Z]{3}\s+[0-9]{4})/i)));
   put('passport_issue_date', dmy(g(/Date of Issue\s*([0-9]{1,2}\s+[A-Z]{3}\s+[0-9]{4})/i)));
   put('passport_expiry_date', dmy(g(/Date of Expiry\s*([0-9]{1,2}\s+[A-Z]{3}\s+[0-9]{4})/i)));
@@ -217,12 +231,16 @@ export function parsePassport(text) {
     if (mrz.dob) values['dob_id'] = mrz.dob;
     if (mrz.expiry) values['passport_expiry_date'] = mrz.expiry;
     if (mrz.sex) values['gender'] = mrz.sex;
-    if (mrz.personal) values['nic_number'] = mrz.personal;
+    if (mrz.personal && !values['nic_number']) values['nic_number'] = mrz.personal; // labeled Personal No বেশি নির্ভরযোগ্য
     if (mrz.nationality) {
       values['nationality_id'] = mrz.nationality;
       values['country_birth'] = CCODE[mrz.nationality] || values['country_birth'] || mrz.nationality;
     }
   }
+
+  // Sex/Gender → সাইটের MALE/FEMALE
+  const sx = (values['gender'] || g(/\bSex\b\s*([MFX])/i) || '').toUpperCase();
+  if (sx === 'M') values['gender'] = 'MALE'; else if (sx === 'F') values['gender'] = 'FEMALE'; else if (sx === 'X') values['gender'] = 'X';
 
   // Registration (Mission) ডিফল্ট (passport-এ থাকে না)
   values['countryname_id'] = values['countryname_id'] || 'BGD';

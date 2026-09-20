@@ -570,6 +570,34 @@ $('fillNow').onclick = async () => {
   }
 };
 
+// ---------------- passport scan → merge into open profile (WEBFILE only) ----------------
+const PASSPORT_KEYS = ['surname', 'givenName', 'gender', 'dob_id', 'birth_place', 'country_birth', 'nic_number',
+  'passport_no', 'passport_issue_date', 'passport_expiry_date', 'passport_issue_place',
+  'other_ppt_no', 'other_ppt_country_issue', 'other_ppt_nat',
+  'fthrname', 'mother_name', 'spouse_name', 'perm_address1', 'perm_address2', 'perm_address3',
+  'mobile', 'isd_code1'];
+const spBtn = $('scanPassportBtn'), spFile = $('scanPassportFile');
+if (spBtn && spFile) {
+  spBtn.onclick = () => { if (!working) { status('আগে একটা profile Edit করুন।', false); return; } spFile.click(); };
+  spFile.onchange = async () => {
+    const f = spFile.files[0]; if (!f) return;
+    if (!working) { status('আগে একটা profile Edit করুন।', false); return; }
+    status('🔎 পাসপোর্ট OCR চলছে (কয়েক সেকেন্ড)...');
+    try {
+      const url = URL.createObjectURL(f);
+      const text = await ocrImage(url, (p) => status('🔎 পাসপোর্ট OCR ' + Math.round(p * 100) + '%'));
+      URL.revokeObjectURL(url);
+      const res = parsePassport(text);
+      let n = 0;
+      PASSPORT_KEYS.forEach((k) => { if (res.values[k]) { working.values[k] = res.values[k]; n++; } });
+      if (res.flags && res.flags.otherPassport) working.flags.otherPassport = res.flags.otherPassport;
+      renderFields();
+      status('✔ পাসপোর্ট থেকে ' + n + 'টি ঘর আপডেট হয়েছে — টেমপ্লেটের বাকি তথ্য অপরিবর্তিত। যাচাই করে Save করুন।');
+    } catch (e) { console.error(e); status('✘ পাসপোর্ট পড়া যায়নি: ' + e.message, false); }
+    spFile.value = '';
+  };
+}
+
 // ---------------- RJ Automation (full page in new tab) ----------------
 const openRJBtn = $('openRJ');
 if (openRJBtn) openRJBtn.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('docgen.html') });
