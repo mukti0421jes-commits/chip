@@ -281,9 +281,12 @@ $('sigDone').onclick = () => {
 
 // ---------------- tool buttons ----------------
 const PAGES = { editpdf: 'pdf-edit.html', compress: 'pdf-compress.html', split: 'pdf-split.html', img2pdf: 'img2pdf.html', merge: 'pdf-merge.html', invoice: 'invoice.html' };
+const WA = 'https://wa.me/qr/N3UUJFA3B6YUF1'; // uzzaldutto60
+const LINKS = { wa: WA, wagroup: WA };
 document.querySelectorAll('[data-todo]').forEach((b) => b.addEventListener('click', () => {
   const t = b.dataset.todo;
   if (PAGES[t]) { window.open(chrome.runtime.getURL(PAGES[t]), '_blank'); return; }
+  if (LINKS[t]) { window.open(LINKS[t], '_blank', 'noopener'); return; }
   status('⏳ এই ফিচারটি শীঘ্রই যোগ হবে (' + t + ')।');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }));
