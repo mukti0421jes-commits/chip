@@ -92,7 +92,20 @@ const TABS = [
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
-function status(msg, ok = true) { statusEl.textContent = msg; statusEl.className = ok ? 'ok' : 'err'; }
+let toastEl = null, toastTimer = null;
+function toast(msg, ok = true) {
+  if (!toastEl) {
+    toastEl = document.createElement('div');
+    toastEl.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99999;max-width:90%;padding:12px 18px;border-radius:10px;color:#fff;font-family:inherit;font-size:14px;font-weight:700;box-shadow:0 6px 24px rgba(0,0,0,.3);opacity:0;transition:opacity .2s,bottom .2s;pointer-events:none';
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.style.background = ok ? 'linear-gradient(135deg,#0b6b4e,#12b886)' : '#dc2626';
+  toastEl.style.opacity = '1'; toastEl.style.bottom = '28px';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.opacity = '0'; toastEl.style.bottom = '18px'; }, 2600);
+}
+function status(msg, ok = true) { if (statusEl) { statusEl.textContent = msg; statusEl.className = ok ? 'ok' : 'err'; } toast(msg, ok); }
 
 let state = { profiles: {}, activeId: null };
 let working = null;   // {name, values, flags} — এডিটরে যেটা দেখাচ্ছে
