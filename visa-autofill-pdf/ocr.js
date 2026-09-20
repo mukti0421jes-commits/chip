@@ -87,11 +87,11 @@ function scaleGray(src, minW, binarize) {
 // নিচের ~২৫% কেটে MRZ (দুই লাইন) আলাদা — সেখানে binarize + বড় করে OCR
 function cropMrz(src) {
   const sh = src.height;
-  const y = Math.round(sh * 0.74);
+  const y = Math.round(sh * 0.70);
   const c = document.createElement('canvas');
   c.width = src.width; c.height = sh - y;
   c.getContext('2d').drawImage(src, 0, y, src.width, sh - y, 0, 0, src.width, sh - y);
-  return scaleGray(c, 1800, true);
+  return scaleGray(c, 2200, true);
 }
 
 // ---------- Tesseract দিয়ে ছবি OCR (full page + আলাদা MRZ পাস) ----------
@@ -136,40 +136,67 @@ export async function ocrImage(imageLike, onProgress) {
   }
 }
 
-// ---------- MRZ (TD3, দুই লাইন) parse ----------
+// ---------- MRZ (TD3) — check-digit ভ্যালিডেশন সহ নির্ভুল parser ----------
+// MRZ check digit: weight 7,3,1; A-Z=10..35, digit=itself, '<'=0
+function mrzCheck(s) {
+  let sum = 0; const w = [7, 3, 1];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]; let v;
+    if (c >= '0' && c <= '9') v = c.charCodeAt(0) - 48;
+    else if (c >= 'A' && c <= 'Z') v = c.charCodeAt(0) - 55;
+    else v = 0; // '<' বা অন্য
+    sum += v * w[i % 3];
+  }
+  return sum % 10;
+}
+// সংখ্যা-ঘরে OCR অক্ষর→সংখ্যা করে check মিলিয়ে দেখি; মিললে বেশি আস্থা
+function fixNumField(field, checkChar) {
+  const fixed = fixDigits(field);
+  const ok = String(mrzCheck(fixed)) === fixDigits(checkChar);
+  return { val: fixed, ok };
+}
+
 function parseMrz(text) {
-  // '«', '≪', space সবই '<' ধরি; শুধু MRZ অক্ষর রাখি
-  const norm = (l) => l.replace(/[«≪‹]/g, '<').replace(/[^A-Z0-9<]/gi, '').toUpperCase();
-  const lines = text.split('\n').map(norm).filter(Boolean);
-  // MRZ লাইন = দৈর্ঘ্য ~28+ এবং কমপক্ষে ২টি '<'
-  const cand = lines.filter((l) => l.length >= 28 && (l.match(/</g) || []).length >= 2);
-  if (cand.length < 2) return null;
-  // নাম লাইন: '<<' আছে ও সংখ্যা কম; ডেটা লাইন: সংখ্যাবহুল
+  const norm = (l) => l.replace(/[«≪‹‹]/g, '<').replace(/[^A-Z0-9<]/gi, '').toUpperCase();
+  // MRZ লাইন: লম্বা + হয় অনেক '<' (নাম লাইন) নয় বড় সংখ্যা-রান (ডেটা লাইন)
+  const raw = text.split('\n').map(norm).filter((l) => l.length >= 28 && ((l.match(/</g) || []).length >= 2 || /\d{6}/.test(l)));
+  if (raw.length < 2) return null;
   const digitCount = (l) => (l.match(/\d/g) || []).length;
-  let l1 = cand.find((l) => l.includes('<<') && digitCount(l) <= 4) ||
-           cand.slice().sort((a, b) => digitCount(a) - digitCount(b))[0];
-  let l2 = cand.filter((l) => l !== l1).sort((a, b) => digitCount(b) - digitCount(a))[0] || cand[1];
-  const out = {};
-  // নাম: 'P' + issuing-country(3) বাদ; SURNAME<<GIVEN<GIVEN
-  let nm = l1.replace(/^P[A-Z<]/, '').replace(/^[A-Z<]{3}/, '');
+  // নাম লাইন (P/সংখ্যা কম, '<<' আছে) ও ডেটা লাইন (সংখ্যাবহুল)
+  let l1 = raw.find((l) => /^P[A-Z<]/.test(l) && l.includes('<<')) ||
+           raw.find((l) => l.includes('<<') && digitCount(l) <= 4) ||
+           raw.slice().sort((a, b) => digitCount(a) - digitCount(b))[0];
+  let l2 = raw.filter((l) => l !== l1).sort((a, b) => digitCount(b) - digitCount(a))[0];
+  if (!l1 || !l2) return null;
+  const pad = (l) => (l + '<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<').slice(0, 44);
+  l1 = pad(l1); l2 = pad(l2);
+  const out = { _conf: {} };
+
+  // ---- Line 1: doc(1) type(1) issuing(3) + names ----
+  const iss = l1.slice(2, 5).replace(/</g, '');
+  if (/^[A-Z]{3}$/.test(iss)) out.nationality = iss;
+  const nm = l1.slice(5);
   const parts = nm.split(/<<+/);
   const nameOk = (s) => /^[A-Z][A-Z ]{1,38}$/.test(s);
   if (parts[0]) { const s = parts[0].replace(/</g, ' ').replace(/\s+/g, ' ').trim(); if (nameOk(s)) out.surname = s; }
   if (parts[1]) { const s = parts[1].replace(/</g, ' ').replace(/\s+/g, ' ').trim(); if (nameOk(s)) out.given = s; }
-  const cc = l1.match(/^P?[A-Z<]?([A-Z]{3})/);
-  if (cc && /^[A-Z]{3}$/.test(cc[1])) out.nationality = cc[1];
-  // l2: passportNo(9) check(1) nat(3) dob(6) check sex expiry(6) ...
-  const m = l2.match(/^([A-Z0-9<]{9})[A-Z0-9]?([A-Z<]{3})([A-Z0-9]{6})[A-Z0-9]?([MFX<])([A-Z0-9]{6})/);
-  if (m) {
-    out.passport = m[1].replace(/</g, '').trim();
-    const nat = m[2].replace(/</g, '');
-    if (/^[A-Z]{3}$/.test(nat)) out.nationality = out.nationality || nat;
-    out.dob = yymmdd(m[3], false);
-    out.sex = m[4] === '<' ? '' : m[4];
-    out.expiry = yymmdd(m[5], true);
-    const pn = fixDigits(l2.slice(28)).match(/(\d{6,})/);
-    if (pn) out.personal = pn[1];
-  }
+
+  // ---- Line 2: fixed positions (TD3) ----
+  const passport = l2.slice(0, 9), passChk = l2[9];
+  const nat = l2.slice(10, 13).replace(/</g, '');
+  const dob = l2.slice(13, 19), dobChk = l2[19];
+  const sex = l2[20];
+  const exp = l2.slice(21, 27), expChk = l2[27];
+  const personal = l2.slice(28, 42), persChk = l2[42];
+
+  const p = { val: passport.replace(/</g, ''), ok: String(mrzCheck(passport)) === passChk };
+  out.passport = p.val; out._conf.passport = p.ok;
+  if (/^[A-Z]{3}$/.test(nat)) out.nationality = out.nationality || nat;
+  const d = fixNumField(dob, dobChk); out.dob = yymmdd(d.val, false); out._conf.dob = d.ok;
+  out.sex = /[MF]/.test(sex) ? sex : '';
+  const e = fixNumField(exp, expChk); out.expiry = yymmdd(e.val, true); out._conf.expiry = e.ok;
+  const pn = fixNumField(personal, persChk); const pnv = pn.val.replace(/</g, '').replace(/^0+(?=\d)/, '');
+  if (/\d{6,}/.test(pnv)) { out.personal = pnv; out._conf.personal = pn.ok; }
   return (out.surname || out.passport) ? out : null;
 }
 
