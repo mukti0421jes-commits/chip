@@ -110,8 +110,10 @@ function status(msg, ok = true) { if (statusEl) { statusEl.textContent = msg; st
 let state = { profiles: {}, activeId: null };
 let vaOcrKey = '';
 // OCR.space key থাকলে ক্লাউড (নির্ভুল), নাহলে অফলাইন Tesseract
-function getOcrText(imageLike, onProgress) {
-  return vaOcrKey ? ocrSpace(imageLike, vaOcrKey, onProgress) : ocrImage(imageLike, onProgress);
+async function getOcrText(imageLike, onProgress) {
+  const t = await (vaOcrKey ? ocrSpace(imageLike, vaOcrKey, onProgress) : ocrImage(imageLike, onProgress));
+  const dbg = $('ocrRaw'); if (dbg) dbg.value = t; // ডিবাগ: কাঁচা OCR টেক্সট
+  return t;
 }
 let working = null;   // {name, values, flags} — এডিটরে যেটা দেখাচ্ছে
 let workingId = null;

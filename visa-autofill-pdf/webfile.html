@@ -72,6 +72,10 @@
         <input type="text" id="ocrKey" placeholder="ocr.space/ocrapi থেকে ফ্রি key নিন, এখানে বসান (ঐচ্ছিক)" style="padding:8px">
         <div class="hint">key দিলে পাসপোর্ট/ছবির লেখা ক্লাউডে অনেক নির্ভুল পড়ে। খালি রাখলে অফলাইন Tesseract চলবে।</div>
       </div>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--brand)">🐞 শেষ OCR টেক্সট (ডিবাগ — সমস্যা হলে এটা কপি করে পাঠান)</summary>
+        <textarea id="ocrRaw" readonly rows="6" style="width:100%;box-sizing:border-box;margin-top:6px;background:#fff;border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:7px;font-size:11px;font-family:monospace" placeholder="স্ক্যান করার পর OCR যা পড়েছে তা এখানে দেখাবে।"></textarea>
+      </details>
     </div>
     <div class="card">
       <h2>📎 ছবি ও পাসপোর্ট আগে থেকে লোড</h2>
