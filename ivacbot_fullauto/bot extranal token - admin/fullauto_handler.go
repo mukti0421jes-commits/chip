@@ -34,7 +34,60 @@ var (
 	// faClearOTPs maps instanceID → the running Full Auto's ClearOTP func, so Clean
 	// Cache can wipe the OTP a RUNNING flow is holding, not just the table cell.
 	faClearOTPs = map[int]func(){}
+	// faRejectOTPs maps instanceID → the running flow's RejectOTP func, so a code
+	// cleared from the dashboard is also blacklisted and cannot come straight back.
+	faRejectOTPs = map[int]func(string){}
 )
+
+// handleClearInstanceOTP wipes ONE instance's OTP so a fresh one can be typed.
+//
+//	POST /api/clearOTP?id=<instanceId>
+//
+// The code being cleared is also blacklisted for the running flow. Without that
+// the SMS poller would read the very same code back off sms.php a second later
+// and put it right back in the box.
+func handleClearInstanceOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var id int
+	fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+
+	instancesMu.RLock()
+	inst, ok := instances[id]
+	instancesMu.RUnlock()
+	if !ok {
+		w.WriteHeader(404)
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "instance not found"})
+		return
+	}
+
+	inst.mu.Lock()
+	old := inst.Data.OTP
+	if old == "" {
+		old = inst.Data.ManualOTP
+	}
+	inst.Data.OTP = ""
+	inst.Data.ManualOTP = ""
+	inst.Data.ManualOTPTime = time.Time{}
+	inst.Data.WaitingOTP = true // show the input again so a new code can be typed
+	inst.mu.Unlock()
+
+	faStopMu.Lock()
+	reject, clear := faRejectOTPs[id], faClearOTPs[id]
+	faStopMu.Unlock()
+	if reject != nil && old != "" {
+		reject(old) // never accept this code again on this run
+	}
+	if clear != nil {
+		clear()
+	}
+	if old != "" {
+		addLog(id, "🧹 OTP "+old+" muche deya holo — notun OTP type korun (ei code ta ar neya hobe na)")
+	}
+	writeJSON(w, map[string]interface{}{"ok": true, "cleared": old})
+}
 
 // clearRunningFlowOTPs wipes the OTP held by every running Full Auto flow.
 func clearRunningFlowOTPs() {
@@ -964,6 +1017,11 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 				faClearOTPs[id] = clear
 				faStopMu.Unlock()
 			},
+			RegisterRejectOTP: func(reject func(string)) {
+				faStopMu.Lock()
+				faRejectOTPs[id] = reject
+				faStopMu.Unlock()
+			},
 			OnScanComplete: func(ok bool, detail string) {
 				if ok {
 					addLog(id, "✅ Bundle scan complete — sob details paowa gelo ("+detail+")")
@@ -1036,6 +1094,7 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 		delete(faStops, id)
 		delete(faOTPs, id)
 		delete(faClearOTPs, id)
+		delete(faRejectOTPs, id)
 		faStopMu.Unlock()
 
 		stopped := err != nil && strings.Contains(err.Error(), "stop")

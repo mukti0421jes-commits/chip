@@ -253,3 +253,28 @@ outranking the built-in.
 `ivacflow_push_test.go` — a push with no token, a wrong token and a non-loopback
 address are all refused and change nothing; a valid push is stored and
 persisted; a walk that captured nothing is rejected; template drift is reported.
+
+---
+
+# Round 4 — clear an OTP and type a fresh one
+
+The SMS poller sometimes picks the PREVIOUS session's code off sms.php and the
+instance tries to verify with it. Once an OTP was held, the dashboard showed it
+as plain text — the input was gone, so there was no way to drop it and type the
+code actually on the phone.
+
+The OTP cell now shows a **✖** button next to the code. Clicking it:
+
+* clears `Data.OTP`, `Data.ManualOTP` and the OTP the RUNNING flow holds, and
+* **blacklists that code** on the run (`Runner.RejectOTP` via the new
+  `RegisterRejectOTP` hook), then
+* sets `WaitingOTP` so the input reappears, with the cursor placed in it.
+
+The blacklist is the part that matters. Clearing the box alone is useless: the
+SMS poller reads the same stale code back off sms.php a second later and puts it
+straight back. A typed code still overrides everything (`SetOTPManual`).
+
+Endpoint: `POST /api/clearOTP?id=<instanceId>`.
+
+Tests: `ivacflow_push_test.go` — clearing blacklists the code, wipes both OTP
+fields, clears the running flow and reopens the input; an unknown instance 404s.

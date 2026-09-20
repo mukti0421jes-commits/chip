@@ -153,3 +153,63 @@ func TestCompareTemplateFlagsDrift(t *testing.T) {
 		t.Fatalf("a step the bot does not send was flagged: %v", out)
 	}
 }
+
+// TestClearInstanceOTPBlacklists is the point of the clear button: wiping the
+// box is useless on its own, because the SMS poller reads the same stale code
+// off sms.php a second later and puts it right back. Clearing must also
+// blacklist the code on the running flow.
+func TestClearInstanceOTPBlacklists(t *testing.T) {
+	const id = 9911
+	inst := &Instance{Data: InstanceData{OTP: "111111"}}
+	instancesMu.Lock()
+	instances[id] = inst
+	instancesMu.Unlock()
+	defer func() {
+		instancesMu.Lock()
+		delete(instances, id)
+		instancesMu.Unlock()
+	}()
+
+	var rejected string
+	var cleared bool
+	faStopMu.Lock()
+	faRejectOTPs[id] = func(otp string) { rejected = otp }
+	faClearOTPs[id] = func() { cleared = true }
+	faStopMu.Unlock()
+	defer func() {
+		faStopMu.Lock()
+		delete(faRejectOTPs, id)
+		delete(faClearOTPs, id)
+		faStopMu.Unlock()
+	}()
+
+	w := httptest.NewRecorder()
+	handleClearInstanceOTP(w, httptest.NewRequest("POST", "/api/clearOTP?id=9911", nil))
+	if w.Code != 200 {
+		t.Fatalf("clear refused: HTTP %d — %s", w.Code, w.Body.String())
+	}
+	if rejected != "111111" {
+		t.Fatalf("the cleared code was not blacklisted: %q", rejected)
+	}
+	if !cleared {
+		t.Fatal("the running flow's OTP was not cleared")
+	}
+
+	inst.mu.Lock()
+	otp, manual, waiting := inst.Data.OTP, inst.Data.ManualOTP, inst.Data.WaitingOTP
+	inst.mu.Unlock()
+	if otp != "" || manual != "" {
+		t.Fatalf("OTP still held: otp=%q manual=%q", otp, manual)
+	}
+	if !waiting {
+		t.Fatal("the input should reappear so a new code can be typed")
+	}
+}
+
+func TestClearInstanceOTPUnknownInstance(t *testing.T) {
+	w := httptest.NewRecorder()
+	handleClearInstanceOTP(w, httptest.NewRequest("POST", "/api/clearOTP?id=424242", nil))
+	if w.Code != 404 {
+		t.Fatalf("unknown instance: HTTP %d, want 404", w.Code)
+	}
+}

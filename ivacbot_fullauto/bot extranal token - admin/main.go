@@ -6874,6 +6874,28 @@ function getStatusBadge(code) {
     return '<span class="status-badge">-</span>'; 
 }
 
+// clearInstanceOTP drops the OTP this instance is holding so a new one can be
+// typed. The code is blacklisted server-side too — otherwise the SMS poller
+// reads the same stale code back off sms.php a second later.
+function clearInstanceOTP(instanceId) {
+    fetch('/api/clearOTP?id=' + instanceId, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (res.ok) {
+                showToast('🧹 OTP cleared for #' + instanceId + ' — notun OTP type korun', 'success');
+                refresh();
+                // put the cursor straight in the box that just reappeared
+                setTimeout(function() {
+                    var inp = document.getElementById('otp_input_' + instanceId);
+                    if (inp) inp.focus();
+                }, 400);
+            } else {
+                showToast('Clear failed: ' + (res.error || ''), 'error');
+            }
+        })
+        .catch(function() { showToast('Clear failed', 'error'); });
+}
+
 function submitManualOTP(instanceId, otp) { 
     if (!otp || otp.length !== 6) return; 
     showToast('Submitting OTP for #' + instanceId + '...', 'info'); 
@@ -7079,7 +7101,13 @@ function refresh() {
                     } 
                 }, 100); 
             } else if (inst.otp) { 
-                row.insertCell(7).innerHTML = '<span class="otp-display">' + inst.otp + '</span>'; 
+                // An OTP is held — but it may be the PREVIOUS session's code that the
+                // poller picked off sms.php. Always offer a way to drop it and type a
+                // fresh one; clearing also blacklists it so it cannot come straight back.
+                row.insertCell(7).innerHTML =
+                    '<div class="manual-otp-container"><span class="otp-display">' + inst.otp + '</span>' +
+                    '<button class="btn btn-danger btn-sm" title="Ei OTP muche notun ekta type korun" ' +
+                    'onclick="clearInstanceOTP(' + inst.id + ')" style="padding:2px 7px;margin-left:5px;">✖</button></div>';
             } else { 
                 row.insertCell(7).innerHTML = '-'; 
             } 
@@ -8531,6 +8559,7 @@ func main() {
 	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)
 	http.HandleFunc("/api/ivacflowStatus", adminOnly(handleIvacflowStatus))
 	http.HandleFunc("/api/clearIvacflow", adminOnly(handleClearIvacflow))
+	http.HandleFunc("/api/clearOTP", adminOnly(handleClearInstanceOTP))
 
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════╗")

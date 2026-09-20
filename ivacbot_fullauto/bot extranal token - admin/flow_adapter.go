@@ -128,6 +128,10 @@ type FullAutoInput struct {
 	// Cache button can wipe the OTP held by a RUNNING flow too (not just the one
 	// shown in the table).
 	RegisterClearOTP func(clear func())
+	// RegisterRejectOTP receives the runner's RejectOTP func. Clearing an OTP from
+	// the dashboard must ALSO blacklist it, or the SMS poller simply picks the same
+	// stale code straight back up from sms.php.
+	RegisterRejectOTP func(reject func(otp string))
 }
 
 // RunFullAutoForEntry runs the RJ SLOT Full Auto pipeline for one entry, using
@@ -205,6 +209,9 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	}
 	if in.RegisterClearOTP != nil {
 		in.RegisterClearOTP(r.ClearOTP)
+	}
+	if in.RegisterRejectOTP != nil {
+		in.RegisterRejectOTP(r.RejectOTP)
 	}
 
 	err := flow.RunFullAuto(r, in.Files, in.Mission, in.IvacCenter)
