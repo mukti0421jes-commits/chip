@@ -10,6 +10,20 @@ const MONTHS = { JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06
 // সাইটের ঠিকানা ঘরগুলোর সর্বোচ্চ দৈর্ঘ্য — এর বেশি হলে পরের ঘরে গড়িয়ে দিই
 const ADDR_MAX = 35;
 
+// নাম + ঠিকানা মেশানো এক লাইন → {name, addr}
+// নামের শেষে HOTEL/GUEST HOUSE/LODGE ইত্যাদি কীওয়ার্ড পর্যন্ত = নাম;
+// নাহলে প্রথম সংখ্যাওয়ালা টোকেন থেকে ঠিকানা শুরু; নাহলে প্রথম ২ শব্দ নাম।
+const HOTEL_KW = /^(HOTEL|LODGE|INN|RESIDENCY|RESIDENCE|GUEST|HOUSE|BHAWAN|BHAVAN|DHAM|ASHRAM|VILLA|PALACE|TOWER|PLAZA|INTERNATIONAL)$/i;
+function splitNameAddr(s) {
+  const w = String(s || '').replace(/[.,]+$/, '').split(/\s+/).filter(Boolean);
+  if (!w.length) return { name: '', addr: '' };
+  let cut = -1;
+  for (let i = 0; i < w.length; i++) if (HOTEL_KW.test(w[i]) && !(w[i].toUpperCase() === 'INTERNATIONAL' && i === 0)) cut = i;
+  if (cut < 0) { for (let i = 1; i < w.length; i++) if (/\d/.test(w[i])) { cut = i - 1; break; } }
+  if (cut < 0) cut = Math.min(1, w.length - 1);
+  return { name: w.slice(0, cut + 1).join(' '), addr: w.slice(cut + 1).join(' ') };
+}
+
 function toDate(s) {
   if (!s) return '';
   const m = String(s).trim().match(/(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{4})/);
@@ -188,13 +202,14 @@ export function parseVisaPdf(rawText) {
   if (visited) {
     flags.visitedIndia = visited.toUpperCase();
     if (flags.visitedIndia === 'YES') {
-      // raw block (newline রাখা) → 'India' label বাদ → ৩৫ অক্ষরের ৩ লাইনে ভাগ
+      // raw block → 'India' label বাদ → নাম আলাদা করে add1, বাকিটা ঠিকানা হিসেবে add2/add3 (৩৫ অক্ষর)
       const blkRaw = rawBlock(/Address where You stayed in/, /Cities in India Visited/);
       const full = clean(blkRaw).replace(/^India\s+/i, '');
-      const ln = packInto(full, 35, 3);
-      if (ln[0]) values['prv_visit_add1'] = ln[0];
-      if (ln[1]) values['prv_visit_add2'] = ln[1];
-      if (ln[2]) values['prv_visit_add3'] = ln[2];
+      const na = splitNameAddr(full);
+      if (na.name) values['prv_visit_add1'] = na.name;
+      const rest = packInto(na.addr, 35, 2);
+      if (rest[0]) values['prv_visit_add2'] = rest[0];
+      if (rest[1]) values['prv_visit_add3'] = rest[1];
       put('visited_city', grab(/Cities in India Visited\s+([^\n]+)/));
       put('old_visa_type_id', grab(/Type of Visa\s+([A-Za-z ]+?)\s+Visa Number/));
       put('old_visa_no', grab(/Visa Number\s+([A-Za-z0-9]+)/));
@@ -249,19 +264,10 @@ export function parseVisaPdf(rawText) {
     const dt = WB_DIST.find((d) => s.toUpperCase().includes(d));
     if (dt) { values['pos_dist_id1'] = dt; s = clean(s.replace(new RegExp(dt, 'i'), '')); }
     if (dt && !values['pos_state_id1']) values['pos_state_id1'] = 'WEST BENGAL';
-    // বাকি অংশ = হোটেল নাম + ঠিকানা → ভাগ করি:
-    // ১) নামের শেষে HOTEL/GUEST HOUSE/LODGE ইত্যাদি কীওয়ার্ড থাকলে সেখান পর্যন্ত নাম
-    // ২) নাহলে প্রথম সংখ্যাওয়ালা টোকেন থেকে ঠিকানা শুরু
-    // ৩) নাহলে প্রথম ২ শব্দ নাম
-    s = clean(s.replace(/[.,]+$/, ''));
-    const w = s.split(/\s+/).filter(Boolean);
-    const KW = /^(HOTEL|LODGE|INN|RESIDENCY|RESIDENCE|GUEST|HOUSE|BHAWAN|BHAVAN|DHAM|ASHRAM|VILLA|PALACE|TOWER|PLAZA|INTERNATIONAL)$/i;
-    let cut = -1;
-    for (let i = 0; i < w.length; i++) if (KW.test(w[i]) && !(w[i].toUpperCase() === 'INTERNATIONAL' && i === 0)) cut = i; // শেষ কীওয়ার্ড পর্যন্ত
-    if (cut < 0) { for (let i = 1; i < w.length; i++) if (/\d/.test(w[i])) { cut = i - 1; break; } } // প্রথম সংখ্যা-টোকেনের আগে
-    if (cut < 0) cut = Math.min(1, w.length - 1); // ফলব্যাক: ২ শব্দ
-    values['place_of_stay1'] = w.slice(0, cut + 1).join(' ');
-    if (w.length > cut + 1) values['pos_address1'] = w.slice(cut + 1).join(' ');
+    // বাকি অংশ = হোটেল নাম + ঠিকানা → একই স্মার্ট স্প্লিট
+    const hs = splitNameAddr(clean(s));
+    values['place_of_stay1'] = hs.name;
+    if (hs.addr) values['pos_address1'] = hs.addr;
   }
 
   // ---------- I. References (দুই কলাম: India | Bangladesh, Tab দিয়ে আলাদা) ----------
