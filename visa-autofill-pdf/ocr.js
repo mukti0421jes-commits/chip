@@ -94,6 +94,41 @@ function cropMrz(src) {
   return scaleGray(c, 2200, true);
 }
 
+// ছবি → ~1MB এর নিচে JPEG blob (OCR.space ফ্রি লিমিট)
+async function toJpegUnder1MB(imageLike) {
+  const src = await toCanvas(imageLike);
+  if (!src || typeof src.getContext !== 'function') return imageLike;
+  for (const w of [1600, 1300, 1000, 800]) {
+    const c = scaleGray(src, Math.min(w, src.width * (w / 1600)), false);
+    for (const q of [0.82, 0.65, 0.5]) {
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
+      if (blob && blob.size <= 1024 * 1024) return blob;
+    }
+  }
+  return await new Promise((r) => src.toBlob(r, 'image/jpeg', 0.4));
+}
+
+// ---------- OCR.space (ফ্রি ক্লাউড OCR — অনেক নির্ভুল) ----------
+export async function ocrSpace(imageLike, key, onProgress) {
+  if (!key) throw new Error('OCR.space key নেই');
+  if (onProgress) onProgress(0.15);
+  const blob = await toJpegUnder1MB(imageLike);
+  const fd = new FormData();
+  fd.append('apikey', key);
+  fd.append('language', 'eng');
+  fd.append('OCREngine', '2');
+  fd.append('scale', 'true');
+  fd.append('detectOrientation', 'true');
+  fd.append('isOverlayRequired', 'false');
+  fd.append('file', blob, 'passport.jpg');
+  if (onProgress) onProgress(0.4);
+  const res = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: fd });
+  const j = await res.json();
+  if (onProgress) onProgress(1);
+  if (j.IsErroredOnProcessing) throw new Error((j.ErrorMessage && j.ErrorMessage[0]) || 'OCR.space error');
+  return (j.ParsedResults && j.ParsedResults[0] && j.ParsedResults[0].ParsedText) || '';
+}
+
 // ---------- Tesseract দিয়ে ছবি OCR (full page + আলাদা MRZ পাস) ----------
 export async function ocrImage(imageLike, onProgress) {
   if (typeof Tesseract === 'undefined') throw new Error('Tesseract লোড হয়নি');

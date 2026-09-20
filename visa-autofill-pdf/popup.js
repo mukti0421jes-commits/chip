@@ -1,6 +1,6 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
-import { ocrImage, parsePassport } from './ocr.js';
+import { ocrImage, ocrSpace, parsePassport } from './ocr.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 const SITE = 'https://indianvisa-bangladesh.nic.in/visa/';
@@ -108,6 +108,11 @@ function toast(msg, ok = true) {
 function status(msg, ok = true) { if (statusEl) { statusEl.textContent = msg; statusEl.className = ok ? 'ok' : 'err'; } toast(msg, ok); }
 
 let state = { profiles: {}, activeId: null };
+let vaOcrKey = '';
+// OCR.space key থাকলে ক্লাউড (নির্ভুল), নাহলে অফলাইন Tesseract
+function getOcrText(imageLike, onProgress) {
+  return vaOcrKey ? ocrSpace(imageLike, vaOcrKey, onProgress) : ocrImage(imageLike, onProgress);
+}
 let working = null;   // {name, values, flags} — এডিটরে যেটা দেখাচ্ছে
 let workingId = null;
 let curTab = 0;
@@ -172,7 +177,9 @@ function applyIndRef(r) {
 
 // ---------------- storage ----------------
 function load() {
-  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate', 'vaIndRefs', 'vaHotels', 'vaHotelsRaw'], (r) => {
+  chrome.storage.local.get(['vaProfiles', 'vaActiveId', 'vaEnabled', 'vaAutoContinue', 'vaJourneyDate', 'vaIndRefs', 'vaHotels', 'vaHotelsRaw', 'vaOcrKey'], (r) => {
+    vaOcrKey = r.vaOcrKey || '';
+    if ($('ocrKey')) $('ocrKey').value = vaOcrKey;
     state.profiles = r.vaProfiles || {};
     state.activeId = r.vaActiveId || null;
     $('enableToggle').checked = r.vaEnabled !== false;
@@ -374,20 +381,18 @@ async function importFile(file) {
         return;
       }
       // image-only PDF → পেজ ছবি বানিয়ে OCR
-      status('🔎 ছবি-PDF — OCR চলছে (কয়েক সেকেন্ড)...');
+      status(vaOcrKey ? '🔎 ছবি-PDF — ক্লাউড OCR চলছে...' : '🔎 ছবি-PDF — OCR চলছে (কয়েক সেকেন্ড)...');
       let ocrText = '';
       for (let i = 1; i <= Math.min(doc.numPages, 2); i++) {
         const canvas = await pdfPageToCanvas(await doc.getPage(i), 2);
-        ocrText += '\n' + await ocrImage(canvas, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
+        ocrText += '\n' + await getOcrText(canvas, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
       }
       saveImported(parsePassport(ocrText));
       return;
     }
     // সরাসরি ছবি ফাইল
-    status('🔎 ছবি OCR চলছে (কয়েক সেকেন্ড)...');
-    const url = URL.createObjectURL(file);
-    const text = await ocrImage(url, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
-    URL.revokeObjectURL(url);
+    status(vaOcrKey ? '🔎 ছবি — ক্লাউড OCR চলছে...' : '🔎 ছবি OCR চলছে (কয়েক সেকেন্ড)...');
+    const text = await getOcrText(file, (p) => status('🔎 OCR ' + Math.round(p * 100) + '%'));
     saveImported(parsePassport(text));
   } catch (e) {
     console.error(e);
@@ -570,6 +575,10 @@ $('fillNow').onclick = async () => {
   }
 };
 
+// ---------------- OCR.space key (free cloud OCR) ----------------
+const ocrKeyEl = $('ocrKey');
+if (ocrKeyEl) ocrKeyEl.oninput = (e) => { vaOcrKey = e.target.value.trim(); chrome.storage.local.set({ vaOcrKey }); };
+
 // ---------------- passport scan → merge into open profile (WEBFILE only) ----------------
 const PASSPORT_KEYS = ['surname', 'givenName', 'gender', 'dob_id', 'birth_place', 'country_birth', 'nic_number',
   'passport_no', 'passport_issue_date', 'passport_expiry_date', 'passport_issue_place',
@@ -582,11 +591,9 @@ if (spBtn && spFile) {
   spFile.onchange = async () => {
     const f = spFile.files[0]; if (!f) return;
     if (!working) { status('আগে একটা profile Edit করুন।', false); return; }
-    status('🔎 পাসপোর্ট OCR চলছে (কয়েক সেকেন্ড)...');
+    status(vaOcrKey ? '🔎 পাসপোর্ট OCR (ক্লাউড) চলছে...' : '🔎 পাসপোর্ট OCR চলছে (কয়েক সেকেন্ড)...');
     try {
-      const url = URL.createObjectURL(f);
-      const text = await ocrImage(url, (p) => status('🔎 পাসপোর্ট OCR ' + Math.round(p * 100) + '%'));
-      URL.revokeObjectURL(url);
+      const text = await getOcrText(f, (p) => status('🔎 পাসপোর্ট OCR ' + Math.round(p * 100) + '%'));
       const res = parsePassport(text);
       let n = 0;
       PASSPORT_KEYS.forEach((k) => { if (res.values[k]) { working.values[k] = res.values[k]; n++; } });

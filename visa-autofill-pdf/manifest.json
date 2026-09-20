@@ -4,7 +4,7 @@
   "version": "3.0",
   "description": "Indian Visa (indianvisa-bangladesh.nic.in) ফর্মের অফলাইন অটো-ফিল। PDF অথবা passport ছবি (OCR) থেকে তথ্য পড়ে, edit/save করে, তারপর ফর্মে অটো-ফিল করে। CAPTCHA ও ফাইল আপলোড ম্যানুয়াল।",
   "permissions": ["storage", "activeTab", "scripting", "unlimitedStorage"],
-  "host_permissions": ["https://indianvisa-bangladesh.nic.in/*"],
+  "host_permissions": ["https://indianvisa-bangladesh.nic.in/*", "https://api.ocr.space/*"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Visa Autofill (PDF)"

@@ -66,7 +66,12 @@
       <h2>📄 PDF / ছবি থেকে তথ্য নিন</h2>
       <div id="drop">visa application <b>PDF</b> অথবা passport-এর <b>ছবি/scan</b> এখানে ড্রপ করুন<br>অথবা ক্লিক করে বেছে নিন</div>
       <input type="file" id="file" accept="application/pdf,image/*" style="display:none">
-      <div class="hint" style="margin-top:8px">কোনো ইন্টারনেট/credit লাগে না — সব আপনার ব্রাউজারেই হয়। ছবি হলে OCR চলে।</div>
+      <div class="hint" style="margin-top:8px">PDF সব ব্রাউজারেই পড়ে। ছবি/পাসপোর্টে OCR — নিচে ফ্রি OCR key দিলে অনেক নির্ভুল (ক্লাউড), নাহলে অফলাইন।</div>
+      <div class="fld full" style="margin-top:8px">
+        <label style="font-size:12px;color:var(--muted)">🔑 OCR.space API key (ফ্রি — নির্ভুল স্ক্যানের জন্য)</label>
+        <input type="text" id="ocrKey" placeholder="ocr.space/ocrapi থেকে ফ্রি key নিন, এখানে বসান (ঐচ্ছিক)" style="padding:8px">
+        <div class="hint">key দিলে পাসপোর্ট/ছবির লেখা ক্লাউডে অনেক নির্ভুল পড়ে। খালি রাখলে অফলাইন Tesseract চলবে।</div>
+      </div>
     </div>
     <div class="card">
       <h2>📎 ছবি ও পাসপোর্ট আগে থেকে লোড</h2>
