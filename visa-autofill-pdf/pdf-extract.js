@@ -249,11 +249,19 @@ export function parseVisaPdf(rawText) {
     const dt = WB_DIST.find((d) => s.toUpperCase().includes(d));
     if (dt) { values['pos_dist_id1'] = dt; s = clean(s.replace(new RegExp(dt, 'i'), '')); }
     if (dt && !values['pos_state_id1']) values['pos_state_id1'] = 'WEST BENGAL';
-    // বাকি অংশ = হোটেল নাম + ঠিকানা → প্রথম ২ শব্দ নাম, বাকিটা ঠিকানা
+    // বাকি অংশ = হোটেল নাম + ঠিকানা → ভাগ করি:
+    // ১) নামের শেষে HOTEL/GUEST HOUSE/LODGE ইত্যাদি কীওয়ার্ড থাকলে সেখান পর্যন্ত নাম
+    // ২) নাহলে প্রথম সংখ্যাওয়ালা টোকেন থেকে ঠিকানা শুরু
+    // ৩) নাহলে প্রথম ২ শব্দ নাম
     s = clean(s.replace(/[.,]+$/, ''));
     const w = s.split(/\s+/).filter(Boolean);
-    values['place_of_stay1'] = w.slice(0, 2).join(' ');
-    if (w.length > 2) values['pos_address1'] = w.slice(2).join(' ');
+    const KW = /^(HOTEL|LODGE|INN|RESIDENCY|RESIDENCE|GUEST|HOUSE|BHAWAN|BHAVAN|DHAM|ASHRAM|VILLA|PALACE|TOWER|PLAZA|INTERNATIONAL)$/i;
+    let cut = -1;
+    for (let i = 0; i < w.length; i++) if (KW.test(w[i]) && !(w[i].toUpperCase() === 'INTERNATIONAL' && i === 0)) cut = i; // শেষ কীওয়ার্ড পর্যন্ত
+    if (cut < 0) { for (let i = 1; i < w.length; i++) if (/\d/.test(w[i])) { cut = i - 1; break; } } // প্রথম সংখ্যা-টোকেনের আগে
+    if (cut < 0) cut = Math.min(1, w.length - 1); // ফলব্যাক: ২ শব্দ
+    values['place_of_stay1'] = w.slice(0, cut + 1).join(' ');
+    if (w.length > cut + 1) values['pos_address1'] = w.slice(cut + 1).join(' ');
   }
 
   // ---------- I. References (দুই কলাম: India | Bangladesh, Tab দিয়ে আলাদা) ----------
