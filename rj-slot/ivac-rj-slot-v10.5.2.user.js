@@ -1,0 +1,8017 @@
+// ==UserScript==
+// @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
+// @namespace    http://tampermonkey.net/
+// @version      10.5.2
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.2: universal dg-epay UUID + slot-id scanner (extract_fetch v13 port, Strategy A–K, handles non-hex/typo UUIDs); file-upload retry-until-success; dynamic mission/center
+// @author       RJ SLOT
+// @match        https://appointment.ivacbd.com/*
+// @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
+// @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com/*
+// @match        https://*.ivacbd.com/*
+// @match        https://ivacbd.com/*
+// @match        https://payment.ivacbd.com/*
+// @match        https://epay-gw.sslcommerz.com/*
+// @match        https://checkout.pathaopay.com/*
+// @match        https://checkout.dgepay.net/*
+// @connect      api.ivacbd.com
+// @connect      capsolver.com
+// @connect      api.capmonster.cloud
+// @connect      challenges.cloudflare.com
+// @connect      duttauzzal.shop
+// @connect      localhost
+// @connect      127.0.0.1
+// @connect      *
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        unsafeWindow
+// @run-at       document-end
+// @noframes
+// ==/UserScript==
+(function() { 'use strict';
+
+// ==================== UNLOCK COPY / PASTE / RIGHT-CLICK ====================
+// The IVAC pages disable text selection, copy/paste and the right-click menu (via event handlers
+// + user-select:none). Re-enable them here so the Manual page behaves normally. No extension needed.
+(function rjUnlockCopyPaste() {
+    try {
+        // 1) Swallow the site's blocking events at CAPTURE phase (runs before the page's own handlers,
+        //    so their preventDefault never gets a chance to fire → the browser default proceeds).
+        ['contextmenu', 'copy', 'cut', 'paste', 'selectstart', 'dragstart', 'beforecopy', 'beforecut', 'beforepaste'].forEach(function (evt) {
+            window.addEventListener(evt, function (e) { e.stopImmediatePropagation(); }, true);
+        });
+        // 2) Clear inline on* blockers the page may set on document/body.
+        function clearInlineBlockers() {
+            ['oncontextmenu', 'onselectstart', 'oncopy', 'oncut', 'onpaste', 'ondragstart', 'onmousedown'].forEach(function (p) {
+                try { document[p] = null; } catch (e) {}
+                try { if (document.body) document.body[p] = null; } catch (e) {}
+                try { if (document.documentElement) document.documentElement[p] = null; } catch (e) {}
+            });
+        }
+        clearInlineBlockers();
+        setInterval(clearInlineBlockers, 1500);   // the site may re-attach them; keep clearing
+        // 3) Force text selection back on for the PAGE (but keep our draggable panel headers unselectable).
+        var st = document.createElement('style');
+        st.textContent =
+            '*:not(#p):not(#ivac-manual-dom-modal){-webkit-user-select:auto!important;-moz-user-select:auto!important;-ms-user-select:auto!important;user-select:auto!important;-webkit-touch-callout:default!important}' +
+            '#dh,#mp-header,#pm-drag-handle,#netlog-drag,#p-fab,#ivac-manual-fab{-webkit-user-select:none!important;user-select:none!important}';
+        (document.head || document.documentElement).appendChild(st);
+    } catch (e) { try { console.log('[RJ] copy/paste unlock failed:', e.message); } catch (e2) {} }
+})();
+
+// ==================== PAGE-CONTEXT FETCH (HTTP/2 CAPABLE) ====================
+const pageFetch = (() => {
+    try {
+        if (typeof unsafeWindow !== 'undefined' && typeof unsafeWindow.fetch === 'function') {
+            console.log('[RJ] Using unsafeWindow.fetch (page-context — HTTP/2 via browser stack)');
+            return unsafeWindow.fetch.bind(unsafeWindow);
+        }
+    } catch(e) {
+        console.log('[RJ] unsafeWindow access failed, using sandboxed fetch:', e.message);
+    }
+    console.log('[RJ] Using sandboxed window.fetch');
+    return window.fetch.bind(window);
+})();
+
+// ==================== HTTP/2 CONNECTION MANAGER (SILENT KEEP-ALIVE) ====================
+const H2 = {
+    _state: {
+        warmed: false,
+        lastActivity: 0,
+        activeStreams: 0,
+        totalRequests: 0,
+        h2Confirmed: false,
+        keepAliveTimerId: null,
+        keepAliveIntervalMs: 60 * 1000,
+        preWarmPromise: null,
+        failedCount: 0
+    },
+
+    async preWarm() {
+        if (this._state.warmed) return true;
+        if (this._state.preWarmPromise) return this._state.preWarmPromise;
+
+        this._state.preWarmPromise = (async () => {
+            try {
+                await this._silentKeepAlivePing();
+                this._state.warmed = true;
+                this._state.lastActivity = Date.now();
+                this._startKeepAlive();
+                return true;
+            } catch(e) {
+                return false;
+            } finally {
+                this._state.preWarmPromise = null;
+            }
+        })();
+        return this._state.preWarmPromise;
+    },
+
+    async _silentKeepAlivePing() {
+        return new Promise((resolve) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) ||
+                         (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+
+            if (!gmApi) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+                pageFetch('https://api.ivacbd.com/', {
+                    method: 'HEAD',
+                    signal: controller.signal,
+                    cache: 'no-store'
+                }).catch(() => {}).finally(() => {
+                    clearTimeout(timeoutId);
+                    resolve();
+                });
+                return;
+            }
+
+            const timeoutId = setTimeout(() => {
+                resolve();
+            }, 5000);
+
+            gmApi({
+                method: 'HEAD',
+                url: 'https://api.ivacbd.com/',
+                timeout: 4000,
+                onload: () => {
+                    clearTimeout(timeoutId);
+                    resolve();
+                },
+                onerror: () => {
+                    clearTimeout(timeoutId);
+                    resolve();
+                },
+                ontimeout: () => {
+                    clearTimeout(timeoutId);
+                    resolve();
+                }
+            });
+        });
+    },
+
+    _startKeepAlive() {
+        if (this._state.keepAliveTimerId) clearInterval(this._state.keepAliveTimerId);
+
+        this._state.keepAliveTimerId = setInterval(async () => {
+            const idleMs = Date.now() - this._state.lastActivity;
+            if (idleMs < 10000 || this._state.activeStreams > 0) return;
+
+            await this._silentKeepAlivePing();
+            this._state.lastActivity = Date.now();
+        }, this._state.keepAliveIntervalMs);
+    },
+
+    headersToObject(headers) {
+        const obj = {};
+        if (headers instanceof Headers) { headers.forEach((v, k) => obj[k] = v); }
+        else if (typeof headers === 'object' && headers !== null) { Object.assign(obj, headers); }
+        return obj;
+    },
+
+    _relayFetch(url, init, proxy, logId) {
+        return new Promise((resolve, reject) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'no GM for relay' }); return reject(new Error('No GM for proxy relay')); }
+            const relays = ['http://127.0.0.1:8781/relay', 'http://localhost:8781/relay'];
+            let i = 0;
+            const tryRelay = () => {
+                if (i >= relays.length) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'relay unreachable' }); return reject(new Error('Proxy relay not reachable — run proxy-relay.js on :8781')); }
+                const relayUrl = relays[i++];
+                const payload = JSON.stringify({ url, method: init.method || 'GET', headers: init.headers || {}, body: (init.body != null && typeof init.body !== 'string') ? String(init.body) : (init.body || null), proxy });
+                gmApi({ method: 'POST', url: relayUrl, headers: { 'content-type': 'application/json' }, data: payload, timeout: 60000,
+                    onload: (resp) => {
+                        let j; try { j = JSON.parse(resp.responseText); } catch(e) { return tryRelay(); }
+                        if (resp.status >= 200 && resp.status < 300 && j && typeof j.status === 'number') {
+                            const raw = j.status;
+                            const safeStatus = (raw >= 200 && raw <= 599) ? raw : 502;
+                            const nullBody = [101, 103, 204, 205, 304].includes(safeStatus);
+                            const isOk = safeStatus >= 200 && safeStatus < 400;
+                            if (logId) netLogUpdate(logId, { status: safeStatus, state: isOk ? 'ok' : 'fail', note: `HTTP ${raw === safeStatus ? raw : raw + '→' + safeStatus} (proxy ${proxy.host}:${proxy.port})${raw === 0 ? ' fetch-error' : ''}` });
+                            resolve(new Response(nullBody ? null : (j.body != null ? String(j.body) : ''), { status: safeStatus, statusText: j.statusText || '' }));
+                        } else if (j && j.error) { if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'proxy: ' + j.error }); reject(new Error('proxy relay: ' + j.error)); }
+                        else { tryRelay(); }
+                    },
+                    onerror: tryRelay, ontimeout: tryRelay });
+            };
+            tryRelay();
+        });
+    },
+
+    async gmFetch(url, init = {}) {
+        const method  = init.method || 'GET';
+        const headers = this.headersToObject(init.headers || {});
+        const body    = init.body || null;
+        const signal  = init.signal;
+
+        if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+
+        const isConnectionCheck = url === 'https://api.ivacbd.com/' && method === 'HEAD';
+
+        if (!isConnectionCheck) {
+            console.log(`%c[RJ Fetch] ➡️ Request Sent`, 'color: #60a5fa; font-weight: bold;', { url, method, headers, body });
+        }
+
+        const logId = isConnectionCheck ? null : netLogAdd({ method: method, url: url, tag: getTagFromUrl(url), state: 'pending', note: 'request sent' });
+
+        if (init.forceGM) return this._gmFallback(url, init, logId);
+
+        const _proxy = (typeof pickProxyForCall === 'function') ? pickProxyForCall() : ((typeof window !== 'undefined') ? window._rjActiveProxy : null);
+        const _bodySimple = (body == null || typeof body === 'string');
+        if (_proxy && _proxy.host && !isConnectionCheck && _bodySimple) {
+            try {
+                const resp = await this._relayFetch(url, { method, headers, body }, _proxy, logId);
+                if (resp.status >= 400 && typeof rotateProxyOnError === 'function') rotateProxyOnError(_proxy);  // rotate for NEXT call
+                return resp;
+            } catch (e) {
+                if (typeof rotateProxyOnError === 'function') rotateProxyOnError(_proxy);   // proxy/relay failed → rotate
+                if (!isConnectionCheck) console.log('%c[RJ Fetch] ⚠ relay failed, trying direct', 'color:#fcd34d', { error: e.message });
+                // fall through to direct fetch below
+            }
+        }
+
+        try {
+            const fetchInit = { method, headers, credentials: init.credentials || 'omit' };
+            if (body)            fetchInit.body     = body;
+            if (init.referrer)   fetchInit.referrer = init.referrer;
+            if (signal)          fetchInit.signal   = signal;
+
+            const response = await pageFetch(url, fetchInit);
+
+            if (!isConnectionCheck) {
+                console.log(`%c[RJ Fetch] ⬅️ Response Received (${response.status})`, 'color: #4ade80; font-weight: bold;', { url, status: response.status });
+            }
+
+            const isOk = response.status >= 200 && response.status < 400;
+            if (logId) netLogUpdate(logId, { status: response.status, state: isOk ? 'ok' : 'fail', note: `HTTP ${response.status}` });
+
+            return response;
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                if (logId) netLogUpdate(logId, { state: 'cancel', status: '⊘', note: 'aborted' });
+                throw err;
+            }
+            if (!isConnectionCheck) {
+                console.log(`%c[RJ Fetch] ⚠ pageFetch failed, trying GM fallback`, 'color: #fcd34d; font-weight: bold;', { url, error: err.message });
+            }
+            return this._gmFallback(url, init, logId);
+        }
+    },
+
+    _gmFallback(url, init, logId) {
+        return new Promise((resolve, reject) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) {
+                if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'No fetch available' });
+                return reject(new Error('No fetch method available'));
+            }
+
+            const method  = init.method || 'GET';
+            const headers = this.headersToObject(init.headers || {});
+            const body    = init.body || null;
+            const signal  = init.signal;
+            const isConnectionCheck = url === 'https://api.ivacbd.com/' && method === 'HEAD';
+
+            gmApi({
+                method, url, headers, data: body, timeout: 30000,
+                onload: (response) => {
+                    if (!isConnectionCheck) {
+                        console.log(`%c[RJ GM Fallback] ⬅️ Response (${response.status})`, 'color: #4ade80; font-weight: bold;', { url, status: response.status });
+                    }
+
+                    const isOk = response.status >= 200 && response.status < 400;
+                    if (logId) netLogUpdate(logId, { status: response.status, state: isOk ? 'ok' : 'fail', note: `HTTP ${response.status} (GM)` });
+
+                    resolve(new Response(response.responseText, { status: response.status, statusText: response.statusText }));
+                },
+                onerror: (err) => {
+                    if (logId) netLogUpdate(logId, { state: 'fail', status: 'ERR', note: 'network error' });
+                    reject(new Error('GM_xmlhttpRequest network error'));
+                },
+                ontimeout: () => {
+                    if (logId) netLogUpdate(logId, { state: 'fail', status: 'TMO', note: 'timeout' });
+                    reject(new Error('GM_xmlhttpRequest timeout'));
+                }
+            });
+
+            if (signal) signal.addEventListener('abort', () => {
+                if (logId) netLogUpdate(logId, { state: 'cancel', status: '⊘', note: 'aborted' });
+                reject(new DOMException('Aborted', 'AbortError'));
+            });
+        });
+    },
+
+    async fetchH2(url, init = {}) {
+        if (!this._state.warmed) {
+            this.preWarm().catch(() => {});
+        }
+
+        try { if (typeof rjRewriteUrl === 'function') url = rjRewriteUrl(url); } catch (e) {}
+        try { if (typeof rjApplyDynHeaders === 'function') init = rjApplyDynHeaders(url, init); } catch (e) {}
+
+        const h2Init = { ...init, credentials: init.credentials || 'omit' };
+
+        this._state.activeStreams++;
+        this._state.totalRequests++;
+        this._state.lastActivity = Date.now();
+
+        try {
+            const response = await this.gmFetch(url, h2Init);
+            this._state.warmed = true;
+            this._state.lastActivity = Date.now();
+            this._state.failedCount = 0;
+            return response;
+        } catch(err) {
+            this._state.lastActivity = Date.now();
+            this._state.failedCount++;
+            if (this._state.failedCount > 3) this._state.warmed = false;
+            throw err;
+        } finally {
+            this._state.activeStreams--;
+        }
+    },
+
+    async fetchH2Critical(url, init = {}) { return this.fetchH2(url, { ...init, keepalive: true }); },
+    getStats() { return { warmed: this._state.warmed, h2Confirmed: this._state.h2Confirmed, activeStreams: this._state.activeStreams, totalRequests: this._state.totalRequests, idleMs: Date.now() - this._state.lastActivity, failedCount: this._state.failedCount }; }
+};
+
+function getTagFromUrl(url) {
+    if (!url) return 'network';
+    if (url.includes('sign-in') || url.includes('signin')) return 'signin';
+    if (url.includes('verifyOtp') || url.includes('verify')) return 'verify';
+    if (url.includes('reserveSlot')) return 'reserve';
+    if (url.includes('appointment-booking-config') || url.includes('appointment')) return 'book';
+    if (url.includes('initiate')) return 'initiate';
+    if (url.includes('signup')) return 'signup';
+    if (url.includes('forgot-password')) return 'advance';
+    if (url.includes('upload') || url.includes('file')) return 'upload';
+    if (url.includes('download')) return 'invoice';
+    return 'network';
+}
+
+H2.preWarm();
+
+// ==================== API CONFIG ====================
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v2-sign-in";
+const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
+const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
+function _navState()     { return X_SEC_NAV_STATE; }
+function _runtimeState() { return X_SEC_RUNTIME_STATE; }
+const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
+const API_SIGNUP_CONSENT = "https://api.ivacbd.com/iams/api/v1/auth/signup/consent";
+const API_SIGNUP_STATUS  = "https://api.ivacbd.com/iams/api/v1/auth/signup/status";
+const PAYMENT_METHOD_ID = '20218968-2226-4e28-861f-465bb28337e6';   // fixed fallback (extracted from current bundle via extract_fetch, 2026-08-27)
+const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
+const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
+const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
+const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
+const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot_status";
+const API_REFERRER  = "https://appointment.ivacbd.com/";
+const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
+const API_EMAIL_SERVER = "https://duttauzzal.shop/email.php";   // email OTP fetcher (catch-all inbox reader)
+const API_GMAIL_SERVER = "https://duttauzzal.shop/gmail-otp.php";   // per-profile Gmail OTP fetcher (IMAP with the profile's App Password)
+
+const RJ_DYN_KEY = 'rj_dyn_captured';
+const RJ_DYN = (function () {
+    // restore learned values (Method 2: captured from the site's real traffic) so they survive reload
+    const base = { epMap: {}, headers: {}, fam: {}, slotId: null, resolvedAt: 0, payId: null };
+    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.fam = s.fam || {}; base.slotId = s.slotId || null; base.payId = s.payId || null; } } catch (e) {}
+    return base;
+})();
+function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, fam: RJ_DYN.fam, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId })); } catch (e) {} }
+
+function rjRewriteUrl(url) {
+    try {
+        const orig = url;
+        // 1) exact-string maps learned from the site's real traffic (belt-and-suspenders)
+        const m = RJ_DYN.epMap; for (const from in m) { if (from && m[from] && from !== m[from] && url.indexOf(from) !== -1) url = url.split(from).join(m[from]); }
+        // 2) bundle-current family rewrite: URL's version → bundle's current version (fixes v22→v23 etc.)
+        const F = RJ_DYN.fam || {};
+        for (const f of RJ_EP_FAMILIES) { const cur = F[f.code]; if (!cur) continue; const mm = url.match(f.re); if (mm && mm[0] !== cur) url = url.replace(mm[0], cur); }
+        // 3) reserve slot-id: ANY /slots/<uuid>/reserve-slot → bundle's current slot-id
+        if (RJ_DYN.slotId) url = url.replace(/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/, '/slots/' + RJ_DYN.slotId + '/reserve-slot');
+        // 4) dg-epay payment-method-id: ANY /payment/<uuid>/dg-epay/initiate → captured current id
+        if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-fA-F-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');
+        if (url !== orig) console.log('%c[RJ Dyn] URL rewritten: ' + orig + ' → ' + url, 'color:#4ade80;font-weight:700');
+    } catch (e) {}
+    return url;
+}
+function rjApplyDynHeaders(url, init) {
+    try {
+        if (!init || !init.headers) return init;
+        const hdr = init.headers; const out = { ...hdr }; let touched = false;
+        const H = RJ_DYN.headers;
+        // (1) refresh fixed headers already present
+        for (const k in hdr) { const lk = k.toLowerCase(); if (H[lk] && hdr[k] !== H[lk]) { out[k] = H[lk]; touched = true; } }
+        // (2) per-endpoint recorded header set → add-missing + refresh
+        try {
+            const fam = (typeof rjEndpointFamily === 'function') ? rjEndpointFamily(url) : null;
+            const rec = fam && typeof RJ_REC !== 'undefined' && RJ_REC[fam];
+            if (rec && rec.headers) {
+                const lowerToActual = {}; for (const k in out) lowerToActual[k.toLowerCase()] = k;
+                for (const lk in rec.headers) {
+                    if (RJ_HDR_SKIP.includes(lk)) continue;              // never touch per-call/forbidden
+                    const val = rec.headers[lk];
+                    if (lowerToActual[lk] === undefined) { out[lk] = val; touched = true; }   // NEW header → add
+                    else if (out[lowerToActual[lk]] !== val) { out[lowerToActual[lk]] = val; touched = true; }  // refresh
+                }
+            }
+        } catch (e) {}
+        return touched ? { ...init, headers: out } : init;
+    } catch (e) { return init; }
+}
+
+// stem + greedy-tail: each regex locks onto the STABLE stem and captures the FULL current
+// literal (any version/suffix), stopping at the next '/' or quote. So a server rename like
+// over-view → over-view-v3 → over-view-v4, or upload_file_v2 → _v3, is caught automatically
+// by BOTH the bundle scan (fam) and the live-traffic capture (epMap) — no hardcode/regex edit.
+const RJ_EP_FAMILIES = [
+    { code: '/auth/v2-sign-in',                         re: /\/auth\/[a-z0-9-]*sign-?in[a-z0-9-]*/i },
+    { code: '/file/upload_file_v2',                     re: /\/file\/upload_file[a-z0-9_-]*/i },
+    { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp[a-z0-9_-]*/i },
+    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp[a-z0-9_-]*/i },
+    { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp[a-z0-9_-]*/i },
+    { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config[a-z0-9_-]*/i },
+    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config[a-z0-9_-]*/i },
+    { code: '/file/over-view-v3',                       re: /\/file\/over-view[a-z0-9_-]*/i },
+    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file-confirmation[a-z0-9_-]*/i },
+    { code: '/file/payment-amount',                     re: /\/file\/payment-amount[a-z0-9_-]*/i }
+];
+
+const RJ_REC_KEY = 'rj_req_records';
+const RJ_REC = (function () { try { const s = JSON.parse(localStorage.getItem(RJ_REC_KEY) || 'null'); return (s && typeof s === 'object') ? s : {}; } catch (e) { return {}; } })();
+function rjPersistRec() { try { localStorage.setItem(RJ_REC_KEY, JSON.stringify(RJ_REC)); } catch (e) {} }
+const RJ_HDR_SKIP = ['authorization', 'x-token', 'content-type', 'content-length', 'cookie', 'host', 'connection', 'x-device-id'];
+// map a URL to its endpoint-family code (the record key)
+function rjEndpointFamily(url) {
+    try { const u = '' + url;
+        for (const f of RJ_EP_FAMILIES) { if (f.re.test(u)) return f.code; }
+        if (/\/dg-epay\/initiate/.test(u)) return '/payment/dg-epay/initiate';
+        if (/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/.test(u)) return '/slots/reserve-slot';
+        if (/\/auth\/signup\b/.test(u)) return '/auth/signup';
+    } catch (e) {}
+    return null;
+}
+// SUCCESS gate — only a genuinely successful response is worth learning from
+function rjIsSuccessBody(status, txt) {
+    if (!(status >= 200 && status < 300)) return false;
+    if (!txt) return true;
+    try { const b = JSON.parse(txt);
+        if (b.successFlag === true) return true;
+        if (b.data && (b.data.accessToken || b.data.requestId || b.data.appointmentId || b.data.reservationId || b.data.webview_url || b.data.status)) return true;
+        if (b.message === 'Success' || b.statusCode === 200 || b.statusCode === 201) return true;
+        return false;
+    } catch (e) { return true; }   // non-JSON 2xx (e.g. invoice pdf) — treat as success
+}
+// normalize any headers container → { lowercased-name: value }
+function rjHeadersToLowerObj(headers) {
+    const hdr = {};
+    try {
+        if (!headers) return hdr;
+        if (typeof headers.forEach === 'function' && !Array.isArray(headers)) { headers.forEach((v, k) => { hdr[('' + k).toLowerCase()] = v; }); }
+        else if (Array.isArray(headers)) { for (const pair of headers) { if (pair && pair.length >= 2) hdr[('' + pair[0]).toLowerCase()] = pair[1]; } }
+        else { for (const k in headers) hdr[('' + k).toLowerCase()] = headers[k]; }
+    } catch (e) {}
+    return hdr;
+}
+// record ONE successful call. Called from the fetch/XHR response hooks.
+function rjRecordSuccess(url, method, headers, body, status, respText) {
+    try {
+        const fam = rjEndpointFamily(url); if (!fam) return;
+        if (!rjIsSuccessBody(status, respText)) return;
+        // AUTO-CAPTURE dg-epay payment-method-id from the site's REAL initiate URL (not in bundle → runtime only)
+        try {
+            const pm = ('' + url).match(/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i);
+            if (pm && pm[1] && RJ_DYN.payId !== pm[1]) {
+                RJ_DYN.payId = pm[1]; rjPersistDyn();
+                try { savePaymentMethodId(pm[1]); const box = document.getElementById('ivac-payment-method-id'); if (box) box.value = pm[1]; } catch (e) {}
+                try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay ID captured: ' + pm[1].slice(0,8) + '…', 'g'); } catch (e) {}
+                console.log('%c[RJ Dyn] dg-epay payment-method-id captured: ' + pm[1], 'color:#4ade80;font-weight:800');
+            }
+        } catch (e) {}
+        const hdr = rjHeadersToLowerObj(headers);
+        const learned = [];
+        // safeHdr = the record we STORE/EXPORT — never keep per-call secrets (Bearer authorization,
+        // x-token captcha, content-type boundary, cookie…). Those live only in the live request.
+        const safeHdr = {};
+        for (const k in hdr) { if (RJ_HDR_SKIP.includes(k)) continue; safeHdr[k] = hdr[k]; if (RJ_DYN.headers[k] !== hdr[k]) { RJ_DYN.headers[k] = hdr[k]; learned.push(k); } }
+        let bodyKeys = null; try { const bo = (body && typeof body === 'string') ? JSON.parse(body) : (body && typeof body === 'object' ? body : null); if (bo && typeof bo === 'object' && !Array.isArray(bo)) bodyKeys = Object.keys(bo); } catch (e) {}
+        let respShape = null; try { const rb = JSON.parse(respText); respShape = { keys: Object.keys(rb || {}), dataKeys: (rb && rb.data && typeof rb.data === 'object') ? Object.keys(rb.data) : null }; } catch (e) {}
+        const next = { url: '' + url, method: (method || 'GET').toUpperCase(), headers: safeHdr, bodyKeys: bodyKeys, respShape: respShape };
+        // skip if nothing meaningful changed since last record (avoids log/write spam on polling)
+        const prev = RJ_REC[fam];
+        const sameHdr = prev && JSON.stringify(prev.headers) === JSON.stringify(safeHdr) && (prev.method || '') === next.method && JSON.stringify(prev.bodyKeys) === JSON.stringify(bodyKeys);
+        if (sameHdr && !learned.length) { RJ_REC[fam].at = Date.now(); return; }
+        next.at = Date.now(); RJ_REC[fam] = next;
+        rjPersistDyn(); rjPersistRec();
+        try {
+            console.log('%c[RJ Rec] ✅ recorded SUCCESS ' + fam + (learned.length ? ' (+headers: ' + learned.join(', ') + ')' : ''), 'color:#4ade80;font-weight:800', RJ_REC[fam]);
+            if (typeof logStatus === 'function') logStatus('📼 Recorded success: ' + fam.split('/').pop() + (learned.length ? ' (+' + learned.length + ' hdr)' : ''), 'g');
+        } catch (e) {}
+    } catch (e) {}
+}
+
+// Expand the full +concat chain that contains [litStart,litEnd) — handles concats stored as
+// object-property values (2-array/property-based bundles), not just inline URL-variable ones.
+function rjChainAround(s, litStart, litEnd) {
+    function termLeft(j){ while(j>=0&&/\s/.test(s[j]))j--; const c=s[j];
+        if(c==='"'||c==="'"||c==='`'){let k=j-1;while(k>=0){if(s[k]===c&&s[k-1]!=='\\')return k-1;k--;}return -1;}
+        if(c===')'||c===']'){const close=c,open=c===')'?'(':'[';let d=0,q=null,k=j;for(;k>=0;k--){const ch=s[k];if(q){if(ch===q&&s[k-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===close)d++;else if(ch===open){d--;if(d===0)break;}}k--;while(k>=0&&/[\w$.]/.test(s[k]))k--;return k;}
+        while(j>=0&&/[\w$.]/.test(s[j]))j--;return j; }
+    function termRight(j){ while(j<s.length&&/\s/.test(s[j]))j++; const c=s[j];
+        if(c==='"'||c==="'"||c==='`'){let k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}
+        while(j<s.length&&/[\w$.]/.test(s[j]))j++;
+        while(j<s.length&&(s[j]==='('||s[j]==='[')){const open=s[j],close=open==='('?')':']';let d=0,q=null;for(;j<s.length;j++){const ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}
+        return j; }
+    let start=litStart;
+    while(true){let k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;let e=termLeft(k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}
+    let end=litEnd;
+    while(true){let k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;let e=termRight(k+1);end=e;}
+    return s.slice(start,end).trim();
+}
+// Extract the dg-epay payment-method-id from the bundle. The id is NOT a plain literal — the
+// initiate URL is assembled by concatenating obfuscated decoder-calls + inline fragments
+// (…+"dg-epay/in"+… or …+"c-60416e01"+…), sometimes stored in an object property. We anchor on
+// those literal fragments, rebuild the full concat, and resolve it with the budget-capped
+// resolver (handles single- AND 2-array; the budget caps the O(N^2) path so it can never hang).
+function rjExtractPayId(text, R) {
+    try {
+        if (!R || typeof R.resolveExpr !== 'function') return null;
+        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const validate = v => /payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/in/i.test(v);
+        const epay = [], hex = []; const anchorRe = /"([^"\\]{0,40})"/g; let m;
+        while ((m = anchorRe.exec(text))) {
+            const t = m[1];
+            if (/epay|-ep/i.test(t)) epay.push(m.index);
+            else if (/[0-9a-f]{6,}-|-[0-9a-f]{6,}/i.test(t)) hex.push(m.index);
+        }
+        const seen = new Set(); let tried = 0;
+        for (const pos of epay.concat(hex)) {
+            if (tried > 8) break;
+            let ch = null; try { ch = rjChainAround(text, pos, text.indexOf('"', pos + 1) + 1); } catch (e) {}
+            if (!ch || ch.indexOf('+') === -1 || ch.length > 400 || ch.split('+').length > 28 || seen.has(ch)) continue;
+            seen.add(ch); tried++;
+            let out = null; try { out = R.resolveExpr(ch, pos); } catch (e) {}
+            if (out && validate(out)) { const u = out.match(uuidRe); if (u) return u[0]; }
+        }
+    } catch (e) {}
+    return null;
+}
+
+// EXECUTION-BASED dg-epay extractor (bundle → UUID). The UUID is NOT a plain literal — it is
+// assembled by an obfuscated decoder concat, and its exact shape varies per bundle:
+//   • object property:  oUBHm:"dg-epay", wIiPt:a(0,594)+…+f(e,247)+…
+//   • ternary branch:   const l = r===…"ay" ? d(227,"DJwt")+…+"e-41a"+… : a[ssl]
+// So we anchor on BOTH the "dg-epay" literal and the initiate signature ({appointmentId:…"x-token"}),
+// expand every +concat chain near the anchor, run the bundle's own decoder cluster (arrays shuffled
+// into place — anchored on the concat AND on each base-decoder's own definition, since the base
+// decoders may live far from the concat), inject local string consts, evaluate, and keep whatever
+// resolves to a valid payment/<uuid>/dg-epay URL. No hardcode, no localStorage.
+function rjExtractPayIdExec(src) {
+  try {
+    function _cluster(src,P){var decRe=/function [\w$]+\((?:e,t|e)\)\{e-=\d+/g,arrRe=/function [\w$]+\(\)\{(?:const|var) e=\[/g;var starts=[],m;while(m=decRe.exec(src))starts.push(m.index);while(m=arrRe.exec(src))starts.push(m.index);starts=starts.filter(x=>x<P).sort((a,b)=>a-b);if(!starts.length)return{};var start=starts[starts.length-1];for(var i=starts.length-1;i>0;i--){if(starts[i]-starts[i-1]<12000)start=starts[i-1];else break;}var shRe=/for\(;;\)try\{if\(/g,shs=[];while(m=shRe.exec(src)){if(m.index>start&&m.index<P+14000)shs.push(m.index);}var lastSh=shs.length?shs[shs.length-1]:P;var b=0,q=null,endIdx=-1;for(var k=start;k<src.length;k++){var c=src[k];if(q){if(c==="\\"){k++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")b++;else if(c==="}")b--;if(k>=lastSh&&b===0){endIdx=k+1;break;}}if(endIdx<0)endIdx=Math.min(src.length,lastSh+4000);var region=src.slice(start,endIdx);var names={},nm=/function ([\w$]+)\((?:e,t|e)\)\{(?:return [\w$]+\(|e-=)/g;while(m=nm.exec(region))names[m[1]]=1;var store={},exposer="";for(var n in names)exposer+="try{__DEC['"+n+"']="+n+"}catch(e){}\n";try{new Function("__DEC","'use strict';\n"+region+"\n"+exposer)(store);}catch(e){}return store;}
+    function _wrappers(src,P){var win=src.slice(Math.max(0,P-8000),P+3000),base=Math.max(0,P-8000),defs={},re=/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g,m;while(m=re.exec(win)){var nm=m[1],ix=base+m.index;if(!defs[nm]||Math.abs(ix-P)<Math.abs(defs[nm].idx-P))defs[nm]={idx:ix,text:m[0]};}return defs;}
+    function _locals(src,P){var win=src.slice(Math.max(0,P-4000),P+400),out={},re=/\b([A-Za-z_$][\w$]*)\s*=\s*(["'`])((?:\\.|(?!\2).)*)\2/g,m;while(m=re.exec(win))out[m[1]]=m[3];return out;}
+    function baseDefPos(src,name){var i=src.indexOf("function "+name+"(e");return i;}
+    function termLeft(s,j){while(j>=0&&/\s/.test(s[j]))j--;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j-1;while(k>=0){if(s[k]===c&&s[k-1]!=='\\')return k-1;k--;}return -1;}if(c===')'||c===']'){var close=c,open=c===')'?'(':'[',d=0,q=null,k=j;for(;k>=0;k--){var ch=s[k];if(q){if(ch===q&&s[k-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===close)d++;else if(ch===open){d--;if(d===0)break;}}k--;while(k>=0&&/[\w$.]/.test(s[k]))k--;return k;}while(j>=0&&/[\w$.]/.test(s[j]))j--;return j;}
+    function termRight(s,j){while(j<s.length&&/\s/.test(s[j]))j++;var c=s[j];if(c==='"'||c==="'"||c==='`'){var k=j+1;while(k<s.length){if(s[k]==='\\'){k+=2;continue;}if(s[k]===c)return k+1;k++;}return s.length;}while(j<s.length&&/[\w$.]/.test(s[j]))j++;while(j<s.length&&(s[j]==='('||s[j]==='[')){var open=s[j],close=open==='('?')':']',d=0,q=null;for(;j<s.length;j++){var ch=s[j];if(q){if(ch===q&&s[j-1]!=='\\')q=null;continue;}if(ch==='"'||ch==="'"||ch==='`'){q=ch;continue;}if(ch===open)d++;else if(ch===close){d--;if(d===0){j++;break;}}}}return j;}
+    function chainAround(s,litStart,litEnd){var start=litStart;while(true){var k=start-1;while(k>=0&&/\s/.test(s[k]))k--;if(s[k]!=='+')break;var e=termLeft(s,k-1);start=e+1;while(start<s.length&&/\s/.test(s[start]))start++;}var end=litEnd;while(true){var k=end;while(k<s.length&&/\s/.test(s[k]))k++;if(s[k]!=='+')break;var e=termRight(s,k+1);end=e;}return s.slice(start,end).trim();}
+    function decodeExpr(src,expr,P,wrappers,allLocals){
+      var need={},cre=/([A-Za-z_$][\w$]*)\(/g,m;while(m=cre.exec(expr))need[m[1]]=1;
+      var chg=true;while(chg){chg=false;for(var n of Object.keys(need)){if(wrappers[n]){var c2=/([A-Za-z_$][\w$]*)\(/g,m2;while(m2=c2.exec(wrappers[n].text)){if(!need[m2[1]]){need[m2[1]]=1;chg=true;}}}}}
+      var baseNames=Object.keys(need).filter(n=>!wrappers[n]);
+      // candidate cluster anchors: near the concat (P) AND near each base-decoder definition
+      var anchors=[P]; for(var bn of baseNames){var p=baseDefPos(src,bn);if(p>=0)anchors.push(p+60);}
+      var bare={};for(var kk in allLocals){if(need[kk])continue;var re=new RegExp("\\b"+kk.replace(/\$/g,"\\$")+"\\b(?!\\s*\\()");if(re.test(expr))bare[kk]=allLocals[kk];}
+      var seenA={};
+      for(var ax=0;ax<anchors.length;ax++){
+        var A=anchors[ax]; if(seenA[A])continue; seenA[A]=1;
+        var decoders=_cluster(src,A);
+        var args=[],vals=[];for(var nn in need){if(decoders[nn]&&!wrappers[nn]){args.push(nn);vals.push(decoders[nn]);}}
+        if(args.length<baseNames.filter(b=>!/^(for|parseInt|push|shift|catch|function|charAt|slice|fromCharCode|charCodeAt|decodeURIComponent|Number|String|Math|e|n|t|r|o|i|a|c)$/.test(b)).length && args.length===0)continue;
+        var decl="";for(var bk in bare)decl+="const "+bk+"="+JSON.stringify(bare[bk])+";\n";for(var wn in need){if(wrappers[wn])decl+=wrappers[wn].text+"\n";}
+        var out;try{out=new Function("const ["+args.join(",")+"]=arguments[0];\n"+decl+"\nreturn ("+expr+");")(vals);}catch(e){continue;}
+        if(typeof out==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(out))return out;
+      }
+      return null;
+    }
+    function extractDg(src){
+      var uuidRe=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+      var valid=v=>typeof v==="string"&&/payment\/[0-9a-f-]{20,}\/dg-?epay|dg-?epay\/(in|initiate)/i.test(v);
+      var anchors=[],i;
+      i=-1;while((i=src.indexOf("dg-epay",i+1))>=0)anchors.push(i);
+      i=-1;while((i=src.indexOf("{appointmentId:",i+1))>=0){if(src.slice(i,i+400).indexOf("x-token")>=0)anchors.push(i);}
+      var tried=0;
+      for(var ai=0;ai<anchors.length&&tried<40;ai++){
+        var P=anchors[ai], wrappers=_wrappers(src,P), allLocals=_locals(src,P);
+        var win=src.slice(Math.max(0,P-2500),P+2500);
+        var seen={}, litRe=/["'`]/g, m;
+        while((m=litRe.exec(win))){
+          var q=win[m.index],k=m.index+1;while(k<win.length){if(win[k]==='\\'){k+=2;continue;}if(win[k]===q){k++;break;}k++;}
+          var expr; try{expr=chainAround(win,m.index,k);}catch(e){litRe.lastIndex=k;continue;}
+          litRe.lastIndex=Math.max(litRe.lastIndex,k);
+          if(!expr||expr.indexOf("+")===-1||expr.length>800||!/[A-Za-z_$][\w$]*\(/.test(expr)||seen[expr])continue;
+          seen[expr]=1;tried++;
+          var out=decodeExpr(src,expr,P,wrappers,allLocals);
+          if(valid(out)){var u=out.match(uuidRe);if(u)return u[0].toLowerCase();}
+        }
+      }
+      return null;
+    }
+    return extractDg(src);
+  } catch (e) { return null; }
+}
+
+// ==================== dg-epay UUID EXTRACTOR (ported from extract_fetch.js — strong, dynamic) ====================
+// Reads the payment bundle chunk and decodes /payment/<uuid>/dg-epay/initiate no matter how the
+// developer obfuscates it. Returns { uuid, dgPath } or nulls. Browser-safe (vm/fs/path/console stubbed).
+function rjExtractDgEpay(src){
+  var vm = { Script:function(){ return { runInContext:function(){throw new Error('nop')}, runInNewContext:function(){throw new Error('nop')} }; }, createContext:function(o){return o||{};} };
+  var fs = { readFileSync:function(){return '';}, writeFileSync:function(){}, existsSync:function(){return false;} };
+  var path = { join:function(){return '';}, basename:function(){return '';} };
+  var console = { log:function(){}, error:function(){}, warn:function(){} };
+  try {
+// ── Core codecs ───────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+function _b64(s) {
+  try {
+    let t='',n='';
+    for(let r,o,i=0,a=0;o=s.charAt(a++);~o&&(r=i%4?64*r+o:o,i++%4)?t+=String.fromCharCode(255&r>>(-2*i&6)):0)
+      o='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/='.indexOf(o);
+    for(let r=0,o=t.length;r<o;r++)n+='%'+('00'+t.charCodeAt(r).toString(16)).slice(-2);
+    return decodeURIComponent(n);
+  } catch(_) { return null; }
+}
+function _rc4(enc, key) {
+  const raw = _b64(enc); if (!raw) return null;
+  let o=[],ii=0,a='';
+  for(let r=0;r<256;r++)o[r]=r;
+  for(let r=0;r<256;r++){ii=(ii+o[r]+key.charCodeAt(r%key.length))%256;let n=o[r];o[r]=o[ii];o[ii]=n;}
+  let r=0;ii=0;
+  for(let c=0;c<raw.length;c++){r=(r+1)%256;ii=(ii+o[r])%256;let n=o[r];o[r]=o[ii];o[ii]=n;a+=String.fromCharCode(raw.charCodeAt(c)^o[(o[r]+o[ii])%256]);}
+  return a;
+}
+function parseOffset(str) {
+  const s = str.replace(/\s/g, '');
+  if (!s) return 0;
+  if (s.includes('--')) return +parseInt(s.match(/(\d+)/)[1]);
+  try { return new Function('return (' + s + ')')(); } catch(_) { return 0; }
+}
+
+// ── Array extractor ──────────────────────────────────────────────────────────
+function extractRawArray(fn) {
+  const marker = "function " + fn + "(){";
+  let start = src.indexOf(marker + "const e=[");
+  if (start < 0) start = src.indexOf(marker + "var e=[");
+  if (start < 0) return null;
+  const arrStart = src.indexOf("[", start + marker.length);
+  let depth=0, i=arrStart, inStr=false, sc='';
+  while (i < src.length) {
+    const c = src[i];
+    if (inStr) { if (c==='\\') i++; else if (c===sc) inStr=false; }
+    else if (c==='"'||c==="'") { inStr=true; sc=c; }
+    else if (c==='[') depth++;
+    else if (c===']') { depth--; if (depth===0) break; }
+    i++;
+  }
+  try { return eval(src.slice(arrStart, i+1)); } catch(_) { return null; }
+}
+
+// ── IIFE rotation (vm-based, for main array) ─────────────────────────────────
+function runRotationIife(arrFnName, rawArr) {
+  const sentinel = '}(' + arrFnName + ')';
+  const sentinelPos = src.indexOf(sentinel);
+  if (sentinelPos < 0) return rawArr;
+  const iifeStart = src.lastIndexOf('!function(', sentinelPos);
+  if (iifeStart < 0) return rawArr;
+  const iifeCode = src.slice(iifeStart, sentinelPos + sentinel.length);
+  const rotated = rawArr.slice();
+  const sandbox = { __arr: rotated, [arrFnName]: function(){ return rotated; }, _b64, _rc4 };
+  let decodeFnCode = '';
+  const dfRe = /function ([A-Za-z]{1,3}Q)\(e,t\)\{e-=(\d+)[^}]{0,200}const n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  let dfm;
+  while ((dfm = dfRe.exec(src)) !== null) {
+    if (dfm[3] !== arrFnName) continue;
+    decodeFnCode += `function ${dfm[1]}(e,t){e-=${parseInt(dfm[2])};const r=__arr[e];if(r===undefined)return null;if(!t)return _b64(r);return _rc4(r,t);}\n`;
+  }
+  try {
+    const script = new vm.Script(decodeFnCode + '\n' + iifeCode);
+    script.runInContext(vm.createContext(sandbox), { timeout: 5000 });
+    return sandbox.__arr;
+  } catch(_) { return rawArr; }
+}
+
+// ── Detect main decoder pair ──────────────────────────────────────────────────
+let m;
+const ARR_FN_PAT = '[A-Za-z_$][A-Za-z0-9_$]{1,3}';
+const OQ_ARR_MATCH = src.match(new RegExp('function OQ\\(e,t\\)\\{e-=(\\d+)[\\s\\S]{0,50}(?:const|var) n=(' + ARR_FN_PAT + ')\\(\\)'));
+const OQ_OFFSET    = OQ_ARR_MATCH ? parseInt(OQ_ARR_MATCH[1]) : null;
+const OQ_ARR_FN    = OQ_ARR_MATCH ? OQ_ARR_MATCH[2]           : null;
+const HAS_XHQLC    = src.indexOf('"dg-epay/in"') >= 0 || src.indexOf('XHQLC:') >= 0;
+const USE_NEW_DECODER = !!(OQ_ARR_MATCH && HAS_XHQLC);
+const PQ_ARR_MATCH = src.match(new RegExp('function PQ\\(e(?:,t)?\\)\\{e-=(\\d+)[^}]{0,60}(?:const|var) n=(' + ARR_FN_PAT + ')\\(\\)'));
+const PQ_OFFSET    = PQ_ARR_MATCH ? parseInt(PQ_ARR_MATCH[1]) : 384;
+const PQ_ARR_FN    = PQ_ARR_MATCH ? PQ_ARR_MATCH[2]           : 'AQ';
+let ACTIVE_ARR = null, ACTIVE_OFFSET = 0, ACTIVE_ARR_FN = '', BEST_ROT = 0;
+if (USE_NEW_DECODER) {
+  const rawSQ = extractRawArray(OQ_ARR_FN);
+  if (rawSQ) {
+    ACTIVE_ARR = runRotationIife(OQ_ARR_FN, rawSQ);
+    ACTIVE_OFFSET = OQ_OFFSET; ACTIVE_ARR_FN = OQ_ARR_FN;
+    if (rawSQ[0] !== ACTIVE_ARR[0]) for (let rot=0;rot<rawSQ.length;rot++) if(rawSQ[rot]===ACTIVE_ARR[0]){BEST_ROT=rot;break;}
+  }
+} else {
+  const rawAQ = extractRawArray(PQ_ARR_FN);
+  if (rawAQ) {
+    let bestScore=-1;
+    for (let rot=0;rot<rawAQ.length;rot++) {
+      const arr=[...rawAQ]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+      let score=0;
+      const v424=_b64(arr[424-PQ_OFFSET]||''),v478=_b64(arr[478-PQ_OFFSET]||''),v474=_b64(arr[474-PQ_OFFSET]||'');
+      if(!v424||!v478||!v474) continue;
+      if(/^[a-f0-9]{1,4}-[a-f0-9]/.test(v424))score+=3;if(/^[a-f0-9]{1,4}-[a-f0-9]/.test(v478))score+=3;
+      if(/^[a-f0-9]{3,8}\//.test(v474))score+=2;if(/dg-ep|payment|initia/.test(v424+v478+v474))score+=5;
+      if(score>bestScore){bestScore=score;BEST_ROT=rot;}
+    }
+    const arr=[...rawAQ]; for(let r=0;r<BEST_ROT;r++) arr.push(arr.shift());
+    ACTIVE_ARR=arr; ACTIVE_OFFSET=PQ_OFFSET; ACTIVE_ARR_FN=PQ_ARR_FN;
+  }
+}
+function arrDec(idx,key){if(!ACTIVE_ARR)return null;const real=idx-ACTIVE_OFFSET;if(real<0||real>=ACTIVE_ARR.length)return null;return key?_rc4(ACTIVE_ARR[real],key):_b64(ACTIVE_ARR[real]);}
+function zQdec(e){return arrDec(e,null);}
+function PQdec(e,key){return arrDec(e,key);}
+
+// ── Detect API base URL ───────────────────────────────────────────────────────
+function detectApiBaseUrl() {
+  const patterns=[/["'](https?:\/\/[^"']+?\/iams\/api\/v\d+)["']/i,/["'](https?:\/\/[^"']+?\/api\/v\d+)["']/i,/BASE_URL\s*=\s*["'](https?:\/\/[^"']+)["']/i,/baseURL\s*:\s*["'](https?:\/\/[^"']+)["']/i];
+  for(const p of patterns){const match=src.match(p);if(match&&match[1]){let url=match[1];if(!url.includes('/api/v')&&!url.includes('/iams/api')){if(url.endsWith('/'))url=url.slice(0,-1);const ctx=src.slice(Math.max(0,match.index-200),match.index+match[0].length+200);const apiM=ctx.match(/(\/iams\/api\/v\d+|\/api\/v\d+)/i);url=url+(apiM?apiM[1]:'/api/v1');}return url;}}
+  return "https://api.ivacbd.com/iams/api/v1";
+}
+let API_BASE_URL = detectApiBaseUrl();
+console.log("🌐 API Base URL  : " + API_BASE_URL);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── extractPaymentPath v11 — A/B/B2/C/D/E/F/G strategies ─────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+function extractPaymentPath() {
+
+  // ── Strategy selector ─────────────────────────────────────────────────────
+  function findPaymentGenerator() {
+    const dgLit = src.indexOf('"dg-epay/in"');
+    if (dgLit >= 0) {
+      const gs = src.lastIndexOf('function*(){', dgLit);
+      if (gs >= 0) return { genStart: gs, strategy: 'A_literal' };
+    }
+    const apptReB = /\{appointmentId:[a-z]\s*(?:,\s*\{[^}]{0,80}\})?\s*,\s*\{headers:\{"x-token":[a-z]\}/;
+    const apptMB = apptReB.exec(src);
+    if (apptMB) {
+      const gs = src.lastIndexOf('function*(){', apptMB.index);
+      if (gs >= 0) return { genStart: gs, strategy: 'B_apptId', anchorPos: apptMB.index };
+    }
+    const apptReB2 = /,\s*\{appointmentId:[a-z]\s*\}\s*,\s*\{headers:\{"x-token":[a-z]\}/;
+    const apptMB2 = apptReB2.exec(src);
+    if (apptMB2) {
+      const gs = src.lastIndexOf('function*(){', apptMB2.index);
+      if (gs >= 0) return { genStart: gs, strategy: 'B2_standalone_apptId', anchorPos: apptMB2.index };
+    }
+    let searchFrom = 0;
+    while (true) {
+      const pos = src.indexOf('{appointmentId:', searchFrom);
+      if (pos < 0) break;
+      if (src.slice(pos, pos + 350).includes('"x-token"')) {
+        const gs = src.lastIndexOf('function*(){', pos);
+        if (gs >= 0) return { genStart: gs, strategy: 'C_apptId_xtoken', anchorPos: pos };
+      }
+      searchFrom = pos + 1;
+    }
+    return null;
+  }
+
+  const genInfo = findPaymentGenerator();
+  if (!genInfo) return { dgPath: null, sslPath: null };
+  console.log("  Generator strategy: " + genInfo.strategy + " at pos " + genInfo.genStart);
+
+  // ── Extract generator body ────────────────────────────────────────────────
+  const genOpenBrace = src.indexOf('{', genInfo.genStart + 10);
+  let genBody = '';
+  {
+    let depth2=1, i2=genOpenBrace+1, inStr2=false, sc2='';
+    while (i2<src.length && depth2>0) {
+      const ch=src[i2];
+      if(inStr2){if(ch==='\\')i2++;else if(ch===sc2)inStr2=false;}
+      else if(ch==='"'||ch==="'"){inStr2=true;sc2=ch;}
+      else if(ch==='{')depth2++;
+      else if(ch==='}')depth2--;
+      if(depth2>0)genBody+=ch;
+      i2++;
+    }
+  }
+
+  // ── Discover all decoders in src ─────────────────────────────────────────
+  const decoderDefRe = /function ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,30}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  const allDecoders = {};
+  let ddm;
+  while ((ddm = decoderDefRe.exec(src)) !== null) {
+    const [, name, offsetStr, arrFn] = ddm;
+    if (allDecoders[name]) continue;
+    const body = src.slice(ddm.index, ddm.index + 600);
+    const isRC4 = body.includes('%t.length');
+    allDecoders[name] = { offset: parseInt(offsetStr), arrFn, type: isRC4 ? 'rc4' : 'b64' };
+  }
+
+  const genDecoders = {};
+  for (const [name, info] of Object.entries(allDecoders)) {
+    if (new RegExp('\\b' + name + '\\b').test(genBody)) genDecoders[name] = info;
+  }
+  const arrFnCounts = {};
+  for (const [name, info] of Object.entries(genDecoders)) {
+    const refs = (genBody.match(new RegExp('\\b' + name + '\\b', 'g')) || []).length;
+    arrFnCounts[info.arrFn] = (arrFnCounts[info.arrFn] || 0) + refs;
+  }
+  const primaryArrFn = Object.keys(arrFnCounts).sort((a,b)=>arrFnCounts[b]-arrFnCounts[a])[0];
+  if (!primaryArrFn) return { dgPath: null, sslPath: null };
+
+  let rc4FnName=null, b64FnName=null, rc4Offset=0, b64Offset=0;
+  for (const [name, info] of Object.entries(genDecoders)) {
+    if (info.arrFn !== primaryArrFn) continue;
+    if (info.type === 'rc4' && !rc4FnName) { rc4FnName=name; rc4Offset=info.offset; }
+    if (info.type === 'b64' && !b64FnName) { b64FnName=name; b64Offset=info.offset; }
+  }
+  if (!b64FnName && rc4FnName) { b64FnName=rc4FnName; b64Offset=rc4Offset; }
+  if (!rc4FnName && b64FnName) { rc4FnName=b64FnName; rc4Offset=b64Offset; }
+  console.log("  Array: "+primaryArrFn+" RC4: "+rc4FnName+"("+rc4Offset+") b64: "+b64FnName+"("+b64Offset+")");
+
+  // ── Load and rotate the local array ─────────────────────────────────────
+  const rawArr = extractRawArray(primaryArrFn);
+  if (!rawArr) return { dgPath: null, sslPath: null };
+  console.log("  Array size: " + rawArr.length);
+
+  const sentinel = '}(' + primaryArrFn + ')';
+  const sentPos = src.indexOf(sentinel);
+  if (sentPos < 0) return { dgPath: null, sslPath: null };
+  const iifeStart = src.lastIndexOf('!function(', sentPos);
+  if (iifeStart < 0) return { dgPath: null, sslPath: null };
+  const iifeCode = src.slice(iifeStart, sentPos + sentinel.length);
+  const magicMatch = iifeCode.match(/if\((\d+)==/);
+  if (!magicMatch) return { dgPath: null, sslPath: null };
+  const MAGIC = parseInt(magicMatch[1]);
+
+  function parseAliases(code) {
+    const aliases = {};
+    const re = /function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+    let am;
+    while ((am = re.exec(code)) !== null) {
+      const alName=am[1], callee=am[2], argExpr=am[3].trim();
+      const decInfo = allDecoders[callee]; if (!decInfo) continue;
+      const isRC4call = decInfo.type === 'rc4';
+      const fnOff = isRC4call ? rc4Offset : b64Offset;
+      const rc4m = argExpr.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+      const b64m = argExpr.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)$/);
+      if (rc4m) aliases[alName] = { type:isRC4call?'rc4':'b64', idxVar:rc4m[1], offset:parseOffset(rc4m[2]), keyVar:rc4m[3], fnOff };
+      else if (b64m) aliases[alName] = { type:'b64', idxVar:b64m[1], offset:parseOffset(b64m[2]), fnOff };
+    }
+    return aliases;
+  }
+
+  const iifeAliases = parseAliases(iifeCode);
+
+  function substituteAliases(expr, aliases, arr) {
+    return expr.replace(
+      /([a-z])\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,
+      (match, name, arg1, arg2) => {
+        const al = aliases[name]; if (!al) return match;
+        const a1=(arg1||'0').replace(/"/g,''), a2=(arg2||'0').replace(/"/g,'');
+        const iStr=al.idxVar==='e'?a1:a2, kStr=al.type==='rc4'?(al.keyVar==='e'?a1:a2):null;
+        const real=parseFloat(iStr)+al.offset-al.fnOff;
+        if(real<0||real>=arr.length) return '"__FAIL__"';
+        const v=al.type==='rc4'?_rc4(arr[real],kStr):_b64(arr[real]);
+        return v!=null?JSON.stringify(v):'"__FAIL__"';
+      }
+    );
+  }
+
+  const intExprMatch = iifeCode.match(/if\(\d+==([\s\S]+?)\)break/);
+  if (!intExprMatch) return { dgPath: null, sslPath: null };
+  const intExpr = intExprMatch[1];
+
+  // ── Rotation strategy 1: alias substitution ──────────────────────────────
+  let rotatedArr = null;
+  for (let rot=0; rot<rawArr.length; rot++) {
+    const arr=[...rawArr]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+    const sub = substituteAliases(intExpr, iifeAliases, arr);
+    if (sub.includes('__FAIL__')) continue;
+    let val=NaN; try{val=eval(sub);}catch(_){}
+    if (Math.abs(val-MAGIC)<0.001) { rotatedArr=arr; console.log("  ✅ rotation (alias): "+rot); break; }
+  }
+
+  // ── Rotation strategy 1b: brute-force with all-decoder sandbox ───────────
+  if (!rotatedArr) {
+    console.log("  ⚙️  alias rotation miss — trying brute-force decoder rotation for "+primaryArrFn);
+    const bfDecoders={};
+    for(const[dName,dInfo] of Object.entries(allDecoders)){
+      if(dInfo.arrFn!==primaryArrFn)continue;
+      bfDecoders[dName]={off:dInfo.offset,isRC4:dInfo.type==='rc4'};
+    }
+    const bfVFnRe=/function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+    let bfVm;
+    while((bfVm=bfVFnRe.exec(src))!==null){
+      const[,vN,offS,aFn]=bfVm;if(aFn!==primaryArrFn||bfDecoders[vN])continue;
+      bfDecoders[vN]={off:parseInt(offS),isRC4:src.slice(bfVm.index,bfVm.index+800).includes('%t.length')};
+    }
+    if(Object.keys(bfDecoders).length>0){
+      const bfIntM=iifeCode.match(/if\(\d+==([\s\S]+?)\)break/);
+      if(bfIntM){
+        const bfIntExpr=bfIntM[1];
+        outer: for(let rot=0;rot<rawArr.length;rot++){
+          const arr=[...rawArr]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+          const sub2=bfIntExpr.replace(/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,(_,fn,a1r,a2r)=>{
+            const di2=bfDecoders[fn]; if(!di2) return '"__X__"';
+            const a1=(a1r||'0').replace(/"/g,''),a2=(a2r||'0').replace(/"/g,'');
+            const real=parseInt(a1)-di2.off;
+            if(real<0||real>=arr.length)return'"__FAIL__"';
+            const key=a2r&&a2r.startsWith('"')?a2:null;
+            const v=di2.isRC4&&key?_rc4(arr[real],key):_b64(arr[real]);
+            return v!=null?JSON.stringify(v):'"__FAIL__"';
+          });
+          if(sub2.includes('__FAIL__'))continue;
+          let bfVal=NaN;try{bfVal=eval(sub2.replace(/"__X__"/g,'0'));}catch(_){}
+          if(Math.abs(bfVal-MAGIC)<0.001){rotatedArr=arr;console.log("  ✅ rotation (brute-force): "+rot);break outer;}
+        }
+      }
+    }
+  }
+
+  // ── Rotation strategy 2: vm-sandbox live execution ────────────────────────
+  if (!rotatedArr) {
+    console.log("  ⚙️  alias rotation failed — trying vm-sandbox for " + primaryArrFn);
+    const liveArr = rawArr.slice();
+    const sandboxDecls = { [primaryArrFn]: function() { return liveArr; } };
+    for (const [dName, dInfo] of Object.entries(allDecoders)) {
+      if (dInfo.arrFn !== primaryArrFn) continue;
+      const off = dInfo.offset, isRC4 = dInfo.type === 'rc4';
+      sandboxDecls[dName] = function(e, t) {
+        const r=e-off; if(r<0||r>=liveArr.length)return '';
+        return isRC4&&t?(_rc4(liveArr[r],t)||''):(_b64(liveArr[r])||'');
+      };
+    }
+    const vFnRe = /function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+    let vfm;
+    while ((vfm = vFnRe.exec(src)) !== null) {
+      const [, vName, offStr, aFn] = vfm;
+      if (aFn !== primaryArrFn || sandboxDecls[vName]) continue;
+      const vOff=parseInt(offStr), vIsRC4=src.slice(vfm.index,vfm.index+800).includes('%t.length');
+      sandboxDecls[vName] = function(e, t) {
+        const r=e-vOff; if(r<0||r>=liveArr.length)return '';
+        return vIsRC4&&t?(_rc4(liveArr[r],t)||''):(_b64(liveArr[r])||'');
+      };
+    }
+    try {
+      vm.Script && new vm.Script(iifeCode).runInContext(vm.createContext(sandboxDecls),{timeout:8000});
+      rotatedArr=liveArr;
+      let rotCount=0;
+      for(let i=0;i<rawArr.length;i++)if(rawArr[i]===rotatedArr[0]){rotCount=i;break;}
+      console.log("  ✅ rotation (vm-sandbox): ~"+rotCount+" shifts");
+    } catch(e2) {
+      console.log("  ⚠️  vm-sandbox failed ("+e2.message.slice(0,40)+") — using unrotated array for Strategy D/E UUID rescue");
+      rotatedArr=rawArr.slice();
+    }
+  }
+
+  // ── Build accessor functions for rotated array ────────────────────────────
+  const dec = {
+    rc4: (idx,key) => { const r=idx-rc4Offset; return r>=0&&r<rotatedArr.length?(key?_rc4(rotatedArr[r],key):_b64(rotatedArr[r])):null; },
+    b64: (idx)     => { const r=idx-b64Offset; return r>=0&&r<rotatedArr.length?_b64(rotatedArr[r]):null; }
+  };
+
+  const vDecMap = {};
+  const vFnRe2 = /function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  let vfm2;
+  while ((vfm2 = vFnRe2.exec(src)) !== null) {
+    const [, vName, offStr, aFn] = vfm2;
+    if (aFn !== primaryArrFn || vDecMap[vName]) continue;
+    vDecMap[vName] = { off: parseInt(offStr), isRC4: src.slice(vfm2.index,vfm2.index+800).includes('%t.length') };
+  }
+  function vDec(name, idx, key) {
+    const info=vDecMap[name]; if(!info) return null;
+    const r=idx-info.off; if(r<0||r>=rotatedArr.length) return null;
+    return info.isRC4&&key?_rc4(rotatedArr[r],key):_b64(rotatedArr[r]);
+  }
+
+  // ── Extended alias parser for generator body ──────────────────────────────
+  function parseGenAliasesExtended(code) {
+    const aliases = parseAliases(code);
+    const vAlRe = /function ([a-z])\(e,t\)\{return ([A-Za-z]{1,3}V)\(([^)]+)\)\}/g;
+    let va;
+    while ((va = vAlRe.exec(code)) !== null) {
+      const alName=va[1], vFnName=va[2], argExpr=va[3].trim();
+      const vInfo=vDecMap[vFnName]; if(!vInfo) continue;
+      if (aliases[alName]) continue;
+      const rc4m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+      const b64m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)$/);
+      if (rc4m) aliases[alName]={type:vInfo.isRC4?'rc4':'b64',idxVar:rc4m[1],offset:parseOffset(rc4m[2]),keyVar:rc4m[3],fnOff:vInfo.off,vFn:vFnName};
+      else if (b64m) aliases[alName]={type:'b64',idxVar:b64m[1],offset:parseOffset(b64m[2]),fnOff:vInfo.off,vFn:vFnName};
+    }
+    return aliases;
+  }
+  const genAliasesExt = parseGenAliasesExtended(genBody);
+
+  // ── Extract const variable map from genBody ──────────────────────────────
+  const genVarMap={};
+  const genVarRe=/(?:^|\n|\{|,)\s*(?:const|var|let)\s+([a-z])\s*=\s*"([^"]{1,20})"/g;
+  let gvm;
+  while((gvm=genVarRe.exec(genBody))!==null) genVarMap[gvm[1]]=gvm[2];
+  const genVarRe2=/\b([a-z])="([^"]{1,20})"/g;
+  while((gvm=genVarRe2.exec(genBody))!==null) if(!genVarMap[gvm[1]]) genVarMap[gvm[1]]=gvm[2];
+  if(Object.keys(genVarMap).length) console.log("  📋 genBody var map: "+JSON.stringify(genVarMap));
+
+  function resolveArg(raw, varMap) {
+    if(!raw) return null;
+    const s=raw.trim();
+    if(s.startsWith('"')) return s.replace(/"/g,'');
+    if(/^-?\d/.test(s)) return s;
+    if(/^[a-z]$/.test(s)) return varMap[s]||null;
+    return s;
+  }
+
+  // ── Decode a JS expression using all known decoders ───────────────────────
+  // FIX v11 #1: pieceRe already includes [a-z] in arg positions (was already in
+  // decodeExpr but NOT in Strategy D/E tokenRe — fixed separately below).
+  function decodeExpr(expr) {
+    let out='';
+    const pieceRe=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,80})"/g;
+    let pm;
+    while ((pm=pieceRe.exec(expr))!==null) {
+      if (pm[4]!=null) { out+=pm[4]; continue; }
+      const fnName=pm[1];
+      const arg1Raw=resolveArg(pm[2], genVarMap);
+      const arg2Raw=pm[3]?resolveArg(pm[3], genVarMap):null;
+      if(arg1Raw===null && pm[2]&&/^[a-z]$/.test(pm[2].trim())) continue;
+      const arg1=(arg1Raw||'0'), arg2=(arg2Raw||'0');
+      const al=genAliasesExt[fnName];
+      if (al) {
+        const iStr=al.idxVar==='e'?arg1:arg2;
+        const kStr=al.type==='rc4'?(al.keyVar==='e'?arg1:arg2):null;
+        const realIdx=parseFloat(iStr)+al.offset;
+        const v=al.vFn?vDec(al.vFn,realIdx,kStr):(al.type==='rc4'?dec.rc4(realIdx,kStr):dec.b64(realIdx));
+        if(v)out+=v; continue;
+      }
+      if (vDecMap[fnName]) {
+        const idx=parseFloat(arg1);
+        const key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=vDec(fnName,idx,key); if(v)out+=v; continue;
+      }
+      if (allDecoders[fnName]) {
+        const di=allDecoders[fnName]; if(di.arrFn!==primaryArrFn)continue;
+        const idx=parseFloat(arg1);
+        const key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=di.type==='rc4'?dec.rc4(idx,key):dec.b64(idx); if(v)out+=v;
+      }
+    }
+    return out;
+  }
+
+  function decodeExprMixed(expr) {
+    let out='', hasUnresolved=false;
+    const pieceRe2=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,80})"/g;
+    let pm2;
+    while((pm2=pieceRe2.exec(expr))!==null){
+      if(pm2[4]!=null){out+=pm2[4];continue;}
+      const fnName=pm2[1];
+      const arg1Raw=resolveArg(pm2[2], genVarMap);
+      const arg2Raw=pm2[3]?resolveArg(pm2[3], genVarMap):null;
+      if(arg1Raw===null){hasUnresolved=true;continue;}
+      const arg1=(arg1Raw||'0'), arg2=(arg2Raw||'0');
+      const al=genAliasesExt[fnName];
+      if(al){
+        const iStr=al.idxVar==='e'?arg1:arg2,kStr=al.type==='rc4'?(al.keyVar==='e'?arg1:arg2):null;
+        const realIdx=parseFloat(iStr)+al.offset;
+        const v=al.vFn?vDec(al.vFn,realIdx,kStr):(al.type==='rc4'?dec.rc4(realIdx,kStr):dec.b64(realIdx));
+        if(v){out+=v;}else{hasUnresolved=true;} continue;
+      }
+      if(vDecMap[fnName]){
+        const idx=parseFloat(arg1),key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=vDec(fnName,idx,key);if(v){out+=v;}else{hasUnresolved=true;} continue;
+      }
+      if(allDecoders[fnName]){
+        const di=allDecoders[fnName];if(di.arrFn!==primaryArrFn){hasUnresolved=true;continue;}
+        const idx=parseFloat(arg1),key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=di.type==='rc4'?dec.rc4(idx,key):dec.b64(idx);if(v){out+=v;}else{hasUnresolved=true;}
+      } else {hasUnresolved=true;}
+    }
+    return {text:out,partial:hasUnresolved};
+  }
+
+  // ── Depth-aware property value extractor ─────────────────────────────────
+  function extractPropVal(body, marker) {
+    const pos=body.indexOf(marker); if(pos<0)return'';
+    let expr='',d=0,inS=false,sc3='',j=pos+marker.length;
+    while(j<body.length){const c=body[j];if(inS){if(c==='\\')j++;else if(c===sc3)inS=false;}else if(c==='"'||c==="'"){inS=true;sc3=c;}else if(c==='('||c==='[')d++;else if(c===')'||c===']')d--;else if((c===','||c==='}')&&d===0)break;expr+=c;j++;}
+    return expr.trim();
+  }
+
+  // ── Depth-aware ternary branch splitter ───────────────────────────────────
+  function splitTernary(expr) {
+    let depth=0,inS=false,sc='';
+    for(let ci=0;ci<expr.length;ci++){
+      const c=expr[ci];
+      if(inS){if(c==='\\')ci++;else if(c===sc)inS=false;}
+      else if(c==='"'||c==="'"){inS=true;sc=c;}
+      else if(c==='('||c==='['||c==='{')depth++;
+      else if(c===')'||c===']'||c==='}')depth--;
+      else if(c===':'&&depth===0)return[expr.slice(0,ci),expr.slice(ci+1)];
+    }
+    return[expr];
+  }
+
+  let dgPath=null, sslPath=null;
+
+  // ── Strategy A: literal "dg-epay/in" ─────────────────────────────────────
+  if (genInfo.strategy==='A_literal') {
+    function extractPropByLiteral(body, literal) {
+      const litPos=body.indexOf(literal); if(litPos<0)return'';
+      let colonPos=litPos; while(colonPos>0&&body[colonPos]!==':')colonPos--;
+      let expr='',d=0,inS=false,sc3='',j=colonPos+1;
+      while(j<body.length){const c=body[j];if(inS){if(c==='\\')j++;else if(c===sc3)inS=false;}else if(c==='"'||c==="'"){inS=true;sc3=c;}else if(c==='('||c==='[')d++;else if(c===')'||c===']')d--;else if((c===','||c==='}')&&d===0)break;expr+=c;j++;}
+      return expr.trim();
+    }
+    const dgPropExpr=extractPropByLiteral(genBody,'"dg-epay/in"');
+    let decoded=decodeExpr(dgPropExpr);
+    if(decoded&&!decoded.startsWith('/'))decoded='/'+decoded;
+    if(decoded&&/[0-9a-f]{8}-[0-9a-f]{4}/.test(decoded))dgPath=decoded;
+    const dgInGen=genBody.indexOf('"dg-epay/in"');
+    const objS=genBody.lastIndexOf('{',dgInGen),objE=genBody.indexOf('}',dgInGen);
+    if(objS>=0&&objE>objS){
+      const objBody=genBody.slice(objS+1,objE);
+      const propRe=/([A-Za-z]{3,})\s*:/g;let pm2;
+      while((pm2=propRe.exec(objBody))!==null){
+        const pn=pm2[1];if(/^(function|return|const|let|var)$/.test(pn))continue;
+        const pe=extractPropVal(genBody,pn+':');if(!pe||pe.length<5)continue;
+        if(pe.includes('dg-epay')||pe.includes('function('))continue;
+        const d2=decodeExpr(pe);
+        if(d2&&d2.length>4&&/ssl|initia|payment/.test(d2)){sslPath=d2.startsWith('/')?d2:'/'+d2;break;}
+      }
+    }
+  }
+
+  // ── FIX v11 #2: Helper to extract objects from inline multi-var const ─────
+  // Handles: const e="...",t="...",n={PROPS} where constRe only finds const X={
+  function extractInlineConstObjects(body) {
+    // Matches: const LETTER="...", ... , LETTER={ (the object part without its own const)
+    const results = [];
+    // Find all object literals that are assigned without a leading 'const'
+    // Pattern: (letter)={  preceded by ," or ,variable  (not preceded by 'const ')
+    const inlineObjRe = /(?:,\s*([a-z])\s*=\s*\{|^([a-z])\s*=\s*\{)/gm;
+    let om;
+    while ((om = inlineObjRe.exec(body)) !== null) {
+      const varName = om[1] || om[2];
+      const objStart = om.index + om[0].lastIndexOf('{');
+      // Check this is NOT preceded by 'const' / 'let' / 'var'
+      const before = body.slice(Math.max(0, om.index - 10), om.index);
+      if (/\b(?:const|let|var)\s*$/.test(before)) continue;
+      // Extract the object body
+      let depth=1, j=objStart+1, inS=false, sc='', objStr='';
+      while(j<body.length && depth>0){
+        const c=body[j];
+        if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}
+        else if(c==='"'||c==="'"){inS=true;sc=c;}
+        else if(c==='{')depth++;
+        else if(c==='}')depth--;
+        if(depth>0)objStr+=c;
+        j++;
+      }
+      results.push({varName, objStr});
+    }
+    return results;
+  }
+
+  // ── Strategy B/B2/C: property scan + ternary scan + exhaustive scan ───────
+  if (!dgPath) {
+    // FIX v11 #2: Property scan — now also covers inline const objects
+    function scanObjectForPaths(objStr) {
+      const propRe2=/([A-Za-z]{3,})\s*:/g;let pm3;
+      while((pm3=propRe2.exec(objStr))!==null){
+        const pn=pm3[1];
+        if(/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn))continue;
+        const propExprInGen=extractPropVal(genBody,pn+':');
+        if(!propExprInGen||propExprInGen.length<10)continue;
+        if(propExprInGen.startsWith('function'))continue;
+        let decoded=decodeExpr(propExprInGen);
+        if(!decoded||decoded.length<10){
+          const mx=decodeExprMixed(propExprInGen);
+          if(mx.text&&mx.text.length>=10)decoded=mx.text;
+        }
+        if(!decoded||decoded.length<10)continue;
+        const uuidInProp=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if(uuidInProp&&/dg-epay/i.test(decoded)){
+          const cleanM=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          if(cleanM){dgPath=(cleanM[0].startsWith('/')?'':'/')+cleanM[0];}
+          else{dgPath=decoded.startsWith('/')?decoded:'/'+decoded;}
+          console.log("  ✅ DG path via property scan (mixed): "+dgPath);
+        } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+          dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+          console.log("  ✅ DG path via property scan: "+dgPath);
+        }
+        if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        if(dgPath)return true;
+      }
+      return false;
+    }
+
+    // Scan objects from standard 'const n={' pattern
+    const constRe=/const ([a-z])=\{/g;
+    let cm;
+    while((cm=constRe.exec(genBody))!==null){
+      const objOpenPos=cm.index+cm[0].length-1;
+      let depth=1,j=objOpenPos+1,inS=false,sc='',objStr='';
+      while(j<genBody.length&&depth>0){const c=genBody[j];if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')depth++;else if(c==='}')depth--;if(depth>0)objStr+=c;j++;}
+      if(scanObjectForPaths(objStr))break;
+    }
+
+    // FIX v11 #2: Also scan inline const objects (const e="...",n={...} pattern)
+    if (!dgPath) {
+      const inlineObjs = extractInlineConstObjects(genBody);
+      for (const {varName, objStr} of inlineObjs) {
+        if(scanObjectForPaths(objStr)) break;
+      }
+    }
+
+    // Ternary scan
+    if (!dgPath) {
+      const ternaryRe=/(?:const )?([a-z])=([a-z])===([^?]{5,200})\?([\s\S]{5,400}?)(?=\n[a-z]|\nreturn|\nthrow|\nfunction)/g;
+      let tm;
+      while((tm=ternaryRe.exec(genBody))!==null){
+        const rawBranch=tm[4].trim();
+        const parts=splitTernary(rawBranch);
+        for(const branch of parts){
+          let branchDecoded=decodeExpr(branch.trim());
+          if(!branchDecoded||branchDecoded.length<10){
+            const mx2=decodeExprMixed(branch.trim());
+            if(mx2.text&&mx2.text.length>=10)branchDecoded=mx2.text;
+          }
+          if(!branchDecoded||branchDecoded.length<10)continue;
+          const cleanBrM=branchDecoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          if(cleanBrM){
+            dgPath=(cleanBrM[0].startsWith('/')?'':'/')+cleanBrM[0];
+            console.log("  ✅ DG path via ternary branch: "+dgPath);
+          } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(branchDecoded)&&/dg-epay/i.test(branchDecoded)){
+            dgPath=branchDecoded.startsWith('/')?branchDecoded:'/'+branchDecoded;
+            console.log("  ✅ DG path via ternary branch: "+dgPath);
+          }
+          if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(branchDecoded))sslPath=branchDecoded.startsWith('/')?branchDecoded:'/'+branchDecoded;
+        }
+        if(dgPath)break;
+      }
+    }
+
+    // Conditional scan
+    if (!dgPath) {
+      const condRe=/const [a-z]=[\s\S]{0,20}===[\s\S]{0,80}\?([\s\S]{10,400}?):([^\n;]{10,400})/g;
+      let cm2;
+      while((cm2=condRe.exec(genBody))!==null){
+        const parts=splitTernary((cm2[1]+':'+cm2[2]).trim());
+        for(const branch of parts){
+          const decoded=decodeExpr(branch.trim());
+          if(!decoded||decoded.length<15)continue;
+          if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+            dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+            console.log("  ✅ DG path via conditional: "+dgPath);
+          }
+          if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        }
+        if(dgPath)break;
+      }
+    }
+
+    // SSL ternary fallback
+    if (!sslPath) {
+      const ternaryRe2=/\?\s*[a-z]\[[^\]]+\]\s*:\s*([^;{}\n]{10,200})/g;
+      let tm2;
+      while((tm2=ternaryRe2.exec(genBody))!==null){
+        const altDecoded=decodeExpr(tm2[1].trim());
+        if(altDecoded&&/ssl\/initiate|payment\/ssl/.test(altDecoded))sslPath=altDecoded.startsWith('/')?altDecoded:'/'+altDecoded;
+      }
+    }
+  }
+
+  // ── Strategy D v11: exhaustive token scan with FIXED tokenRe ─────────────
+  // FIX v11 #1: tokenRe now includes bare single-letter variables [a-z] in both
+  // arg positions. Previously f(e,247) and d(t,-208) were silently skipped
+  // because 'e' and 't' didn't match the old (-?\d+|"[^"]*") arg pattern.
+  // This caused UUID segments "5-d55" and "16e01" to be missing from accum,
+  // breaking the UUID pattern match in Strategy D.
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy D: exhaustive call-sequence scan...");
+    // FIX: added [a-z] to both arg slot patterns
+    const tokenRe=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,60})"/g;
+    const tokens=[]; let cpm;
+    while((cpm=tokenRe.exec(genBody))!==null){
+      if(cpm[4]!=null)tokens.push({type:'lit',val:cpm[4],pos:cpm.index});
+      else tokens.push({type:'call',full:cpm[0],pos:cpm.index});
+    }
+    let accum='', accumStart=0;
+    for(let i=0;i<tokens.length;i++){
+      const tok=tokens[i];
+      let decoded=null;
+      if(tok.type==='lit'){decoded=tok.val;}
+      else{decoded=decodeExpr(tok.full);}
+      if(decoded){accum+=decoded;}else{accum='';accumStart=i+1;}
+      if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(accum)&&/dg-epay/i.test(accum)){
+        const pathM=accum.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        if(pathM){dgPath=(pathM[0].startsWith('/')?'':'/')+pathM[0];}
+        else{dgPath=accum.startsWith('/')?accum:'/'+accum;}
+        console.log("  ✅ DG path via Strategy D (exhaustive): "+dgPath);
+        break;
+      }
+      if(accum.length>400){accum=decoded||'';accumStart=i;}
+    }
+  }
+
+  // ── Strategy E v11: UUID rescue with FIXED tokenRe2 ──────────────────────
+  // FIX v11 #1: tokenRe2 also gets [a-z] in arg positions (same fix as D).
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy E: UUID rescue from full generator body scan...");
+    // FIX: added [a-z] to both arg slot patterns
+    const tokenRe2=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,60})"/g;
+    const bigStr=[];let cp2;
+    while((cp2=tokenRe2.exec(genBody))!==null){
+      const frag=cp2[4]!=null?cp2[4]:decodeExpr(cp2[0]);
+      if(frag)bigStr.push(frag);
+    }
+    const combined=bigStr.join('');
+    const uuidM2=combined.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if(uuidM2){
+      const u2=uuidM2[0].toLowerCase();
+      const ctxAround=combined.slice(Math.max(0,combined.indexOf(u2)-30),combined.indexOf(u2)+u2.length+40);
+      if(/dg-epay|initiat|payment/i.test(ctxAround)||/dg-epay|initiat/i.test(combined)){
+        dgPath='/payment/'+u2+'/dg-epay/initiate';
+        console.log("  ✅ DG UUID via Strategy E (rescue): "+dgPath);
+      }
+    }
+  }
+
+  // ── Strategy F: multi-array ternary decode ────────────────────────────────
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy F: secondary-array ternary decode...");
+    const secDecoders={};
+    for(const[name,info] of Object.entries(allDecoders)){
+      if(info.arrFn===primaryArrFn)continue;
+      if(!new RegExp('\\b'+name+'\\b').test(genBody))continue;
+      secDecoders[name]=info;
+    }
+    const secArrFns={};
+    for(const[name,info] of Object.entries(secDecoders)){
+      if(!secArrFns[info.arrFn])secArrFns[info.arrFn]=[];
+      secArrFns[info.arrFn].push({name,info});
+    }
+    for(const[secArrFn,decList] of Object.entries(secArrFns)){
+      const secRaw=extractRawArray(secArrFn); if(!secRaw)continue;
+      const secSentinel='}('+secArrFn+')';
+      const secSentPos=src.indexOf(secSentinel); if(secSentPos<0)continue;
+      const secIifeStart=src.lastIndexOf('!function(',secSentPos); if(secIifeStart<0)continue;
+      const secIife=src.slice(secIifeStart,secSentPos+secSentinel.length);
+      const secMagicM=secIife.match(/if\((\d+)==/); if(!secMagicM)continue;
+      const secMAGIC=parseInt(secMagicM[1]);
+      const secIntM=secIife.match(/if\(\d+==([\s\S]+?)\)break/); if(!secIntM)continue;
+      const secIntExpr=secIntM[1];
+      const secAliases={};
+      const secAlRe=/function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+      let sam;
+      while((sam=secAlRe.exec(secIife))!==null){
+        const alName=sam[1],callee=sam[2],argE=sam[3].trim();
+        const di=allDecoders[callee];if(!di||di.arrFn!==secArrFn)continue;
+        const isRC4=di.type==='rc4';
+        const rc4m=argE.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+        const b64m=argE.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)$/);
+        if(rc4m)secAliases[alName]={type:isRC4?'rc4':'b64',idxVar:rc4m[1],offset:parseOffset(rc4m[2]),keyVar:rc4m[3],fnOff:di.offset};
+        else if(b64m)secAliases[alName]={type:'b64',idxVar:b64m[1],offset:parseOffset(b64m[2]),fnOff:di.offset};
+      }
+      for(let rot2=0;rot2<secRaw.length;rot2++){
+        const secArr=secRaw.slice(rot2).concat(secRaw.slice(0,rot2));
+        const subExpr=secIntExpr.replace(/([a-z])\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,(_,n,a1,a2)=>{
+          const al=secAliases[n];if(!al)return'"__X__"';
+          const a1s=(a1||'0').replace(/"/g,''),a2s=(a2||'0').replace(/"/g,'');
+          const iStr=al.idxVar==='e'?a1s:a2s,kStr=al.type==='rc4'?(al.keyVar==='e'?a1s:a2s):null;
+          const real=parseFloat(iStr)+al.offset-al.fnOff;
+          if(real<0||real>=secArr.length)return'"__FAIL__"';
+          const decFn=decList.find(d=>d.name===Object.keys(secAliases).find(k=>secAliases[k].fnOff===al.fnOff));
+          const di2=decFn?decFn.info:null;
+          const v=di2?(di2.type==='rc4'&&kStr?_rc4(secArr[real],kStr):_b64(secArr[real])):null;
+          return v!=null?JSON.stringify(v):'"__FAIL__"';
+        });
+        if(subExpr.includes('__FAIL__'))continue;
+        let secVal=NaN;try{secVal=eval(subExpr.replace(/"__X__"/g,'0'));}catch(_){}
+        if(Math.abs(secVal-secMAGIC)>0.001)continue;
+        console.log("  ✅ secondary rotation ("+secArrFn+"): "+rot2);
+        const secDec={};
+        for(const{name,info} of decList){
+          const off=info.offset,isRC4=info.type==='rc4';
+          secDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=secArr.length)return null;return isRC4&&t?_rc4(secArr[r],t):_b64(secArr[r]);};
+        }
+        const secGenAliases={};
+        const secGenAlRe=/function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+        let sga;
+        while((sga=secGenAlRe.exec(genBody))!==null){
+          const alN=sga[1],callee2=sga[2],argE2=sga[3].trim();
+          const di2=allDecoders[callee2];if(!di2||di2.arrFn!==secArrFn)continue;
+          const isRC4_2=di2.type==='rc4';
+          const rc4m2=argE2.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+          const b64m2=argE2.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)$/);
+          if(rc4m2)secGenAliases[alN]={type:isRC4_2?'rc4':'b64',idxVar:rc4m2[1],offset:parseOffset(rc4m2[2]),keyVar:rc4m2[3],fnOff:di2.offset};
+          else if(b64m2)secGenAliases[alN]={type:'b64',idxVar:b64m2[1],offset:parseOffset(b64m2[2]),fnOff:di2.offset};
+        }
+        function decodeSecExpr(expr){
+          let out='';
+          const pr=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)|"([^"\\]{1,60})"/g;
+          let pm;
+          while((pm=pr.exec(expr))!==null){
+            if(pm[4]!=null){out+=pm[4];continue;}
+            const fn=pm[1],a1r=pm[2],a2r=pm[3]||null;
+            const a1=(a1r||'0').replace(/"/g,''),a2=(a2r||'0').replace(/"/g,'');
+            const al=secGenAliases[fn];
+            if(al){
+              const iStr=al.idxVar==='e'?a1:a2,kStr=al.type==='rc4'?(al.keyVar==='e'?a1:a2):null;
+              const realIdx=parseFloat(iStr)+al.offset;
+              const dec2=secDec[Object.keys(secDec).find(d=>allDecoders[d]&&allDecoders[d].offset===al.fnOff)||Object.keys(secDec)[0]];
+              const v=dec2?dec2(realIdx,kStr||undefined):null;
+              if(v)out+=v; continue;
+            }
+            if(secDec[fn]){const idx=parseFloat(a1),key=a2r&&a2r.startsWith('"')?a2:null;const v=secDec[fn](idx,key);if(v)out+=v;continue;}
+          }
+          return out;
+        }
+        const ternRe2=/\?([^:;\n]{5,600}?)(?=\n[a-z]|\nreturn|\nfunction|\nvar|\nconst)/g;
+        let tm;
+        while((tm=ternRe2.exec(genBody))!==null){
+          const parts=splitTernary(tm[1].trim());
+          for(const branch of parts){
+            const decoded=decodeSecExpr(branch);
+            if(!decoded||decoded.length<15)continue;
+            if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+              const cleanM2=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+              dgPath=cleanM2?((cleanM2[0].startsWith('/')?'':'/')+cleanM2[0]):(decoded.startsWith('/')?decoded:'/'+decoded);
+              console.log("  ✅ DG path via Strategy F (secondary array): "+dgPath);
+            }
+            if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+          }
+          if(dgPath)break;
+        }
+        if(!dgPath){
+          const constRe3=/const [a-z]=\{/g;let cm3;
+          while((cm3=constRe3.exec(genBody))!==null){
+            const op3=cm3.index+cm3[0].length-1;
+            let d3=1,j3=op3+1,inS3=false,sc3='',ob3='';
+            while(j3<genBody.length&&d3>0){const c3=genBody[j3];if(inS3){if(c3==='\\')j3++;else if(c3===sc3)inS3=false;}else if(c3==='"'||c3==="'"){inS3=true;sc3=c3;}else if(c3==='{')d3++;else if(c3==='}')d3--;if(d3>0)ob3+=c3;j3++;}
+            const propRe3=/([A-Za-z]{3,})\s*:/g;let pm3;
+            while((pm3=propRe3.exec(ob3))!==null){
+              const pn3=pm3[1];
+              if(/^(function|return|const|let|var)$/.test(pn3))continue;
+              const pe3=extractPropVal(genBody,pn3+':');if(!pe3||pe3.length<10)continue;
+              const dec3=decodeSecExpr(pe3);if(!dec3||dec3.length<10)continue;
+              if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(dec3)&&/dg-epay/i.test(dec3)){
+                const cleanM3=dec3.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+                dgPath=cleanM3?((cleanM3[0].startsWith('/')?'':'/')+cleanM3[0]):(dec3.startsWith('/')?dec3:'/'+dec3);
+                console.log("  ✅ DG path via Strategy F prop (secondary array): "+dgPath);
+              }
+              if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(dec3))sslPath=dec3.startsWith('/')?dec3:'/'+dec3;
+            }
+            if(dgPath)break;
+          }
+        }
+        if(dgPath)break;
+      }
+      if(dgPath)break;
+    }
+  }
+
+  // ── Strategy G (NEW v11): Direct alias-based property decode ─────────────
+  // Fires when A-F all fail. This is the most direct approach:
+  // 1. Parse ALL local alias functions from the generator body (a,s,u,l,d,f etc.)
+  // 2. Build a lookup: alias_fn -> {decoder type, index computation, key}
+  // 3. Scan ALL named property expressions in genBody (including from inline
+  //    multi-var const objects) and decode each one using the aliases.
+  // This specifically handles bundles where constRe misses the object due to
+  // it being declared as part of a comma-chained const like:
+  //   const e="...",t="...",n={wIiPt: EXPR, ...}
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy G: direct alias-based property decode...");
+
+    // Find all named properties in genBody (including inside inline objects)
+    // and try to decode each one
+    const allPropExprs = [];
+
+    // Collect from constRe-found objects
+    const constReG = /const ([a-z])=\{/g;
+    let cmG;
+    while((cmG=constReG.exec(genBody))!==null){
+      const objOpenPos=cmG.index+cmG[0].length-1;
+      let depth=1,j=objOpenPos+1,inS=false,sc='',objStr='';
+      while(j<genBody.length&&depth>0){const c=genBody[j];if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')depth++;else if(c==='}')depth--;if(depth>0)objStr+=c;j++;}
+      const propReG=/([A-Za-z]{3,})\s*:/g; let pmG;
+      while((pmG=propReG.exec(objStr))!==null) allPropExprs.push(pmG[1]);
+    }
+
+    // Collect from inline multi-var objects (FIX v11 #2)
+    const inlineObjsG = extractInlineConstObjects(genBody);
+    for (const {varName, objStr} of inlineObjsG) {
+      const propReG=/([A-Za-z]{3,})\s*:/g; let pmG;
+      while((pmG=propReG.exec(objStr))!==null) allPropExprs.push(pmG[1]);
+    }
+
+    // Also scan for any identifier followed by ':' followed by decoder calls
+    // This catches properties we haven't found via object extraction
+    const genPropScanRe=/([A-Za-z]{3,})\s*:\s*([A-Za-z_$][A-Za-z0-9_$]{0,3})\(/g;
+    let gpScan;
+    while((gpScan=genPropScanRe.exec(genBody))!==null){
+      const pn=gpScan[1];
+      if(!/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn)) allPropExprs.push(pn);
+    }
+
+    // Deduplicate
+    const uniqueProps=[...new Set(allPropExprs)];
+
+    for(const pn of uniqueProps){
+      if(/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn)) continue;
+      const propExpr=extractPropVal(genBody,pn+':');
+      if(!propExpr||propExpr.length<10) continue;
+      if(propExpr.startsWith('function')) continue;
+
+      // Try primary decodeExpr (handles [a-z] vars via genVarMap)
+      let decoded=decodeExpr(propExpr);
+      // Also try mixed decode
+      if(!decoded||decoded.length<10){
+        const mx=decodeExprMixed(propExpr);
+        if(mx.text&&mx.text.length>=10) decoded=mx.text;
+      }
+      if(!decoded||decoded.length<10) continue;
+
+      const uuidMatch=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      if(uuidMatch&&/dg-epay/i.test(decoded)){
+        const cleanMatch=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        if(cleanMatch){
+          dgPath=(cleanMatch[0].startsWith('/')?'':'/')+cleanMatch[0];
+        } else {
+          dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        }
+        console.log("  ✅ DG path via Strategy G (direct alias decode, prop="+pn+"): "+dgPath);
+        break;
+      }
+      if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded)){
+        sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+      }
+    }
+  }
+
+  // ── Sanitise: clip anything past /dg-epay/initiate ───────────────────────
+  if (dgPath) {
+    const clip=dgPath.match(/^(.*?\/dg-epay\/initiate)/i);
+    if(clip)dgPath=clip[1];
+  }
+
+  return { dgPath, sslPath };
+}
+
+    var _rjr = extractPaymentPath();
+    var _rjdg = _rjr && _rjr.dgPath;
+    var _rjuuid = null;
+    if (_rjdg) { var _rjm = ('' + _rjdg).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i); if (_rjm) _rjuuid = _rjm[0].toLowerCase(); }
+    return { uuid: _rjuuid, dgPath: _rjdg || null };
+  } catch(e){ return { uuid:null, dgPath:null, err:e && e.message }; }
+}
+
+// scan the live bundle chunk(s) and build epMap for anything that changed
+// ===== extract_fetch v13 browser port (universal dg-epay UUID + slot-id scanner) =====
+// ==================== extract_fetch v13 — browser port (dg-epay UUID + slot-id) ====================
+// Faithful port of extract_fetch.js v13 (Strategy A–K). Node `vm` replaced by new Function shims.
+// Returns { dgUuid, dgPath, sslPath, slotUuid } scanned dynamically from the live bundle text.
+function rjExtractFetchV13(src) {
+  var console = { log: function(){}, error: function(){}, warn: function(){} };  // silence internal logs
+  function _vmRun(sandbox, code) {
+    var keys = Object.keys(sandbox), vals = keys.map(function(k){ return sandbox[k]; });
+    (new Function(keys.join(','), code)).apply(null, vals);
+  }
+  function _vmEvalWith(sandbox, defs, expr) {
+    var keys = Object.keys(sandbox).filter(function(k){ return k !== '__aliasCode'; });
+    var vals = keys.map(function(k){ return sandbox[k]; });
+    return (new Function(keys.join(','), defs + '\n; return (' + expr + ');')).apply(null, vals);
+  }
+function _b64(s) {
+  try {
+    let t='',n='';
+    for(let r,o,i=0,a=0;o=s.charAt(a++);~o&&(r=i%4?64*r+o:o,i++%4)?t+=String.fromCharCode(255&r>>(-2*i&6)):0)
+      o='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/='.indexOf(o);
+    for(let r=0,o=t.length;r<o;r++)n+='%'+('00'+t.charCodeAt(r).toString(16)).slice(-2);
+    return decodeURIComponent(n);
+  } catch(_) { return null; }
+}
+function _rc4(enc, key) {
+  const raw = _b64(enc); if (!raw) return null;
+  let o=[],ii=0,a='';
+  for(let r=0;r<256;r++)o[r]=r;
+  for(let r=0;r<256;r++){ii=(ii+o[r]+key.charCodeAt(r%key.length))%256;let n=o[r];o[r]=o[ii];o[ii]=n;}
+  let r=0;ii=0;
+  for(let c=0;c<raw.length;c++){r=(r+1)%256;ii=(ii+o[r])%256;let n=o[r];o[r]=o[ii];o[ii]=n;a+=String.fromCharCode(raw.charCodeAt(c)^o[(o[r]+o[ii])%256]);}
+  return a;
+}
+function parseOffset(str) {
+  const s = str.replace(/\s/g, '');
+  if (!s) return 0;
+  if (s.includes('--')) return +parseInt(s.match(/(\d+)/)[1]);
+  try { return new Function('return (' + s + ')')(); } catch(_) { return 0; }
+}
+
+// ── Array extractor ──────────────────────────────────────────────────────────
+function extractRawArray(fn) {
+  const marker = "function " + fn + "(){";
+  let start = src.indexOf(marker + "const e=[");
+  if (start < 0) start = src.indexOf(marker + "var e=[");
+  if (start < 0) return null;
+  const arrStart = src.indexOf("[", start + marker.length);
+  let depth=0, i=arrStart, inStr=false, sc='';
+  while (i < src.length) {
+    const c = src[i];
+    if (inStr) { if (c==='\\') i++; else if (c===sc) inStr=false; }
+    else if (c==='"'||c==="'") { inStr=true; sc=c; }
+    else if (c==='[') depth++;
+    else if (c===']') { depth--; if (depth===0) break; }
+    i++;
+  }
+  try { return eval(src.slice(arrStart, i+1)); } catch(_) { return null; }
+}
+
+// ── IIFE rotation (vm-based, for main array) ─────────────────────────────────
+function runRotationIife(arrFnName, rawArr) {
+  const sentinel = '}(' + arrFnName + ')';
+  const sentinelPos = src.indexOf(sentinel);
+  if (sentinelPos < 0) return rawArr;
+  const iifeStart = src.lastIndexOf('!function(', sentinelPos);
+  if (iifeStart < 0) return rawArr;
+  const iifeCode = src.slice(iifeStart, sentinelPos + sentinel.length);
+  const rotated = rawArr.slice();
+  const sandbox = { __arr: rotated, [arrFnName]: function(){ return rotated; }, _b64, _rc4 };
+  let decodeFnCode = '';
+  const dfRe = /function ([A-Za-z]{1,3}Q)\(e,t\)\{e-=(\d+)[^}]{0,200}const n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  let dfm;
+  while ((dfm = dfRe.exec(src)) !== null) {
+    if (dfm[3] !== arrFnName) continue;
+    decodeFnCode += `function ${dfm[1]}(e,t){e-=${parseInt(dfm[2])};const r=__arr[e];if(r===undefined)return null;if(!t)return _b64(r);return _rc4(r,t);}\n`;
+  }
+  try {
+    _vmRun(sandbox, decodeFnCode + '\n' + iifeCode);
+    return sandbox.__arr;
+  } catch(_) { return rawArr; }
+}
+
+// ── Detect main decoder pair ──────────────────────────────────────────────────
+let m;
+const ARR_FN_PAT = '[A-Za-z_$][A-Za-z0-9_$]{1,3}';
+const OQ_ARR_MATCH = src.match(new RegExp('function OQ\\(e,t\\)\\{e-=(\\d+)[\\s\\S]{0,50}(?:const|var) n=(' + ARR_FN_PAT + ')\\(\\)'));
+const OQ_OFFSET    = OQ_ARR_MATCH ? parseInt(OQ_ARR_MATCH[1]) : null;
+const OQ_ARR_FN    = OQ_ARR_MATCH ? OQ_ARR_MATCH[2]           : null;
+const HAS_XHQLC    = src.indexOf('"dg-epay/in"') >= 0 || src.indexOf('XHQLC:') >= 0;
+const USE_NEW_DECODER = !!(OQ_ARR_MATCH && HAS_XHQLC);
+const PQ_ARR_MATCH = src.match(new RegExp('function PQ\\(e(?:,t)?\\)\\{e-=(\\d+)[^}]{0,60}(?:const|var) n=(' + ARR_FN_PAT + ')\\(\\)'));
+const PQ_OFFSET    = PQ_ARR_MATCH ? parseInt(PQ_ARR_MATCH[1]) : 384;
+const PQ_ARR_FN    = PQ_ARR_MATCH ? PQ_ARR_MATCH[2]           : 'AQ';
+let ACTIVE_ARR = null, ACTIVE_OFFSET = 0, ACTIVE_ARR_FN = '', BEST_ROT = 0;
+if (USE_NEW_DECODER) {
+  const rawSQ = extractRawArray(OQ_ARR_FN);
+  if (rawSQ) {
+    ACTIVE_ARR = runRotationIife(OQ_ARR_FN, rawSQ);
+    ACTIVE_OFFSET = OQ_OFFSET; ACTIVE_ARR_FN = OQ_ARR_FN;
+    if (rawSQ[0] !== ACTIVE_ARR[0]) for (let rot=0;rot<rawSQ.length;rot++) if(rawSQ[rot]===ACTIVE_ARR[0]){BEST_ROT=rot;break;}
+  }
+} else {
+  const rawAQ = extractRawArray(PQ_ARR_FN);
+  if (rawAQ) {
+    let bestScore=-1;
+    for (let rot=0;rot<rawAQ.length;rot++) {
+      const arr=[...rawAQ]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+      let score=0;
+      const v424=_b64(arr[424-PQ_OFFSET]||''),v478=_b64(arr[478-PQ_OFFSET]||''),v474=_b64(arr[474-PQ_OFFSET]||'');
+      if(!v424||!v478||!v474) continue;
+      if(/^[a-f0-9]{1,4}-[a-f0-9]/.test(v424))score+=3;if(/^[a-f0-9]{1,4}-[a-f0-9]/.test(v478))score+=3;
+      if(/^[a-f0-9]{3,8}\//.test(v474))score+=2;if(/dg-ep|payment|initia/.test(v424+v478+v474))score+=5;
+      if(score>bestScore){bestScore=score;BEST_ROT=rot;}
+    }
+    const arr=[...rawAQ]; for(let r=0;r<BEST_ROT;r++) arr.push(arr.shift());
+    ACTIVE_ARR=arr; ACTIVE_OFFSET=PQ_OFFSET; ACTIVE_ARR_FN=PQ_ARR_FN;
+  }
+}
+function arrDec(idx,key){if(!ACTIVE_ARR)return null;const real=idx-ACTIVE_OFFSET;if(real<0||real>=ACTIVE_ARR.length)return null;return key?_rc4(ACTIVE_ARR[real],key):_b64(ACTIVE_ARR[real]);}
+function zQdec(e){return arrDec(e,null);}
+function PQdec(e,key){return arrDec(e,key);}
+
+// ── Detect API base URL ───────────────────────────────────────────────────────
+function detectApiBaseUrl() {
+  const patterns=[/["'](https?:\/\/[^"']+?\/iams\/api\/v\d+)["']/i,/["'](https?:\/\/[^"']+?\/api\/v\d+)["']/i,/BASE_URL\s*=\s*["'](https?:\/\/[^"']+)["']/i,/baseURL\s*:\s*["'](https?:\/\/[^"']+)["']/i];
+  for(const p of patterns){const match=src.match(p);if(match&&match[1]){let url=match[1];if(!url.includes('/api/v')&&!url.includes('/iams/api')){if(url.endsWith('/'))url=url.slice(0,-1);const ctx=src.slice(Math.max(0,match.index-200),match.index+match[0].length+200);const apiM=ctx.match(/(\/iams\/api\/v\d+|\/api\/v\d+)/i);url=url+(apiM?apiM[1]:'/api/v1');}return url;}}
+  return "https://api.ivacbd.com/iams/api/v1";
+}
+let API_BASE_URL = detectApiBaseUrl();
+console.log("🌐 API Base URL  : " + API_BASE_URL);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── extractPaymentPath v11 — A/B/B2/C/D/E/F/G strategies ─────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+function extractPaymentPath() {
+
+  // ── Strategy selector ─────────────────────────────────────────────────────
+  function findPaymentGenerator() {
+    const dgLit = src.indexOf('"dg-epay/in"');
+    if (dgLit >= 0) {
+      const gs = src.lastIndexOf('function*(){', dgLit);
+      if (gs >= 0) return { genStart: gs, strategy: 'A_literal' };
+    }
+    const apptReB = /\{appointmentId:[a-z]\s*(?:,\s*\{[^}]{0,80}\})?\s*,\s*\{headers:\{"x-token":[a-z]\}/;
+    const apptMB = apptReB.exec(src);
+    if (apptMB) {
+      const gs = src.lastIndexOf('function*(){', apptMB.index);
+      if (gs >= 0) return { genStart: gs, strategy: 'B_apptId', anchorPos: apptMB.index };
+    }
+    const apptReB2 = /,\s*\{appointmentId:[a-z]\s*\}\s*,\s*\{headers:\{"x-token":[a-z]\}/;
+    const apptMB2 = apptReB2.exec(src);
+    if (apptMB2) {
+      const gs = src.lastIndexOf('function*(){', apptMB2.index);
+      if (gs >= 0) return { genStart: gs, strategy: 'B2_standalone_apptId', anchorPos: apptMB2.index };
+    }
+    let searchFrom = 0;
+    while (true) {
+      const pos = src.indexOf('{appointmentId:', searchFrom);
+      if (pos < 0) break;
+      if (src.slice(pos, pos + 350).includes('"x-token"')) {
+        const gs = src.lastIndexOf('function*(){', pos);
+        if (gs >= 0) return { genStart: gs, strategy: 'C_apptId_xtoken', anchorPos: pos };
+      }
+      searchFrom = pos + 1;
+    }
+    return null;
+  }
+
+  const genInfo = findPaymentGenerator();
+  if (!genInfo) return { dgPath: null, sslPath: null };
+  console.log("  Generator strategy: " + genInfo.strategy + " at pos " + genInfo.genStart);
+
+  // ── Extract generator body ────────────────────────────────────────────────
+  const genOpenBrace = src.indexOf('{', genInfo.genStart + 10);
+  let genBody = '';
+  {
+    let depth2=1, i2=genOpenBrace+1, inStr2=false, sc2='';
+    while (i2<src.length && depth2>0) {
+      const ch=src[i2];
+      if(inStr2){if(ch==='\\')i2++;else if(ch===sc2)inStr2=false;}
+      else if(ch==='"'||ch==="'"){inStr2=true;sc2=ch;}
+      else if(ch==='{')depth2++;
+      else if(ch==='}')depth2--;
+      if(depth2>0)genBody+=ch;
+      i2++;
+    }
+  }
+
+  // ── Discover all decoders in src ─────────────────────────────────────────
+  const decoderDefRe = /function ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,30}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  const allDecoders = {};
+  let ddm;
+  while ((ddm = decoderDefRe.exec(src)) !== null) {
+    const [, name, offsetStr, arrFn] = ddm;
+    if (allDecoders[name]) continue;
+    const body = src.slice(ddm.index, ddm.index + 600);
+    const isRC4 = body.includes('%t.length');
+    allDecoders[name] = { offset: parseInt(offsetStr), arrFn, type: isRC4 ? 'rc4' : 'b64' };
+  }
+
+  const genDecoders = {};
+  for (const [name, info] of Object.entries(allDecoders)) {
+    if (new RegExp('\\b' + name + '\\b').test(genBody)) genDecoders[name] = info;
+  }
+  const arrFnCounts = {};
+  for (const [name, info] of Object.entries(genDecoders)) {
+    const refs = (genBody.match(new RegExp('\\b' + name + '\\b', 'g')) || []).length;
+    arrFnCounts[info.arrFn] = (arrFnCounts[info.arrFn] || 0) + refs;
+  }
+  const primaryArrFn = Object.keys(arrFnCounts).sort((a,b)=>arrFnCounts[b]-arrFnCounts[a])[0];
+  if (!primaryArrFn) return { dgPath: null, sslPath: null };
+
+  let rc4FnName=null, b64FnName=null, rc4Offset=0, b64Offset=0;
+  for (const [name, info] of Object.entries(genDecoders)) {
+    if (info.arrFn !== primaryArrFn) continue;
+    if (info.type === 'rc4' && !rc4FnName) { rc4FnName=name; rc4Offset=info.offset; }
+    if (info.type === 'b64' && !b64FnName) { b64FnName=name; b64Offset=info.offset; }
+  }
+  if (!b64FnName && rc4FnName) { b64FnName=rc4FnName; b64Offset=rc4Offset; }
+  if (!rc4FnName && b64FnName) { rc4FnName=b64FnName; rc4Offset=b64Offset; }
+  console.log("  Array: "+primaryArrFn+" RC4: "+rc4FnName+"("+rc4Offset+") b64: "+b64FnName+"("+b64Offset+")");
+
+  // ── Load and rotate the local array ─────────────────────────────────────
+  const rawArr = extractRawArray(primaryArrFn);
+  if (!rawArr) return { dgPath: null, sslPath: null };
+  console.log("  Array size: " + rawArr.length);
+
+  const sentinel = '}(' + primaryArrFn + ')';
+  const sentPos = src.indexOf(sentinel);
+  if (sentPos < 0) return { dgPath: null, sslPath: null };
+  const iifeStart = src.lastIndexOf('!function(', sentPos);
+  if (iifeStart < 0) return { dgPath: null, sslPath: null };
+  const iifeCode = src.slice(iifeStart, sentPos + sentinel.length);
+  const magicMatch = iifeCode.match(/if\((\d+)==/);
+  if (!magicMatch) return { dgPath: null, sslPath: null };
+  const MAGIC = parseInt(magicMatch[1]);
+
+  function parseAliases(code) {
+    const aliases = {};
+    const re = /function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+    let am;
+    while ((am = re.exec(code)) !== null) {
+      const alName=am[1], callee=am[2], argExpr=am[3].trim();
+      const decInfo = allDecoders[callee]; if (!decInfo) continue;
+      const isRC4call = decInfo.type === 'rc4';
+      const fnOff = isRC4call ? rc4Offset : b64Offset;
+      const rc4m = argExpr.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+      const b64m = argExpr.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)$/);
+      if (rc4m) aliases[alName] = { type:isRC4call?'rc4':'b64', idxVar:rc4m[1], offset:parseOffset(rc4m[2]), keyVar:rc4m[3], fnOff };
+      else if (b64m) aliases[alName] = { type:'b64', idxVar:b64m[1], offset:parseOffset(b64m[2]), fnOff };
+    }
+    return aliases;
+  }
+
+  const iifeAliases = parseAliases(iifeCode);
+
+  function substituteAliases(expr, aliases, arr) {
+    return expr.replace(
+      /([a-z])\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,
+      (match, name, arg1, arg2) => {
+        const al = aliases[name]; if (!al) return match;
+        const a1=(arg1||'0').replace(/"/g,''), a2=(arg2||'0').replace(/"/g,'');
+        const iStr=al.idxVar==='e'?a1:a2, kStr=al.type==='rc4'?(al.keyVar==='e'?a1:a2):null;
+        const real=parseFloat(iStr)+al.offset-al.fnOff;
+        if(real<0||real>=arr.length) return '"__FAIL__"';
+        const v=al.type==='rc4'?_rc4(arr[real],kStr):_b64(arr[real]);
+        return v!=null?JSON.stringify(v):'"__FAIL__"';
+      }
+    );
+  }
+
+  const intExprMatch = iifeCode.match(/if\(\d+==([\s\S]+?)\)break/);
+  if (!intExprMatch) return { dgPath: null, sslPath: null };
+  const intExpr = intExprMatch[1];
+
+  // ── Rotation strategy 1: alias substitution ──────────────────────────────
+  let rotatedArr = null;
+  for (let rot=0; rot<rawArr.length; rot++) {
+    const arr=[...rawArr]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+    const sub = substituteAliases(intExpr, iifeAliases, arr);
+    if (sub.includes('__FAIL__')) continue;
+    let val=NaN; try{val=eval(sub);}catch(_){}
+    if (Math.abs(val-MAGIC)<0.001) { rotatedArr=arr; console.log("  ✅ rotation (alias): "+rot); break; }
+  }
+
+  // ── Rotation strategy 1b: brute-force with all-decoder sandbox ───────────
+  if (!rotatedArr) {
+    console.log("  ⚙️  alias rotation miss — trying brute-force decoder rotation for "+primaryArrFn);
+    const bfDecoders={};
+    for(const[dName,dInfo] of Object.entries(allDecoders)){
+      if(dInfo.arrFn!==primaryArrFn)continue;
+      bfDecoders[dName]={off:dInfo.offset,isRC4:dInfo.type==='rc4'};
+    }
+    const bfVFnRe=/function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+    let bfVm;
+    while((bfVm=bfVFnRe.exec(src))!==null){
+      const[,vN,offS,aFn]=bfVm;if(aFn!==primaryArrFn||bfDecoders[vN])continue;
+      bfDecoders[vN]={off:parseInt(offS),isRC4:src.slice(bfVm.index,bfVm.index+800).includes('%t.length')};
+    }
+    if(Object.keys(bfDecoders).length>0){
+      const bfIntM=iifeCode.match(/if\(\d+==([\s\S]+?)\)break/);
+      if(bfIntM){
+        const bfIntExpr=bfIntM[1];
+        outer: for(let rot=0;rot<rawArr.length;rot++){
+          const arr=[...rawArr]; for(let r=0;r<rot;r++) arr.push(arr.shift());
+          const sub2=bfIntExpr.replace(/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,(_,fn,a1r,a2r)=>{
+            const di2=bfDecoders[fn]; if(!di2) return '"__X__"';
+            const a1=(a1r||'0').replace(/"/g,''),a2=(a2r||'0').replace(/"/g,'');
+            const real=parseInt(a1)-di2.off;
+            if(real<0||real>=arr.length)return'"__FAIL__"';
+            const key=a2r&&a2r.startsWith('"')?a2:null;
+            const v=di2.isRC4&&key?_rc4(arr[real],key):_b64(arr[real]);
+            return v!=null?JSON.stringify(v):'"__FAIL__"';
+          });
+          if(sub2.includes('__FAIL__'))continue;
+          let bfVal=NaN;try{bfVal=eval(sub2.replace(/"__X__"/g,'0'));}catch(_){}
+          if(Math.abs(bfVal-MAGIC)<0.001){rotatedArr=arr;console.log("  ✅ rotation (brute-force): "+rot);break outer;}
+        }
+      }
+    }
+  }
+
+  // ── Rotation strategy 2: vm-sandbox live execution ────────────────────────
+  if (!rotatedArr) {
+    console.log("  ⚙️  alias rotation failed — trying vm-sandbox for " + primaryArrFn);
+    const liveArr = rawArr.slice();
+    const sandboxDecls = { [primaryArrFn]: function() { return liveArr; } };
+    for (const [dName, dInfo] of Object.entries(allDecoders)) {
+      if (dInfo.arrFn !== primaryArrFn) continue;
+      const off = dInfo.offset, isRC4 = dInfo.type === 'rc4';
+      sandboxDecls[dName] = function(e, t) {
+        const r=e-off; if(r<0||r>=liveArr.length)return '';
+        return isRC4&&t?(_rc4(liveArr[r],t)||''):(_b64(liveArr[r])||'');
+      };
+    }
+    const vFnRe = /function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+    let vfm;
+    while ((vfm = vFnRe.exec(src)) !== null) {
+      const [, vName, offStr, aFn] = vfm;
+      if (aFn !== primaryArrFn || sandboxDecls[vName]) continue;
+      const vOff=parseInt(offStr), vIsRC4=src.slice(vfm.index,vfm.index+800).includes('%t.length');
+      sandboxDecls[vName] = function(e, t) {
+        const r=e-vOff; if(r<0||r>=liveArr.length)return '';
+        return vIsRC4&&t?(_rc4(liveArr[r],t)||''):(_b64(liveArr[r])||'');
+      };
+    }
+    try {
+      _vmRun(sandboxDecls, iifeCode);
+      rotatedArr=liveArr;
+      let rotCount=0;
+      for(let i=0;i<rawArr.length;i++)if(rawArr[i]===rotatedArr[0]){rotCount=i;break;}
+      console.log("  ✅ rotation (vm-sandbox): ~"+rotCount+" shifts");
+    } catch(e2) {
+      console.log("  ⚠️  vm-sandbox failed ("+e2.message.slice(0,40)+") — using unrotated array for Strategy D/E UUID rescue");
+      rotatedArr=rawArr.slice();
+    }
+  }
+
+  // ── Build accessor functions for rotated array ────────────────────────────
+  const dec = {
+    rc4: (idx,key) => { const r=idx-rc4Offset; return r>=0&&r<rotatedArr.length?(key?_rc4(rotatedArr[r],key):_b64(rotatedArr[r])):null; },
+    b64: (idx)     => { const r=idx-b64Offset; return r>=0&&r<rotatedArr.length?_b64(rotatedArr[r]):null; }
+  };
+
+  const vDecMap = {};
+  const vFnRe2 = /function ([A-Za-z]{1,3}V)\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  let vfm2;
+  while ((vfm2 = vFnRe2.exec(src)) !== null) {
+    const [, vName, offStr, aFn] = vfm2;
+    if (aFn !== primaryArrFn || vDecMap[vName]) continue;
+    vDecMap[vName] = { off: parseInt(offStr), isRC4: src.slice(vfm2.index,vfm2.index+800).includes('%t.length') };
+  }
+  function vDec(name, idx, key) {
+    const info=vDecMap[name]; if(!info) return null;
+    const r=idx-info.off; if(r<0||r>=rotatedArr.length) return null;
+    return info.isRC4&&key?_rc4(rotatedArr[r],key):_b64(rotatedArr[r]);
+  }
+
+  // ── Extended alias parser for generator body ──────────────────────────────
+  function parseGenAliasesExtended(code) {
+    const aliases = parseAliases(code);
+    const vAlRe = /function ([a-z])\(e,t\)\{return ([A-Za-z]{1,3}V)\(([^)]+)\)\}/g;
+    let va;
+    while ((va = vAlRe.exec(code)) !== null) {
+      const alName=va[1], vFnName=va[2], argExpr=va[3].trim();
+      const vInfo=vDecMap[vFnName]; if(!vInfo) continue;
+      if (aliases[alName]) continue;
+      const rc4m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+      const b64m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)$/);
+      if (rc4m) aliases[alName]={type:vInfo.isRC4?'rc4':'b64',idxVar:rc4m[1],offset:parseOffset(rc4m[2]),keyVar:rc4m[3],fnOff:vInfo.off,vFn:vFnName};
+      else if (b64m) aliases[alName]={type:'b64',idxVar:b64m[1],offset:parseOffset(b64m[2]),fnOff:vInfo.off,vFn:vFnName};
+    }
+    return aliases;
+  }
+  const genAliasesExt = parseGenAliasesExtended(genBody);
+
+  // ── Extract const variable map from genBody ──────────────────────────────
+  const genVarMap={};
+  const genVarRe=/(?:^|\n|\{|,)\s*(?:const|var|let)\s+([a-z])\s*=\s*"([^"]{1,20})"/g;
+  let gvm;
+  while((gvm=genVarRe.exec(genBody))!==null) genVarMap[gvm[1]]=gvm[2];
+  const genVarRe2=/\b([a-z])="([^"]{1,20})"/g;
+  while((gvm=genVarRe2.exec(genBody))!==null) if(!genVarMap[gvm[1]]) genVarMap[gvm[1]]=gvm[2];
+  if(Object.keys(genVarMap).length) console.log("  📋 genBody var map: "+JSON.stringify(genVarMap));
+
+  function resolveArg(raw, varMap) {
+    if(!raw) return null;
+    const s=raw.trim();
+    if(s.startsWith('"')) return s.replace(/"/g,'');
+    if(/^-?\d/.test(s)) return s;
+    if(/^[a-z]$/.test(s)) return varMap[s]||null;
+    return s;
+  }
+
+  // ── Decode a JS expression using all known decoders ───────────────────────
+  // FIX v11 #1: pieceRe already includes [a-z] in arg positions (was already in
+  // decodeExpr but NOT in Strategy D/E tokenRe — fixed separately below).
+  function decodeExpr(expr) {
+    let out='';
+    const pieceRe=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,80})"/g;
+    let pm;
+    while ((pm=pieceRe.exec(expr))!==null) {
+      if (pm[4]!=null) { out+=pm[4]; continue; }
+      const fnName=pm[1];
+      const arg1Raw=resolveArg(pm[2], genVarMap);
+      const arg2Raw=pm[3]?resolveArg(pm[3], genVarMap):null;
+      if(arg1Raw===null && pm[2]&&/^[a-z]$/.test(pm[2].trim())) continue;
+      const arg1=(arg1Raw||'0'), arg2=(arg2Raw||'0');
+      const al=genAliasesExt[fnName];
+      if (al) {
+        const iStr=al.idxVar==='e'?arg1:arg2;
+        const kStr=al.type==='rc4'?(al.keyVar==='e'?arg1:arg2):null;
+        const realIdx=parseFloat(iStr)+al.offset;
+        const v=al.vFn?vDec(al.vFn,realIdx,kStr):(al.type==='rc4'?dec.rc4(realIdx,kStr):dec.b64(realIdx));
+        if(v)out+=v; continue;
+      }
+      if (vDecMap[fnName]) {
+        const idx=parseFloat(arg1);
+        const key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=vDec(fnName,idx,key); if(v)out+=v; continue;
+      }
+      if (allDecoders[fnName]) {
+        const di=allDecoders[fnName]; if(di.arrFn!==primaryArrFn)continue;
+        const idx=parseFloat(arg1);
+        const key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=di.type==='rc4'?dec.rc4(idx,key):dec.b64(idx); if(v)out+=v;
+      }
+    }
+    return out;
+  }
+
+  function decodeExprMixed(expr) {
+    let out='', hasUnresolved=false;
+    const pieceRe2=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,80})"/g;
+    let pm2;
+    while((pm2=pieceRe2.exec(expr))!==null){
+      if(pm2[4]!=null){out+=pm2[4];continue;}
+      const fnName=pm2[1];
+      const arg1Raw=resolveArg(pm2[2], genVarMap);
+      const arg2Raw=pm2[3]?resolveArg(pm2[3], genVarMap):null;
+      if(arg1Raw===null){hasUnresolved=true;continue;}
+      const arg1=(arg1Raw||'0'), arg2=(arg2Raw||'0');
+      const al=genAliasesExt[fnName];
+      if(al){
+        const iStr=al.idxVar==='e'?arg1:arg2,kStr=al.type==='rc4'?(al.keyVar==='e'?arg1:arg2):null;
+        const realIdx=parseFloat(iStr)+al.offset;
+        const v=al.vFn?vDec(al.vFn,realIdx,kStr):(al.type==='rc4'?dec.rc4(realIdx,kStr):dec.b64(realIdx));
+        if(v){out+=v;}else{hasUnresolved=true;} continue;
+      }
+      if(vDecMap[fnName]){
+        const idx=parseFloat(arg1),key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=vDec(fnName,idx,key);if(v){out+=v;}else{hasUnresolved=true;} continue;
+      }
+      if(allDecoders[fnName]){
+        const di=allDecoders[fnName];if(di.arrFn!==primaryArrFn){hasUnresolved=true;continue;}
+        const idx=parseFloat(arg1),key=arg2Raw&&!/^-?\d+$/.test(arg2Raw)?arg2Raw:null;
+        const v=di.type==='rc4'?dec.rc4(idx,key):dec.b64(idx);if(v){out+=v;}else{hasUnresolved=true;}
+      } else {hasUnresolved=true;}
+    }
+    return {text:out,partial:hasUnresolved};
+  }
+
+  // ── Depth-aware property value extractor ─────────────────────────────────
+  function extractPropVal(body, marker) {
+    const pos=body.indexOf(marker); if(pos<0)return'';
+    let expr='',d=0,inS=false,sc3='',j=pos+marker.length;
+    while(j<body.length){const c=body[j];if(inS){if(c==='\\')j++;else if(c===sc3)inS=false;}else if(c==='"'||c==="'"){inS=true;sc3=c;}else if(c==='('||c==='[')d++;else if(c===')'||c===']')d--;else if((c===','||c==='}')&&d===0)break;expr+=c;j++;}
+    return expr.trim();
+  }
+
+  // ── Depth-aware ternary branch splitter ───────────────────────────────────
+  function splitTernary(expr) {
+    let depth=0,inS=false,sc='';
+    for(let ci=0;ci<expr.length;ci++){
+      const c=expr[ci];
+      if(inS){if(c==='\\')ci++;else if(c===sc)inS=false;}
+      else if(c==='"'||c==="'"){inS=true;sc=c;}
+      else if(c==='('||c==='['||c==='{')depth++;
+      else if(c===')'||c===']'||c==='}')depth--;
+      else if(c===':'&&depth===0)return[expr.slice(0,ci),expr.slice(ci+1)];
+    }
+    return[expr];
+  }
+
+  let dgPath=null, sslPath=null;
+
+  // ── Strategy A: literal "dg-epay/in" ─────────────────────────────────────
+  if (genInfo.strategy==='A_literal') {
+    function extractPropByLiteral(body, literal) {
+      const litPos=body.indexOf(literal); if(litPos<0)return'';
+      let colonPos=litPos; while(colonPos>0&&body[colonPos]!==':')colonPos--;
+      let expr='',d=0,inS=false,sc3='',j=colonPos+1;
+      while(j<body.length){const c=body[j];if(inS){if(c==='\\')j++;else if(c===sc3)inS=false;}else if(c==='"'||c==="'"){inS=true;sc3=c;}else if(c==='('||c==='[')d++;else if(c===')'||c===']')d--;else if((c===','||c==='}')&&d===0)break;expr+=c;j++;}
+      return expr.trim();
+    }
+    const dgPropExpr=extractPropByLiteral(genBody,'"dg-epay/in"');
+    let decoded=decodeExpr(dgPropExpr);
+    if(decoded&&!decoded.startsWith('/'))decoded='/'+decoded;
+    if(decoded&&/[0-9a-f]{8}-[0-9a-f]{4}/.test(decoded))dgPath=decoded;
+    const dgInGen=genBody.indexOf('"dg-epay/in"');
+    const objS=genBody.lastIndexOf('{',dgInGen),objE=genBody.indexOf('}',dgInGen);
+    if(objS>=0&&objE>objS){
+      const objBody=genBody.slice(objS+1,objE);
+      const propRe=/([A-Za-z]{3,})\s*:/g;let pm2;
+      while((pm2=propRe.exec(objBody))!==null){
+        const pn=pm2[1];if(/^(function|return|const|let|var)$/.test(pn))continue;
+        const pe=extractPropVal(genBody,pn+':');if(!pe||pe.length<5)continue;
+        if(pe.includes('dg-epay')||pe.includes('function('))continue;
+        const d2=decodeExpr(pe);
+        if(d2&&d2.length>4&&/ssl|initia|payment/.test(d2)){sslPath=d2.startsWith('/')?d2:'/'+d2;break;}
+      }
+    }
+  }
+
+  // ── FIX v11 #2: Helper to extract objects from inline multi-var const ─────
+  // Handles: const e="...",t="...",n={PROPS} where constRe only finds const X={
+  function extractInlineConstObjects(body) {
+    // Matches: const LETTER="...", ... , LETTER={ (the object part without its own const)
+    const results = [];
+    // Find all object literals that are assigned without a leading 'const'
+    // Pattern: (letter)={  preceded by ," or ,variable  (not preceded by 'const ')
+    const inlineObjRe = /(?:,\s*([a-z])\s*=\s*\{|^([a-z])\s*=\s*\{)/gm;
+    let om;
+    while ((om = inlineObjRe.exec(body)) !== null) {
+      const varName = om[1] || om[2];
+      const objStart = om.index + om[0].lastIndexOf('{');
+      // Check this is NOT preceded by 'const' / 'let' / 'var'
+      const before = body.slice(Math.max(0, om.index - 10), om.index);
+      if (/\b(?:const|let|var)\s*$/.test(before)) continue;
+      // Extract the object body
+      let depth=1, j=objStart+1, inS=false, sc='', objStr='';
+      while(j<body.length && depth>0){
+        const c=body[j];
+        if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}
+        else if(c==='"'||c==="'"){inS=true;sc=c;}
+        else if(c==='{')depth++;
+        else if(c==='}')depth--;
+        if(depth>0)objStr+=c;
+        j++;
+      }
+      results.push({varName, objStr});
+    }
+    return results;
+  }
+
+  // ── Strategy B/B2/C: property scan + ternary scan + exhaustive scan ───────
+  if (!dgPath) {
+    // FIX v11 #2: Property scan — now also covers inline const objects
+    function scanObjectForPaths(objStr) {
+      const propRe2=/([A-Za-z]{3,})\s*:/g;let pm3;
+      while((pm3=propRe2.exec(objStr))!==null){
+        const pn=pm3[1];
+        if(/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn))continue;
+        const propExprInGen=extractPropVal(genBody,pn+':');
+        if(!propExprInGen||propExprInGen.length<10)continue;
+        if(propExprInGen.startsWith('function'))continue;
+        let decoded=decodeExpr(propExprInGen);
+        if(!decoded||decoded.length<10){
+          const mx=decodeExprMixed(propExprInGen);
+          if(mx.text&&mx.text.length>=10)decoded=mx.text;
+        }
+        if(!decoded||decoded.length<10)continue;
+        const uuidInProp=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if(uuidInProp&&/dg-epay/i.test(decoded)){
+          const cleanM=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          if(cleanM){dgPath=(cleanM[0].startsWith('/')?'':'/')+cleanM[0];}
+          else{dgPath=decoded.startsWith('/')?decoded:'/'+decoded;}
+          console.log("  ✅ DG path via property scan (mixed): "+dgPath);
+        } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+          dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+          console.log("  ✅ DG path via property scan: "+dgPath);
+        }
+        if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        if(dgPath)return true;
+      }
+      return false;
+    }
+
+    // Scan objects from standard 'const n={' pattern
+    const constRe=/const ([a-z])=\{/g;
+    let cm;
+    while((cm=constRe.exec(genBody))!==null){
+      const objOpenPos=cm.index+cm[0].length-1;
+      let depth=1,j=objOpenPos+1,inS=false,sc='',objStr='';
+      while(j<genBody.length&&depth>0){const c=genBody[j];if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')depth++;else if(c==='}')depth--;if(depth>0)objStr+=c;j++;}
+      if(scanObjectForPaths(objStr))break;
+    }
+
+    // FIX v11 #2: Also scan inline const objects (const e="...",n={...} pattern)
+    if (!dgPath) {
+      const inlineObjs = extractInlineConstObjects(genBody);
+      for (const {varName, objStr} of inlineObjs) {
+        if(scanObjectForPaths(objStr)) break;
+      }
+    }
+
+    // Ternary scan
+    if (!dgPath) {
+      const ternaryRe=/(?:const )?([a-z])=([a-z])===([^?]{5,200})\?([\s\S]{5,400}?)(?=\n[a-z]|\nreturn|\nthrow|\nfunction)/g;
+      let tm;
+      while((tm=ternaryRe.exec(genBody))!==null){
+        const rawBranch=tm[4].trim();
+        const parts=splitTernary(rawBranch);
+        for(const branch of parts){
+          let branchDecoded=decodeExpr(branch.trim());
+          if(!branchDecoded||branchDecoded.length<10){
+            const mx2=decodeExprMixed(branch.trim());
+            if(mx2.text&&mx2.text.length>=10)branchDecoded=mx2.text;
+          }
+          if(!branchDecoded||branchDecoded.length<10)continue;
+          const cleanBrM=branchDecoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          if(cleanBrM){
+            dgPath=(cleanBrM[0].startsWith('/')?'':'/')+cleanBrM[0];
+            console.log("  ✅ DG path via ternary branch: "+dgPath);
+          } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(branchDecoded)&&/dg-epay/i.test(branchDecoded)){
+            dgPath=branchDecoded.startsWith('/')?branchDecoded:'/'+branchDecoded;
+            console.log("  ✅ DG path via ternary branch: "+dgPath);
+          }
+          if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(branchDecoded))sslPath=branchDecoded.startsWith('/')?branchDecoded:'/'+branchDecoded;
+        }
+        if(dgPath)break;
+      }
+    }
+
+    // Conditional scan
+    if (!dgPath) {
+      const condRe=/const [a-z]=[\s\S]{0,20}===[\s\S]{0,80}\?([\s\S]{10,400}?):([^\n;]{10,400})/g;
+      let cm2;
+      while((cm2=condRe.exec(genBody))!==null){
+        const parts=splitTernary((cm2[1]+':'+cm2[2]).trim());
+        for(const branch of parts){
+          const decoded=decodeExpr(branch.trim());
+          if(!decoded||decoded.length<15)continue;
+          if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+            dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+            console.log("  ✅ DG path via conditional: "+dgPath);
+          }
+          if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        }
+        if(dgPath)break;
+      }
+    }
+
+    // SSL ternary fallback
+    if (!sslPath) {
+      const ternaryRe2=/\?\s*[a-z]\[[^\]]+\]\s*:\s*([^;{}\n]{10,200})/g;
+      let tm2;
+      while((tm2=ternaryRe2.exec(genBody))!==null){
+        const altDecoded=decodeExpr(tm2[1].trim());
+        if(altDecoded&&/ssl\/initiate|payment\/ssl/.test(altDecoded))sslPath=altDecoded.startsWith('/')?altDecoded:'/'+altDecoded;
+      }
+    }
+  }
+
+  // ── Strategy H (NEW v11): depth-0 ternary TRUE-branch decoder ───────────
+  // Fires when A-G fail. Handles bundles where the dg-epay path is built
+  // INLINE in the TRUE branch of a top-level ternary assignment, e.g.:
+  //   mrx52llu: n=OBJ[fn(r,OBJ[fn2()])]?DGPATH:SSL
+  //   msbe8iqp: d=OBJ[fn(r,OBJ[fn2()])]?DGPATH:SSL
+  //   mse7qsay: const u=OBJ[fn(e,decoded+"ay")]?DGPATH:SSL
+  //   mrvp5ck7: a=r===OBJ[fn()]?DGPATH:SSL
+  //   ms72wysd:  o=a===decoded+"ay"?DGPATH:SSL
+  //
+  // Key insight: these generators always pick the LONGER branch for dg-epay
+  // path (TRUE) and shorter for ssl path (FALSE). We scan all depth-0 "?"
+  // in genBody, extract TRUE/FALSE branches, decode both, and check for UUID.
+  //
+  // This is separate from the existing ternaryRe (Strategy B/C) which only
+  // matches "VAR===COND" form. Strategy H covers the method-call equality
+  // form: "VAR=OBJ[fn()](arg1,arg2)?..." which ternaryRe misses entirely.
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy H: depth-0 ternary branch decode...");
+
+    // Extract all top-level ternary branches from genBody
+    function extractDepth0Ternaries(body) {
+      const results = [];
+      let depth = 0, inStr = false, sc = '';
+      for (let i = 0; i < body.length; i++) {
+        const c = body[i];
+        if (inStr) { if (c === '\\') i++; else if (c === sc) inStr = false; }
+        else if (c === '"' || c === "'") { inStr = true; sc = c; }
+        else if (c === '(' || c === '[' || c === '{') depth++;
+        else if (c === ')' || c === ']' || c === '}') depth--;
+        else if (c === '?' && depth === 0) {
+          // Extract TRUE branch
+          let j = i + 1, d2 = 0, inS2 = false, sc2 = '', trueBranch = '';
+          while (j < body.length) {
+            const ch = body[j];
+            if (inS2) { if(ch==='\\')j++; else if(ch===sc2)inS2=false; }
+            else if(ch==='"'||ch==="'"){inS2=true;sc2=ch;}
+            else if(ch==='('||ch==='['||ch==='{')d2++;
+            else if(ch===')'||ch===']'||ch==='}')d2--;
+            else if(ch===':'&&d2===0)break;
+            trueBranch+=ch; j++;
+          }
+          // Extract FALSE branch
+          let falseBranch = '';
+          j++; d2=0; inS2=false; sc2='';
+          while (j < body.length) {
+            const ch = body[j];
+            if (inS2){if(ch==='\\')j++;else if(ch===sc2)inS2=false;}
+            else if(ch==='"'||ch==="'"){inS2=true;sc2=ch;}
+            else if(ch==='('||ch==='['||ch==='{')d2++;
+            else if(ch===')'||ch===']'||ch==='}')d2--;
+            else if((ch==='\n'||ch===';')&&d2===0)break;
+            falseBranch+=ch; j++;
+          }
+          results.push({
+            trueBranch: trueBranch.trim(),
+            falseBranch: falseBranch.trim()
+          });
+        }
+      }
+      return results;
+    }
+
+    const ternBranches = extractDepth0Ternaries(genBody);
+    for (const {trueBranch, falseBranch} of ternBranches) {
+      // Try decoding the TRUE branch first (always longer = dg-epay path)
+      // then FALSE branch as fallback
+      for (const branch of [trueBranch, falseBranch]) {
+        if (!branch || branch.length < 15) continue;
+        let decoded = decodeExpr(branch);
+        if (!decoded || decoded.length < 15) {
+          const mx = decodeExprMixed(branch);
+          if (mx.text && mx.text.length >= 15) decoded = mx.text;
+        }
+        if (!decoded || decoded.length < 15) continue;
+
+        // Clean extraction: look for /payment/UUID/dg-epay/initiate
+        const cleanM = decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        if (cleanM) {
+          dgPath = (cleanM[0].startsWith('/') ? '' : '/') + cleanM[0];
+          console.log("  ✅ DG path via Strategy H (depth-0 ternary TRUE): " + dgPath);
+          break;
+        }
+        // UUID + dg-epay anywhere in decoded
+        if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded) &&
+            /dg-epay/i.test(decoded)) {
+          const uM = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+          dgPath = '/payment/' + uM[0].toLowerCase() + '/dg-epay/initiate';
+          console.log("  ✅ DG UUID via Strategy H (depth-0 ternary UUID rescue): " + dgPath);
+          break;
+        }
+        if (!sslPath && /ssl\/initiate|payment\/ssl/i.test(decoded)) {
+          sslPath = decoded.startsWith('/') ? decoded : '/' + decoded;
+        }
+      }
+      if (dgPath) break;
+    }
+  }
+
+  // ── Strategy D v11: exhaustive token scan with FIXED tokenRe ─────────────
+  // FIX v11 #1: tokenRe now includes bare single-letter variables [a-z] in both
+  // arg positions. Previously f(e,247) and d(t,-208) were silently skipped
+  // because 'e' and 't' didn't match the old (-?\d+|"[^"]*") arg pattern.
+  // This caused UUID segments "5-d55" and "16e01" to be missing from accum,
+  // breaking the UUID pattern match in Strategy D.
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy D: exhaustive call-sequence scan...");
+    // FIX: added [a-z] to both arg slot patterns
+    const tokenRe=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,60})"/g;
+    const tokens=[]; let cpm;
+    while((cpm=tokenRe.exec(genBody))!==null){
+      if(cpm[4]!=null)tokens.push({type:'lit',val:cpm[4],pos:cpm.index});
+      else tokens.push({type:'call',full:cpm[0],pos:cpm.index});
+    }
+    let accum='', accumStart=0;
+    for(let i=0;i<tokens.length;i++){
+      const tok=tokens[i];
+      let decoded=null;
+      if(tok.type==='lit'){decoded=tok.val;}
+      else{decoded=decodeExpr(tok.full);}
+      if(decoded){accum+=decoded;}else{accum='';accumStart=i+1;}
+      if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(accum)&&/dg-epay/i.test(accum)){
+        const pathM=accum.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        if(pathM){dgPath=(pathM[0].startsWith('/')?'':'/')+pathM[0];}
+        else{dgPath=accum.startsWith('/')?accum:'/'+accum;}
+        console.log("  ✅ DG path via Strategy D (exhaustive): "+dgPath);
+        break;
+      }
+      if(accum.length>400){accum=decoded||'';accumStart=i;}
+    }
+  }
+
+  // ── Strategy E v11: UUID rescue with FIXED tokenRe2 ──────────────────────
+  // FIX v11 #1: tokenRe2 also gets [a-z] in arg positions (same fix as D).
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy E: UUID rescue from full generator body scan...");
+    // FIX: added [a-z] to both arg slot patterns
+    const tokenRe2=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,60})"/g;
+    const bigStr=[];let cp2;
+    while((cp2=tokenRe2.exec(genBody))!==null){
+      const frag=cp2[4]!=null?cp2[4]:decodeExpr(cp2[0]);
+      if(frag)bigStr.push(frag);
+    }
+    const combined=bigStr.join('');
+    const uuidM2=combined.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if(uuidM2){
+      const u2=uuidM2[0].toLowerCase();
+      const ctxAround=combined.slice(Math.max(0,combined.indexOf(u2)-30),combined.indexOf(u2)+u2.length+40);
+      if(/dg-epay|initiat|payment/i.test(ctxAround)||/dg-epay|initiat/i.test(combined)){
+        dgPath='/payment/'+u2+'/dg-epay/initiate';
+        console.log("  ✅ DG UUID via Strategy E (rescue): "+dgPath);
+      }
+    }
+  }
+
+  // ── Strategy F: multi-array ternary decode ────────────────────────────────
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy F: secondary-array ternary decode...");
+    const secDecoders={};
+    for(const[name,info] of Object.entries(allDecoders)){
+      if(info.arrFn===primaryArrFn)continue;
+      if(!new RegExp('\\b'+name+'\\b').test(genBody))continue;
+      secDecoders[name]=info;
+    }
+    const secArrFns={};
+    for(const[name,info] of Object.entries(secDecoders)){
+      if(!secArrFns[info.arrFn])secArrFns[info.arrFn]=[];
+      secArrFns[info.arrFn].push({name,info});
+    }
+    for(const[secArrFn,decList] of Object.entries(secArrFns)){
+      const secRaw=extractRawArray(secArrFn); if(!secRaw)continue;
+      const secSentinel='}('+secArrFn+')';
+      const secSentPos=src.indexOf(secSentinel); if(secSentPos<0)continue;
+      const secIifeStart=src.lastIndexOf('!function(',secSentPos); if(secIifeStart<0)continue;
+      const secIife=src.slice(secIifeStart,secSentPos+secSentinel.length);
+      const secMagicM=secIife.match(/if\((\d+)==/); if(!secMagicM)continue;
+      const secMAGIC=parseInt(secMagicM[1]);
+      const secIntM=secIife.match(/if\(\d+==([\s\S]+?)\)break/); if(!secIntM)continue;
+      const secIntExpr=secIntM[1];
+      const secAliases={};
+      const secAlRe=/function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+      let sam;
+      while((sam=secAlRe.exec(secIife))!==null){
+        const alName=sam[1],callee=sam[2],argE=sam[3].trim();
+        const di=allDecoders[callee];if(!di||di.arrFn!==secArrFn)continue;
+        const isRC4=di.type==='rc4';
+        const rc4m=argE.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+        const b64m=argE.match(/^(e|t)\s*((?:[+-]\s*-?\s*\d+)?)$/);
+        if(rc4m)secAliases[alName]={type:isRC4?'rc4':'b64',idxVar:rc4m[1],offset:parseOffset(rc4m[2]),keyVar:rc4m[3],fnOff:di.offset};
+        else if(b64m)secAliases[alName]={type:'b64',idxVar:b64m[1],offset:parseOffset(b64m[2]),fnOff:di.offset};
+      }
+      for(let rot2=0;rot2<secRaw.length;rot2++){
+        const secArr=secRaw.slice(rot2).concat(secRaw.slice(0,rot2));
+        const subExpr=secIntExpr.replace(/([a-z])\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)/g,(_,n,a1,a2)=>{
+          const al=secAliases[n];if(!al)return'"__X__"';
+          const a1s=(a1||'0').replace(/"/g,''),a2s=(a2||'0').replace(/"/g,'');
+          const iStr=al.idxVar==='e'?a1s:a2s,kStr=al.type==='rc4'?(al.keyVar==='e'?a1s:a2s):null;
+          const real=parseFloat(iStr)+al.offset-al.fnOff;
+          if(real<0||real>=secArr.length)return'"__FAIL__"';
+          const decFn=decList.find(d=>d.name===Object.keys(secAliases).find(k=>secAliases[k].fnOff===al.fnOff));
+          const di2=decFn?decFn.info:null;
+          const v=di2?(di2.type==='rc4'&&kStr?_rc4(secArr[real],kStr):_b64(secArr[real])):null;
+          return v!=null?JSON.stringify(v):'"__FAIL__"';
+        });
+        if(subExpr.includes('__FAIL__'))continue;
+        let secVal=NaN;try{secVal=eval(subExpr.replace(/"__X__"/g,'0'));}catch(_){}
+        if(Math.abs(secVal-secMAGIC)>0.001)continue;
+        console.log("  ✅ secondary rotation ("+secArrFn+"): "+rot2);
+        const secDec={};
+        for(const{name,info} of decList){
+          const off=info.offset,isRC4=info.type==='rc4';
+          secDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=secArr.length)return null;return isRC4&&t?_rc4(secArr[r],t):_b64(secArr[r]);};
+        }
+        const secGenAliases={};
+        const secGenAlRe=/function ([a-z])\(e,t\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(([^)]+)\)\}/g;
+        let sga;
+        while((sga=secGenAlRe.exec(genBody))!==null){
+          const alN=sga[1],callee2=sga[2],argE2=sga[3].trim();
+          const di2=allDecoders[callee2];if(!di2||di2.arrFn!==secArrFn)continue;
+          const isRC4_2=di2.type==='rc4';
+          const rc4m2=argE2.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+          const b64m2=argE2.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)$/);
+          if(rc4m2)secGenAliases[alN]={type:isRC4_2?'rc4':'b64',idxVar:rc4m2[1],offset:parseOffset(rc4m2[2]),keyVar:rc4m2[3],fnOff:di2.offset};
+          else if(b64m2)secGenAliases[alN]={type:'b64',idxVar:b64m2[1],offset:parseOffset(b64m2[2]),fnOff:di2.offset};
+        }
+        function decodeSecExpr(expr){
+          let out='';
+          const pr=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)|"([^"\\]{1,60})"/g;
+          let pm;
+          while((pm=pr.exec(expr))!==null){
+            if(pm[4]!=null){out+=pm[4];continue;}
+            const fn=pm[1],a1r=pm[2],a2r=pm[3]||null;
+            const a1=(a1r||'0').replace(/"/g,''),a2=(a2r||'0').replace(/"/g,'');
+            const al=secGenAliases[fn];
+            if(al){
+              const iStr=al.idxVar==='e'?a1:a2,kStr=al.type==='rc4'?(al.keyVar==='e'?a1:a2):null;
+              const realIdx=parseFloat(iStr)+al.offset;
+              const dec2=secDec[Object.keys(secDec).find(d=>allDecoders[d]&&allDecoders[d].offset===al.fnOff)||Object.keys(secDec)[0]];
+              const v=dec2?dec2(realIdx,kStr||undefined):null;
+              if(v)out+=v; continue;
+            }
+            if(secDec[fn]){const idx=parseFloat(a1),key=a2r&&a2r.startsWith('"')?a2:null;const v=secDec[fn](idx,key);if(v)out+=v;continue;}
+          }
+          return out;
+        }
+        const ternRe2=/\?([^:;\n]{5,600}?)(?=\n[a-z]|\nreturn|\nfunction|\nvar|\nconst)/g;
+        let tm;
+        while((tm=ternRe2.exec(genBody))!==null){
+          const parts=splitTernary(tm[1].trim());
+          for(const branch of parts){
+            const decoded=decodeSecExpr(branch);
+            if(!decoded||decoded.length<15)continue;
+            if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+              const cleanM2=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+              dgPath=cleanM2?((cleanM2[0].startsWith('/')?'':'/')+cleanM2[0]):(decoded.startsWith('/')?decoded:'/'+decoded);
+              console.log("  ✅ DG path via Strategy F (secondary array): "+dgPath);
+            }
+            if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded))sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+          }
+          if(dgPath)break;
+        }
+        if(!dgPath){
+          const constRe3=/const [a-z]=\{/g;let cm3;
+          while((cm3=constRe3.exec(genBody))!==null){
+            const op3=cm3.index+cm3[0].length-1;
+            let d3=1,j3=op3+1,inS3=false,sc3='',ob3='';
+            while(j3<genBody.length&&d3>0){const c3=genBody[j3];if(inS3){if(c3==='\\')j3++;else if(c3===sc3)inS3=false;}else if(c3==='"'||c3==="'"){inS3=true;sc3=c3;}else if(c3==='{')d3++;else if(c3==='}')d3--;if(d3>0)ob3+=c3;j3++;}
+            const propRe3=/([A-Za-z]{3,})\s*:/g;let pm3;
+            while((pm3=propRe3.exec(ob3))!==null){
+              const pn3=pm3[1];
+              if(/^(function|return|const|let|var)$/.test(pn3))continue;
+              const pe3=extractPropVal(genBody,pn3+':');if(!pe3||pe3.length<10)continue;
+              const dec3=decodeSecExpr(pe3);if(!dec3||dec3.length<10)continue;
+              if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(dec3)&&/dg-epay/i.test(dec3)){
+                const cleanM3=dec3.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+                dgPath=cleanM3?((cleanM3[0].startsWith('/')?'':'/')+cleanM3[0]):(dec3.startsWith('/')?dec3:'/'+dec3);
+                console.log("  ✅ DG path via Strategy F prop (secondary array): "+dgPath);
+              }
+              if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(dec3))sslPath=dec3.startsWith('/')?dec3:'/'+dec3;
+            }
+            if(dgPath)break;
+          }
+        }
+        if(dgPath)break;
+      }
+      if(dgPath)break;
+    }
+  }
+
+  // ── Strategy G (NEW v11): Direct alias-based property decode ─────────────
+  // Fires when A-F all fail. This is the most direct approach:
+  // 1. Parse ALL local alias functions from the generator body (a,s,u,l,d,f etc.)
+  // 2. Build a lookup: alias_fn -> {decoder type, index computation, key}
+  // 3. Scan ALL named property expressions in genBody (including from inline
+  //    multi-var const objects) and decode each one using the aliases.
+  // This specifically handles bundles where constRe misses the object due to
+  // it being declared as part of a comma-chained const like:
+  //   const e="...",t="...",n={wIiPt: EXPR, ...}
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy G: direct alias-based property decode...");
+
+    // Find all named properties in genBody (including inside inline objects)
+    // and try to decode each one
+    const allPropExprs = [];
+
+    // Collect from constRe-found objects
+    const constReG = /const ([a-z])=\{/g;
+    let cmG;
+    while((cmG=constReG.exec(genBody))!==null){
+      const objOpenPos=cmG.index+cmG[0].length-1;
+      let depth=1,j=objOpenPos+1,inS=false,sc='',objStr='';
+      while(j<genBody.length&&depth>0){const c=genBody[j];if(inS){if(c==='\\')j++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')depth++;else if(c==='}')depth--;if(depth>0)objStr+=c;j++;}
+      const propReG=/([A-Za-z]{3,})\s*:/g; let pmG;
+      while((pmG=propReG.exec(objStr))!==null) allPropExprs.push(pmG[1]);
+    }
+
+    // Collect from inline multi-var objects (FIX v11 #2)
+    const inlineObjsG = extractInlineConstObjects(genBody);
+    for (const {varName, objStr} of inlineObjsG) {
+      const propReG=/([A-Za-z]{3,})\s*:/g; let pmG;
+      while((pmG=propReG.exec(objStr))!==null) allPropExprs.push(pmG[1]);
+    }
+
+    // Also scan for any identifier followed by ':' followed by decoder calls
+    // This catches properties we haven't found via object extraction
+    const genPropScanRe=/([A-Za-z]{3,})\s*:\s*([A-Za-z_$][A-Za-z0-9_$]{0,3})\(/g;
+    let gpScan;
+    while((gpScan=genPropScanRe.exec(genBody))!==null){
+      const pn=gpScan[1];
+      if(!/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn)) allPropExprs.push(pn);
+    }
+
+    // Deduplicate
+    const uniqueProps=[...new Set(allPropExprs)];
+
+    for(const pn of uniqueProps){
+      if(/^(function|return|const|let|var|rovdj|rIUxI)$/.test(pn)) continue;
+      const propExpr=extractPropVal(genBody,pn+':');
+      if(!propExpr||propExpr.length<10) continue;
+      if(propExpr.startsWith('function')) continue;
+
+      // Try primary decodeExpr (handles [a-z] vars via genVarMap)
+      let decoded=decodeExpr(propExpr);
+      // Also try mixed decode
+      if(!decoded||decoded.length<10){
+        const mx=decodeExprMixed(propExpr);
+        if(mx.text&&mx.text.length>=10) decoded=mx.text;
+      }
+      if(!decoded||decoded.length<10) continue;
+
+      const uuidMatch=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      if(uuidMatch&&/dg-epay/i.test(decoded)){
+        const cleanMatch=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        if(cleanMatch){
+          dgPath=(cleanMatch[0].startsWith('/')?'':'/')+cleanMatch[0];
+        } else {
+          dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
+        }
+        console.log("  ✅ DG path via Strategy G (direct alias decode, prop="+pn+"): "+dgPath);
+        break;
+      }
+      if(!sslPath&&/ssl\/initiate|payment\/ssl/i.test(decoded)){
+        sslPath=decoded.startsWith('/')?decoded:'/'+decoded;
+      }
+    }
+  }
+
+  // ── Strategy J (NEW v12): direct mU()/WU() call scan in generator body ───
+  // Fires when A–I all fail. Handles bundles where the dg-epay path is built
+  // by concatenating LITERAL string pieces + mU(idx,"key") + WU(idx) calls,
+  // and the local alias functions map directly to mU/WU (not *V variants).
+  //
+  // Real example from mtv1rx02-e9bAiBuo.js generator body:
+  //   function e(e,t){return WU(t- -744)}    // e(0,X) = WU(X + 744)
+  //   function t(e,t){return mU(e- -310,t)}  // t(X,k) = mU(X + 310, k)
+  //   function r(e,t){return WU(e- -710)}    // r(X)   = WU(X + 710)
+  //   function o(e,t){return mU(e-63,t)}     // o(X,k) = mU(X - 63,  k)
+  //   function u(e,t){return mU(e- -698,t)}  // u(X,k) = mU(X + 698, k)
+  //   UCONv:"payme"+o(275,"g!Tz")+u(-449,"kJh5")+r(-423)+u(-436,"^dZd")
+  //         +e(0,-484)+e(0,-481)+mU(250,"$VRW")+t(-68,"1mnJ")
+  //         +r(-535)+WU(180)+t(-20,"[aFw")+"e"
+  //
+  // This generator's aliases don't end in 'V', so parseGenAliasesExtended
+  // (which only matches [A-Za-z]{1,3}V) completely misses them. Strategy J
+  // parses the alias-function bodies directly to extract the offset, then
+  // decodes every mU/WU/alias call in the property expression.
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy J: direct mU()/WU() call scan in generator body...");
+
+    // Parse alias functions of the form:
+    //   function NAME(e,t){return DECFN(argExpr)}  or  function NAME(e){return DECFN(argExpr)}
+    // where DECFN is the primary array's RC4 or B64 decoder (mU/WU or similar).
+    // argExpr can be: t- -744, e- -310, e-63, t-563, e- -698, etc.
+    const aliasMap = {};
+    const aliasReJ = /function\s+([a-z])\s*\(\s*e(?:\s*,\s*t)?\s*\)\s*\{\s*return\s+([A-Za-z_$][A-Za-z0-9_$]{0,3})\s*\(\s*([^)]+)\)\s*\}/g;
+    let ajm;
+    while ((ajm = aliasReJ.exec(genBody)) !== null) {
+      const alName = ajm[1], decFnName = ajm[2], argExpr = ajm[3].trim();
+      // Only proceed if decFnName is the primary array's RC4 or B64 decoder.
+      // In this bundle that's mU (RC4) and WU (B64). Check via allDecoders + vDecMap.
+      let isRC4 = null, off = null;
+      // Check allDecoders (primary array's direct decoders)
+      if (allDecoders[decFnName] && allDecoders[decFnName].arrFn === primaryArrFn) {
+        off = allDecoders[decFnName].offset;
+        isRC4 = allDecoders[decFnName].type === 'rc4';
+      }
+      // Check vDecMap (functions like WU/mU themselves, detected by vFnRe2)
+      if (off === null && vDecMap[decFnName]) {
+        off = vDecMap[decFnName].off;
+        isRC4 = vDecMap[decFnName].isRC4;
+      }
+      if (off === null) continue;
+      // Parse argExpr to determine which arg is the index and which is the key,
+      // plus the offset to add. Supported forms:
+      //   t- -744    (idx is 't', offset +744, no key)
+      //   e- -310,t  (idx is 'e', offset +310, key is 't')
+      //   e-63,t     (idx is 'e', offset -63,  key is 't')
+      //   t-563,e    (idx is 't', offset -563, key is 'e')
+      //   e- -698,t  (idx is 'e', offset +698, key is 't')
+      //   t-637,e    (idx is 't', offset -637, key is 'e')
+      //   e          (idx is 'e', no offset,   no key)
+      const parts = argExpr.split(/\s*,\s*/);
+      const idxPart = parts[0];
+      const keyPart = parts.length > 1 ? parts[1] : null;
+      const m = idxPart.match(/^([et])\s*([+-]\s*-?\s*\d+)?$/);
+      if (!m) continue;
+      const idxVar = m[1];
+      const offset = m[2] ? parseOffset(m[2]) : 0;
+      aliasMap[alName] = { decFn: decFnName, idxVar, offset, keyVar: keyPart, isRC4 };
+    }
+
+    // Helper: decode a single call expr (alias or direct mU/WU) given the call's args.
+    function decodeCallJ(fnName, a1Raw, a2Raw) {
+      // a1Raw/a2Raw are strings like '0', '-484', '"g!Tz"', 'e', 't'
+      const resolveArgJ = (raw) => {
+        if (!raw) return null;
+        const s = raw.trim();
+        if (s.startsWith('"')) return s.replace(/"/g, '');
+        if (/^-?\d/.test(s)) return s;
+        if (/^[a-z]$/.test(s)) return genVarMap[s] || null; // single-letter var → look up in var map
+        return null;
+      };
+      // Alias call (e.g. o(275,"g!Tz"))
+      if (aliasMap[fnName]) {
+        const al = aliasMap[fnName];
+        const decFn = al.decFn;  // decoder function name (e.g. 'mU' or 'WU')
+        const idxRaw = al.idxVar === 'e' ? a1Raw : a2Raw;
+        const keyRaw = al.isRC4 ? (al.keyVar === 'e' ? a1Raw : a2Raw) : null;
+        const idxStr = resolveArgJ(idxRaw);
+        if (idxStr === null || !/^-?\d+$/.test(idxStr)) return null;
+        const idxForDecoder = parseInt(idxStr) + al.offset;
+        if (vDecMap[decFn]) {
+          return vDec(decFn, idxForDecoder, keyRaw ? resolveArgJ(keyRaw) : null);
+        }
+        if (allDecoders[decFn] && allDecoders[decFn].arrFn === primaryArrFn) {
+          const di = allDecoders[decFn];
+          const r = idxForDecoder - di.offset;
+          if (r < 0 || r >= rotatedArr.length) return null;
+          return di.type === 'rc4' && keyRaw
+            ? _rc4(rotatedArr[r], resolveArgJ(keyRaw))
+            : _b64(rotatedArr[r]);
+        }
+        return null;
+      }
+      // Direct call to mU/WU itself (not via alias) — e.g. mU(250,"$VRW") or WU(180)
+      if (vDecMap[fnName]) {
+        const idxStr = resolveArgJ(a1Raw);
+        if (idxStr === null || !/^-?\d+$/.test(idxStr)) return null;
+        const key = a2Raw ? resolveArgJ(a2Raw) : null;
+        return vDec(fnName, parseInt(idxStr), key);
+      }
+      if (allDecoders[fnName] && allDecoders[fnName].arrFn === primaryArrFn) {
+        const di = allDecoders[fnName];
+        const idxStr = resolveArgJ(a1Raw);
+        if (idxStr === null || !/^-?\d+$/.test(idxStr)) return null;
+        const r = parseInt(idxStr) - di.offset;
+        if (r < 0 || r >= rotatedArr.length) return null;
+        const key = a2Raw ? resolveArgJ(a2Raw) : null;
+        return di.type === 'rc4' && key ? _rc4(rotatedArr[r], key) : _b64(rotatedArr[r]);
+      }
+      return null;
+    }
+
+    // Find all property-value expressions in genBody that look like:
+    //   PROPNAME: "lit"+aliasCall+"lit"+... OR  PROPNAME: aliasCall+"lit"+...
+    // We scan all property-colon positions and extract the value expression.
+    const propScanReJ = /\b([A-Za-z_][A-Za-z0-9_]{2,})\s*:\s*("([^"\\]{0,80})"|([A-Za-z_$][A-Za-z0-9_$]{0,3})\([^)]*\))[\s\S]{0,1500}?(?=,|\}|\n\s*[A-Za-z_])/g;
+    let psm;
+    while ((psm = propScanReJ.exec(genBody)) !== null) {
+      const propName = psm[1];
+      // Skip reserved words
+      if (/^(function|return|const|let|var|yield|async|await|new|throw)$/.test(propName)) continue;
+      // Extract the value expression - scan from psm.index + psm[0].length - (last captured expr length)
+      // Actually we need to re-extract the full value from the colon position.
+      // Find the colon after propName:
+      const colonPos = genBody.indexOf(':', psm.index + propName.length);
+      if (colonPos < 0) continue;
+      // Extract value expr up to next ',' or '}' at depth 0
+      let d=0, inS=false, sc='', val='';
+      let j=colonPos+1;
+      while (j < genBody.length) {
+        const c = genBody[j];
+        if (inS) { if (c==='\\') j++; else if (c===sc) inS=false; val+=c; j++; continue; }
+        if (c==='"'||c==="'") { inS=true; sc=c; val+=c; j++; continue; }
+        if (c==='('||c==='['||c==='{') { d++; val+=c; j++; continue; }
+        if (c===')'||c===']'||c==='}') { d--; val+=c; j++; continue; }
+        if ((c===','||c==='\n') && d===0) break;
+        val+=c; j++;
+      }
+      val = val.trim();
+      if (val.length < 10) continue;
+
+      // Now decode all mU/WU/alias calls in val, in order, concatenating with literals.
+      // Tokenize: literals "..."  OR  fnName(args) calls
+      const tokReJ = /"([^"\\]{0,80})"|([A-Za-z_$][A-Za-z0-9_$]{0,3})\s*\(\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)/g;
+      let assembled = '', tkm;
+      while ((tkm = tokReJ.exec(val)) !== null) {
+        if (tkm[1] != null) { assembled += tkm[1]; continue; }
+        const fn = tkm[2], a1 = tkm[3], a2 = tkm[4];
+        const v = decodeCallJ(fn, a1, a2);
+        if (v) assembled += v;
+      }
+
+      if (assembled.length < 15) continue;
+      // Look for dg-epay path with UUID (lenient on non-hex chars in UUID
+      // segments to tolerate bundle typos like 3s28 in segment 3).
+      const dgMatch = assembled.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
+      if (dgMatch) {
+        dgPath = (dgMatch[0].startsWith('/') ? '' : '/') + dgMatch[0];
+        console.log("  ✅ DG path via Strategy J (direct call scan, prop '" + propName + "'): " + dgPath);
+        break;
+      }
+      // Lenient: dg-epay + something that looks UUID-ish
+      if (/dg-epay/i.test(assembled) && /[0-9a-f]{8}-[0-9a-f]{4}/i.test(assembled)) {
+        const uM = assembled.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+        if (uM) {
+          dgPath = '/payment/' + uM[0].toLowerCase() + '/dg-epay/initiate';
+          console.log("  ✅ DG UUID via Strategy J (lenient UUID match, prop '" + propName + "'): " + dgPath);
+          break;
+        }
+      }
+      if (!sslPath && /ssl\/initiate|payment\/ssl/i.test(assembled)) {
+        sslPath = assembled.startsWith('/') ? assembled : '/' + assembled;
+        console.log("  🔓 SSL path via Strategy J: " + sslPath);
+      }
+    }
+  }
+
+  // ── Strategy K (NEW v13): VM-based property evaluation ──────────────────
+  // Fires when A–J all fail. The most robust strategy: instead of parsing
+  // alias function bodies with regex (which breaks if devs change to arrow
+  // functions, ternary wrapping, multiplication, etc.), we eval each
+  // property value expression in a real JS sandbox where:
+  //   1. The rotated array (hU) is live
+  //   2. All decoder functions (mU/WU/CU/etc.) are provided as live closures
+  //   3. All alias function definitions from genBody are run as real JS
+  // This means whatever shape the alias functions take — arrow, regular,
+  // wrapped in ternary, etc. — the eval still produces the correct string.
+  //
+  // Real example: with Strategy K, even if the bundle switched from
+  //   function e(e,t){return WU(t- -744)}
+  // to
+  //   const e=(a,b)=>WU(b+744)
+  // to
+  //   const e=(a,b)=>b>0?WU(b+744):mU(b,"x")
+  // Strategy K still works because the alias is run as real JS, not parsed.
+  if (!dgPath) {
+    console.log("  ⚙️  Trying Strategy K: VM-based property evaluation...");
+
+    try {
+      // Build sandbox context
+      const sandbox = {};
+      ;
+
+      // Provide hU() returning the rotated array
+      sandbox.hU = function() { return rotatedArr; };
+
+      // Provide _b64 and _rc4 helpers (decoders use these)
+      sandbox._b64 = _b64;
+      sandbox._rc4 = _rc4;
+
+      // Scan src for ALL decoder functions matching the pattern:
+      //   function NAME(e[,t]){e-=N; ... const n=ARR() ...}
+      // and provide them in the sandbox as live closures that operate on rotatedArr.
+      const decFnReK = /function\s+([A-Za-z_$][A-Za-z0-9_$]{0,3})\s*\(\s*e\s*(?:,\s*t)?\s*\)\s*\{\s*e-=(\d+)[\s\S]{0,80}(?:const|var)\s+n=([A-Za-z_$][A-Za-z0-9_$]{0,3})\s*\(\)/g;
+      let dfm;
+      const decodersFound = {};
+      while ((dfm = decFnReK.exec(src)) !== null) {
+        const fnName = dfm[1], offStr = dfm[2], arrFnName = dfm[3];
+        if (arrFnName !== primaryArrFn) continue;
+        const off = parseInt(offStr);
+        const bodySrc = src.slice(dfm.index, dfm.index + 800);
+        const isRC4 = bodySrc.includes('%t.length');
+        decodersFound[fnName] = { off, isRC4 };
+      }
+
+      // Provide each decoder as a closure
+      for (const [name, info] of Object.entries(decodersFound)) {
+        if (sandbox[name]) continue;
+        // Need to capture loop variables properly (use IIFE to avoid closure pitfall)
+        const _off = info.off, _isRC4 = info.isRC4;
+        sandbox[name] = function(e, t) {
+          const r = e - _off;
+          if (r < 0 || r >= rotatedArr.length) return '';
+          return _isRC4 && t ? (_rc4(rotatedArr[r], t) || '') : (_b64(rotatedArr[r]) || '');
+        };
+      }
+
+      // Extract ALL alias function definitions from genBody
+      // Pattern: function NAME(e[,t]){return SOMETHING(...)}
+      // Strategy K is liberal — it accepts any return shape, even ternary or arrow
+      const aliasDefReK = /function\s+([a-z])\s*\(\s*e(?:\s*,\s*t)?\s*\)\s*\{[^{}]*\}/g;
+      const aliasDefs = [];
+      let amK;
+      while ((amK = aliasDefReK.exec(genBody)) !== null) {
+        // Validate it returns something (has 'return' inside)
+        if (!/\breturn\b/.test(amK[0])) continue;
+        aliasDefs.push(amK[0]);
+      }
+      // Also handle arrow-style: const e=(a,b)=>...
+      const arrowDefReK = /\b(const|let|var)\s+([a-z])\s*=\s*\([^)]*\)\s*=>\s*[^,;\n}]{1,200}/g;
+      while ((amK = arrowDefReK.exec(genBody)) !== null) {
+        aliasDefs.push(amK[0]);
+      }
+
+      // Run all alias definitions in sandbox
+      if (aliasDefs.length === 0) {
+        console.log("  ⚠️  No alias functions found in genBody — Strategy K skipped");
+      } else {
+        try {
+          sandbox.__aliasCode = aliasDefs.join('\n');
+        } catch (e) {
+          console.log("  ⚠️  Failed to define aliases in sandbox: " + e.message.slice(0,80));
+        }
+
+        // Find all property value expressions in genBody
+        const propReK = /\b([A-Za-z_][A-Za-z0-9_]{2,})\s*:\s*("([^"\\]{0,80})"|([A-Za-z_$][A-Za-z0-9_$]{0,3})\s*\()/g;
+        let pkm;
+        const seenProps = new Set();
+        while ((pkm = propReK.exec(genBody)) !== null) {
+          const propName = pkm[1];
+          if (seenProps.has(propName)) continue;
+          seenProps.add(propName);
+          if (/^(function|return|const|let|var|yield|async|await|new|throw)$/.test(propName)) continue;
+
+          // Extract value expression (up to depth-0 ',' or '}' or newline)
+          const colonPos = genBody.indexOf(':', pkm.index + propName.length);
+          if (colonPos < 0) continue;
+          let d=0, inS=false, sc='', val='';
+          let j = colonPos + 1;
+          while (j < genBody.length) {
+            const c = genBody[j];
+            if (inS) { if (c==='\\') j++; else if (c===sc) inS=false; val+=c; j++; continue; }
+            if (c==='"'||c==="'") { inS=true; sc=c; val+=c; j++; continue; }
+            if (c==='('||c==='['||c==='{') { d++; val+=c; j++; continue; }
+            if (c===')'||c===']'||c==='}') { d--; val+=c; j++; continue; }
+            if ((c===','||c==='\n') && d===0) break;
+            val+=c; j++;
+          }
+          val = val.trim();
+          if (val.length < 10) continue;
+          // Must contain at least one function call OR string concatenation
+          if (!/[A-Za-z_$][A-Za-z0-9_$]{0,3}\s*\(|"\+"/.test(val)) continue;
+
+          // Eval in sandbox
+          let result;
+          try {
+            result = _vmEvalWith(sandbox, sandbox.__aliasCode||'', val);
+          } catch (e) { continue; }
+          if (typeof result !== 'string' || result.length < 5) continue;
+
+          // Check for dg-epay path
+          const dgMatch = result.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
+          if (dgMatch) {
+            dgPath = (dgMatch[0].startsWith('/') ? '' : '/') + dgMatch[0];
+            console.log("  ✅ DG path via Strategy K (VM eval, prop '" + propName + "'): " + dgPath);
+            break;
+          }
+          if (/dg-epay/i.test(result) && /[0-9a-f]{8}-[0-9a-f]{4}/i.test(result)) {
+            const uM = result.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+            if (uM) {
+              dgPath = '/payment/' + uM[0].toLowerCase() + '/dg-epay/initiate';
+              console.log("  ✅ DG UUID via Strategy K (VM eval, prop '" + propName + "'): " + dgPath);
+              break;
+            }
+          }
+          if (!sslPath && /ssl\/initiate|payment\/ssl/i.test(result)) {
+            sslPath = result.startsWith('/') ? result : '/' + result;
+            console.log("  🔓 SSL path via Strategy K: " + sslPath);
+          }
+        }
+      }
+    } catch (eK) {
+      console.log("  ⚠️  Strategy K error: " + eK.message.slice(0,80));
+    }
+  }
+
+  // ── Sanitise: clip anything past /dg-epay/initiate ───────────────────────
+  if (dgPath) {
+    const clip=dgPath.match(/^(.*?\/dg-epay\/initiate)/i);
+    if(clip)dgPath=clip[1];
+  }
+
+  return { dgPath, sslPath };
+}
+
+// ── Run extraction ────────────────────────────────────────────────────────────
+let DECODED_DGEPAY_PATH=null, DECODED_SSL_PATH=null, DECODED_INVOICE_PATH=null, EXTRACTED_DGEPAY_UUID=null;
+
+console.log("🔍 Extracting payment paths...");
+const payResult = extractPaymentPath();
+DECODED_DGEPAY_PATH = payResult.dgPath;
+DECODED_SSL_PATH    = payResult.sslPath;
+
+// ── Byte-by-byte path verification ───────────────────────────────────────────
+function verifyDgPath(p) {
+  if (!p) return false;
+  const norm=p.startsWith('/')?p:'/'+p;
+  // v12: UUID_RE_STR allows up to 1 non-hex char anywhere in the last 3
+  // segments, to tolerate bundle typos like:
+  //   23228961-2326-3s28-861f-465bb28337a3  (s in segment 3)
+  //   139fd4d2-27c9-4758-a623-368583e830bs  (s at end of segment 5)
+  // The overall shape 8-4-4-4-12 is still required.
+  const UUID_RE_STR='[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}';
+  return new RegExp('^/?payment\\/'+UUID_RE_STR+'\\/dg-epay\\/initiate$','i').test(norm);
+}
+function verifySslPath(p) {
+  if(!p) return false;
+  return /^\/?payment\/ssl\/initiat/i.test(p);
+}
+
+if (DECODED_SSL_PATH) {
+  if(!verifySslPath(DECODED_SSL_PATH)){
+    const sslRescueM=DECODED_SSL_PATH.match(/\/?payment\/ssl\/initiate/i);
+    if(sslRescueM){ DECODED_SSL_PATH='/payment/ssl/initiate'; console.log("  🔧 SSL path rescued: "+DECODED_SSL_PATH); }
+    else { console.log("  ⚠️  SSL path failed verification: "+DECODED_SSL_PATH); DECODED_SSL_PATH=null; }
+  }
+}
+if (DECODED_DGEPAY_PATH && !verifyDgPath(DECODED_DGEPAY_PATH)) {
+  // v12: lenient UUID regex — allows non-hex chars anywhere in the UUID
+  // segments, as long as overall 8-4-4-4-12 shape is preserved.
+  const rescueM=DECODED_DGEPAY_PATH.match(/\/?payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate\/?/i);
+  if(rescueM){
+    DECODED_DGEPAY_PATH='/payment/'+rescueM[1].toLowerCase()+'/dg-epay/initiate';
+    console.log("  🔧 UUID rescued from garbage path: "+DECODED_DGEPAY_PATH);
+  } else {
+    const uuidM=DECODED_DGEPAY_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+    if(uuidM&&/dg-epay/i.test(DECODED_DGEPAY_PATH)){
+      DECODED_DGEPAY_PATH='/payment/'+uuidM[0].toLowerCase()+'/dg-epay/initiate';
+      console.log("  🔧 UUID + dg-epay rescue: "+DECODED_DGEPAY_PATH);
+    } else {
+      console.log("  ⚠️  DG path failed verification: " + DECODED_DGEPAY_PATH);
+      DECODED_DGEPAY_PATH=null;
+    }
+  }
+}
+// Fallback: OLD PQ/zQ ternary pattern
+if (!DECODED_DGEPAY_PATH && !USE_NEW_DECODER && ACTIVE_ARR) {
+  const payMutPos=src.indexOf('Jh.post(n,{appointmentId:');
+  const pm2=src.indexOf('"x-token":i}');
+  const payCtxAnchor=payMutPos>=0?payMutPos:pm2;
+  if(payCtxAnchor>=0){
+    const ctx=src.slice(Math.max(0,payCtxAnchor-2000),payCtxAnchor+100);
+    const aliasDefs={};
+    const fnRe=/function ([a-z])\(e,t\)\{return (PQ|zQ)\(([^,)]+)(?:,e)?\)\}/g;
+    let fm;
+    while((fm=fnRe.exec(ctx))!==null){const name=fm[1],decoder=fm[2],argExpr=fm[3].trim();const norm=argExpr.replace('e,','').replace(/t\s*-\s*-\s*(\d+)/,'t+$1');const offMatch=norm.match(/t([+-]\d+)/);aliasDefs[name]={decoder,offset:offMatch?parseInt(offMatch[1]):0};}
+    function decodeCalls(expr,aliases,varMap){let result='';const pr=/([a-z])\("([^"]+)",\s*(-?\d+)\)|([a-z])\(([a-z_$][a-z0-9_$]*),\s*(-?\d+)\)|([a-z])\(0,\s*(-?\d+)\)|zQ\((\d+)\)|PQ\((-?\d+),"([^"]+)"\)|"([^"\\]{1,8})"/g;let pm3;while((pm3=pr.exec(expr))!==null){if(pm3[1]&&pm3[2]&&pm3[3]){const fn=aliases[pm3[1]];if(fn){const idx=parseInt(pm3[3])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,pm3[2]):zQdec(idx);if(v)result+=v;}}else if(pm3[4]&&pm3[5]&&pm3[6]){const fn=aliases[pm3[4]];const key=varMap&&varMap[pm3[5]]?varMap[pm3[5]]:pm3[5];if(fn){const idx=parseInt(pm3[6])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,key):zQdec(idx);if(v)result+=v;}}else if(pm3[7]&&pm3[8]){const fn=aliases[pm3[7]];if(fn){const idx=parseInt(pm3[8])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,pm3[7]):zQdec(idx);if(v)result+=v;}}else if(pm3[9]){const v=zQdec(parseInt(pm3[9]));if(v)result+=v;}else if(pm3[10]&&pm3[11]){const v=PQdec(parseInt(pm3[10]),pm3[11]);if(v)result+=v;}else if(pm3[12]){result+=pm3[12];}}return result;}
+    const varMap={};const varDeclRe=/\bconst\s+([a-z])\s*=\s*"([^"]+)"/g;let vd;while((vd=varDeclRe.exec(ctx))!==null)varMap[vd[1]]=vd[2];
+    const zq424Pos=ctx.indexOf('zQ(424)');
+    if(zq424Pos>=0){let exprStart=zq424Pos;while(exprStart>0&&ctx[exprStart]!=='?'&&ctx[exprStart]!=='=')exprStart--;exprStart++;let exprEnd=zq424Pos+7,depth2=0,inStr2=false,sc2='';while(exprEnd<ctx.length){const ch=ctx[exprEnd];if(inStr2){if(ch==='\\')exprEnd++;else if(ch===sc2)inStr2=false;}else if(ch==='"'||ch==="'"){inStr2=true;sc2=ch;}else if(ch==='(')depth2++;else if(ch===')')depth2--;else if(ch===':'&&depth2===0)break;exprEnd++;}const dgPath2=decodeCalls(ctx.slice(exprStart,exprEnd).trim(),aliasDefs,varMap);if(dgPath2&&dgPath2.length>15&&/payment|[0-9a-f]{8}/.test(dgPath2))DECODED_DGEPAY_PATH=(dgPath2.startsWith('/')?'':'/')+dgPath2;}
+  }
+  const iv=zQdec(410)||'',iv2=PQdec(480,"0Ch2")||'',iv3=zQdec(386)||'',iv4=PQdec(467,"NPRs")||'';
+  const assembled='/invo'+iv+iv2+iv3+iv4+'{txrId}';
+  if(assembled.includes('/invoice/')||assembled.includes('download'))DECODED_INVOICE_PATH=assembled.replace(/\{txrId\}.*$/,'{txrId}');
+}
+
+if (DECODED_DGEPAY_PATH) {
+  // v12: lenient UUID regex to handle bundle typos (non-hex chars in UUID segments)
+  const uuidMatch=DECODED_DGEPAY_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+  if(uuidMatch)EXTRACTED_DGEPAY_UUID=uuidMatch[0].toLowerCase();
+}
+
+if (BEST_ROT>0||USE_NEW_DECODER) console.log("🔐 Main string-array rotation: "+BEST_ROT+" ("+ACTIVE_ARR_FN+", offset="+ACTIVE_OFFSET+")");
+if (DECODED_DGEPAY_PATH) console.log("🔓 Decoded DGePay path  : "+DECODED_DGEPAY_PATH);
+if (DECODED_SSL_PATH)    console.log("🔓 Decoded SSL path     : "+DECODED_SSL_PATH);
+if (DECODED_INVOICE_PATH)console.log("🔓 Decoded invoice path : "+DECODED_INVOICE_PATH);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── UUID extraction & classification ─────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+const UUID_RE=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const uuidCounts={};
+while((m=UUID_RE.exec(src))!==null){const u=m[0].toLowerCase();if(u==="ffffffff-ffff-ffff-ffff-ffffffffffff"||u==="00000000-0000-0000-0000-000000000000")continue;uuidCounts[u]=(uuidCounts[u]||0)+1;}
+if(EXTRACTED_DGEPAY_UUID)uuidCounts[EXTRACTED_DGEPAY_UUID]=(uuidCounts[EXTRACTED_DGEPAY_UUID]||0)+1;
+// ── Strategy I: Lenient slot UUID rescue ───────────────────────────────────
+// v12 NEW: Some bundles contain a typo'd slot UUID where the dev put a non-hex
+// char in the last segment. Real example from mtv1rx02-e9bAiBuo.js:
+//   /slots/139fd4d2-27c9-4758-a623-368583e830bs/reserve-slot
+//                                       ↑ trailing 's' is non-hex
+// Strict UUID_RE won't match this, so SLOT_UUID falls through to NOT_FOUND and
+// fetch-api.js loses the slot ID. This rescue scans /slots/<36-char>/reserve
+// patterns explicitly and tolerates a non-hex char in the final segment slot.
+const LENIENT_SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\//gi;
+let _lenientSlotM;
+while((_lenientSlotM=LENIENT_SLOT_RE.exec(src))!==null){
+  const u=_lenientSlotM[1].toLowerCase();
+  if(u==="ffffffff-ffff-ffff-ffff-ffffffffffff"||u==="00000000-0000-0000-0000-000000000000")continue;
+  if(!uuidCounts[u]){
+    uuidCounts[u]=(uuidCounts[u]||0)+1;
+    console.log("  🔧 Lenient slot UUID rescued (non-hex trailing char tolerated): "+u);
+  }
+}
+const realUUIDs=Object.keys(uuidCounts);
+function classifyUUID(u){const ctxPos=src.indexOf(u);if(u===EXTRACTED_DGEPAY_UUID)return"DGEPAY_GATEWAY_ID";const ctx=ctxPos>=0?src.slice(Math.max(0,ctxPos-120),ctxPos+u.length+120):"";if(ctx.includes("reserve-slot")||ctx.includes("/slots/"))return"SLOT_ID";if(ctx.includes("dg-epay")||ctx.includes("dgepay")||ctx.includes("payment"))return"DGEPAY_GATEWAY_ID";return"unknown";}
+const UUID_INFO={};realUUIDs.forEach(u=>{UUID_INFO[u]=classifyUUID(u);});
+const SLOT_UUID=realUUIDs.find(u=>UUID_INFO[u]==="SLOT_ID")||"SLOT_ID_NOT_FOUND";
+  var _dgU = EXTRACTED_DGEPAY_UUID || null;
+  if (!_dgU && DECODED_DGEPAY_PATH) { var _m = DECODED_DGEPAY_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i); if (_m) _dgU = _m[0].toLowerCase(); }
+  var _slot = (typeof SLOT_UUID !== 'undefined' && SLOT_UUID !== 'SLOT_ID_NOT_FOUND') ? SLOT_UUID : null;
+  return { dgUuid: _dgU, dgPath: DECODED_DGEPAY_PATH || null, sslPath: DECODED_SSL_PATH || null, slotUuid: _slot };
+}
+
+
+async function rjResolveEndpointsLive() {
+    try {
+        const urls = await findBundleUrls(); if (!urls.length) { try { logStatus('⚠ Endpoint scan: no bundle chunks found', 'y'); } catch (e) {} return; }
+        // fetch each chunk with pageFetch (native, same as encryption scan) + GM fallback
+        const grab = async (u) => {
+            try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
+            return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
+        };
+        // fetch ALL chunks (the dg-epay concat may live in a different chunk than sign-in)
+        let text = '';
+        const chunkTexts = [];
+        for (const u of urls) { if (chunkTexts.length >= 60) break; const t = await grab(u); if (t) chunkTexts.push(t); }   // fetch enough chunks that the payment lazy-chunk is always included
+        for (const t of chunkTexts) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; }   // endpoint-scan text = up to first core chunk
+        if (!text) { try { logStatus('⚠ Endpoint scan: bundle fetch empty', 'y'); } catch (e) {} return; }
+        // endpoint families → store the bundle's CURRENT literal per family (used to rewrite any version)
+        RJ_DYN.fam = RJ_DYN.fam || {};
+        for (const f of RJ_EP_FAMILIES) { const m = text.match(f.re); if (m && m[0]) RJ_DYN.fam[f.code] = m[0]; }
+        // reserve slot-id → PRIMARY: v13 universal scanner (handles non-hex/typo UUIDs), FALLBACK: strict regex
+        let _v13 = null;
+        try { _v13 = rjExtractFetchV13(chunkTexts.join('\n')); } catch (e) {}
+        const _LENIENT_UUID = /^[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}$/i;
+        let _slotVal = (_v13 && _v13.slotUuid && _LENIENT_UUID.test(_v13.slotUuid)) ? _v13.slotUuid : null;
+        if (!_slotVal) { const _smm = text.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i); if (_smm) _slotVal = _smm[1]; }
+        const sm = _slotVal ? [null, _slotVal] : null;
+        if (sm && sm[1]) {
+            RJ_DYN.slotId = sm[1];
+            // bundle is source of truth → reflect the detected slot-id in the input box + persist it,
+            // exactly like the dg-epay payment-method-id below (previously slotId was never shown/saved).
+            try {
+                const sbox = document.getElementById('ivac-reserve-slot-id');
+                if (sbox && (typeof _cleanUuid === 'function' ? _cleanUuid(sbox.value) : sbox.value).toLowerCase() !== sm[1].toLowerCase()) sbox.value = sm[1];
+                if (typeof saveReserveSlotId === 'function') saveReserveSlotId(sm[1]);
+                if (typeof logStatus === 'function') logStatus('🎯 Slot ID from bundle: ' + sm[1].slice(0, 8) + '…', 'g');
+            } catch (e) {}
+        }
+        // dg-epay payment-method-id → resolve per-chunk (each chunk self-contains its own decoder arrays)
+        try {
+            let pid = null;
+            // PRIMARY (v13): universal decoder — extracts dg-epay UUID from any bundle variant (incl. non-hex typo UUIDs)
+            try { if (_v13 && _v13.dgUuid && _LENIENT_UUID.test(_v13.dgUuid)) pid = _v13.dgUuid; } catch (e) {}
+            for (const t of chunkTexts) {
+                if (pid) break;
+                // Only skip a chunk that shows NO payment signal at all. In obfuscated bundles the
+                // literal "dg-epay"/"{appointmentId:" often live ENCODED inside the string-array, so
+                // they are absent from plain text — but the payment chunk still carries at least one
+                // of these literals (URL path segments / header names / a raw UUID), so we anchor on
+                // the broad set and never skip the chunk that actually holds the id.
+                if (t.indexOf('dg-epay') === -1 && t.indexOf('{appointmentId:') === -1 &&
+                    !/epay|-ep|initiat|payment|x-token|payment-method|dg[-_]?epay/i.test(t) &&
+                    !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(t)) continue;   // quick skip (payment-signal only)
+                // PRIMARY: strong extractor ported from extract_fetch.js (decodes obfuscated dg-epay path)
+                try { const ef = rjExtractDgEpay(t); if (ef && ef.uuid && /^[0-9a-fA-F-]{36}$/.test(ef.uuid)) { pid = ef.uuid; break; } } catch (e) {}
+                // SECONDARY: execution-based decode (UUID is an obfuscated concat in the bundle)
+                try { const pe = rjExtractPayIdExec(t); if (pe && /^[0-9a-fA-F-]{36}$/.test(pe)) { pid = pe; break; } } catch (e) {}
+                // FALLBACK: static concat resolver
+                try { const R = (typeof buildBundleResolver === 'function') ? buildBundleResolver(t) : null; const p = R ? rjExtractPayId(t, R) : null; if (p) { pid = p; break; } } catch (e) {}
+            }
+            // NEVER GIVE UP — leave no path untried:
+            if (!pid) { try { const efAll = rjExtractDgEpay(chunkTexts.join('\n')); if (efAll && efAll.uuid && /^[0-9a-fA-F-]{36}$/.test(efAll.uuid)) pid = efAll.uuid; } catch (e) {} }
+            if (!pid) { try { for (const t of chunkTexts) { const rawm = t.match(/payment\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/dg-?epay/i); if (rawm) { pid = rawm[1].toLowerCase(); break; } } } catch (e) {} }
+            if (!pid) { try { const all = chunkTexts.join('\n'); if (/dg-?epay/i.test(all)) { const um = all.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i); if (um && /^[0-9a-fA-F-]{36}$/.test(um[1])) pid = um[1].toLowerCase(); } } catch (e) {} }
+            if (pid && (/^[0-9a-fA-F-]{36}$/.test(pid) || _LENIENT_UUID.test(pid))) {
+                const changed = RJ_DYN.payId !== pid;
+                RJ_DYN.payId = pid;
+                // bundle is the source of truth → ALWAYS reflect the scanned id in the box + persisted value,
+                // even if RJ_DYN.payId already matched (box may have been cleared while payId persisted).
+                try { const box = document.getElementById('ivac-payment-method-id'); if (box && box.value !== pid) box.value = pid; if (typeof savePaymentMethodId === 'function') savePaymentMethodId(pid); } catch (e) {}
+                if (changed) {
+                    console.log('%c[RJ Dyn] dg-epay id resolved from bundle: ' + pid, 'color:#4ade80;font-weight:800');
+                    try { if (typeof logStatus === 'function') logStatus('🆔 dg-epay id from bundle: ' + pid.slice(0,8) + '…', 'g'); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        rjPersistDyn();
+        RJ_DYN.resolvedAt = Date.now();
+        console.log('%c[RJ Dyn] endpoints resolved from bundle', 'color:#4ade80;font-weight:800', { fam: RJ_DYN.fam, slotId: RJ_DYN.slotId });
+        try { logStatus(`🔄 Endpoints resolved (${Object.keys(RJ_DYN.fam).length} families, slot ${RJ_DYN.slotId ? RJ_DYN.slotId.slice(0,8) : '?'})`, 'g'); } catch (e) {}
+    } catch (e) { console.log('[RJ Dyn] endpoint scan failed:', e.message); try { logStatus('⚠ Endpoint scan failed: ' + e.message, 'y'); } catch (e2) {} }
+}
+
+// intercept the site's OWN requests to learn the live payment-method-id + fixed headers
+(function rjInstallRuntimeIntercept() {
+    try {
+        const FIXED_HDRS = ['x-sec-navigation-state', 'x-sec-runtime-state', 'x-v-request-meta'];
+        const noteHeader = (name, val) => {
+            try {
+                const short = val.length > 14 ? val.slice(0, 10) + '…' + val.slice(-4) : val;
+                console.log('%c[RJ Dyn] 🔐 Captured ' + name + ' from site → saved (' + short + ')', 'color:#4ade80;font-weight:800');
+                if (typeof logStatus === 'function') logStatus('🔐 Captured ' + name + ' → saved', 'g');
+            } catch (e) {}
+        };
+        const setMap = (from, to) => { if (from && to && from !== to && RJ_DYN.epMap[from] !== to) { RJ_DYN.epMap[from] = to; return true; } return false; };
+        const cap = (url, headers) => {
+            try {
+                let changed = false;
+                const u = url ? ('' + url) : '';
+                if (u) {
+                    const pm = u.match(/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i);
+                    if (pm && pm[1]) { RJ_DYN.payId = pm[1]; try { if (typeof PAYMENT_METHOD_ID !== 'undefined' && pm[1].toLowerCase() !== PAYMENT_METHOD_ID.toLowerCase() && setMap(PAYMENT_METHOD_ID, pm[1])) changed = true; } catch (e) {} }
+                    const sm = u.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i);
+                    if (sm && sm[1]) {
+                        RJ_DYN.slotId = sm[1];
+                        try { if (typeof RESERVE_SLOT_ID_FIXED !== 'undefined' && sm[1].toLowerCase() !== RESERVE_SLOT_ID_FIXED.toLowerCase() && setMap(RESERVE_SLOT_ID_FIXED, sm[1])) changed = true; } catch (e) {}
+                        // consistency with dg-epay: reflect the captured slot-id in the input box + persist it,
+                        // so a manual reserve success also shows the slot-id (not memory-only).
+                        try {
+                            const sbox = document.getElementById('ivac-reserve-slot-id');
+                            const cur = sbox ? (typeof _cleanUuid === 'function' ? _cleanUuid(sbox.value) : sbox.value) : '';
+                            if (sbox && String(cur).toLowerCase() !== sm[1].toLowerCase()) {
+                                sbox.value = sm[1];
+                                if (typeof saveReserveSlotId === 'function') saveReserveSlotId(sm[1]);
+                                changed = true;
+                                try { if (typeof logStatus === 'function') logStatus('🎯 Slot ID captured from site: ' + sm[1].slice(0, 8) + '…', 'g'); } catch (e) {}
+                            }
+                        } catch (e) {}
+                    }
+                    try { if (typeof RJ_EP_FAMILIES !== 'undefined') { for (const f of RJ_EP_FAMILIES) { const m = u.match(f.re); if (m && m[0] && m[0] !== f.code && setMap(f.code, m[0])) changed = true; } } } catch (e) {}
+                }
+                if (headers) { const g = (n) => { try { return typeof headers.get === 'function' ? headers.get(n) : headers[n] || headers[n.toLowerCase()]; } catch (e) { return null; } };
+                    for (const n of FIXED_HDRS) { const v = g(n); if (v && RJ_DYN.headers[n] !== v) { RJ_DYN.headers[n] = v; changed = true; noteHeader(n, v); } } }
+                if (changed) { rjPersistDyn(); try { console.log('%c[RJ Dyn] learned from site traffic', 'color:#4ade80;font-weight:700', RJ_DYN.epMap, RJ_DYN.headers); } catch (e) {} }
+            } catch (e) {}
+        };
+        const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        const of = w.fetch;
+        if (of && !of.__rjWrapped) {
+            const nf = function (input, init) {
+                let u, hdrs, bodyC, methodC;
+                try { u = (input && input.url) ? input.url : input; hdrs = (init && init.headers) || (input && input.headers); methodC = (init && init.method) || (input && input.method) || 'GET'; bodyC = (init && init.body); cap(u, hdrs); } catch (e) {}
+                const p = of.apply(this, arguments);
+                try {
+                    const uu = u, hh = hdrs, bb = bodyC, mm = methodC;
+                    if (uu && typeof rjEndpointFamily === 'function' && rjEndpointFamily(uu) && p && typeof p.then === 'function') {
+                        p.then(function (resp) { try { if (!resp || typeof resp.clone !== 'function') return; resp.clone().text().then(function (txt) { try { rjRecordSuccess(uu, mm, hh, bb, resp.status, txt); } catch (e) {} }).catch(function () {}); } catch (e) {} }).catch(function () {});
+                    }
+                } catch (e) {}
+                return p;
+            };
+            nf.__rjWrapped = true; try { w.fetch = nf; } catch (e) {}
+        }
+        const oo = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
+        const os = w.XMLHttpRequest && w.XMLHttpRequest.prototype.setRequestHeader;
+        const osend = w.XMLHttpRequest && w.XMLHttpRequest.prototype.send;
+        if (oo && !oo.__rjWrapped) { const no = function (m, u) { this.__rjUrl = u; this.__rjMethod = m; this.__rjHdrs = {}; try { cap(u, null); } catch (e) {} return oo.apply(this, arguments); }; no.__rjWrapped = true; w.XMLHttpRequest.prototype.open = no; }
+        if (os && !os.__rjWrapped) { const ns = function (k, v) { try { const lk = ('' + k).toLowerCase(); if (this.__rjHdrs) this.__rjHdrs[lk] = v; if (FIXED_HDRS.includes(lk) && RJ_DYN.headers[lk] !== v) { RJ_DYN.headers[lk] = v; rjPersistDyn(); noteHeader(lk, v); } } catch (e) {} return os.apply(this, arguments); }; ns.__rjWrapped = true; w.XMLHttpRequest.prototype.setRequestHeader = ns; }
+        if (osend && !osend.__rjWrapped) { const nsend = function (body) { try { this.__rjBody = body; const self = this; this.addEventListener('load', function () { try { const url = self.__rjUrl; if (url && typeof rjEndpointFamily === 'function' && rjEndpointFamily(url)) rjRecordSuccess(url, self.__rjMethod || 'GET', self.__rjHdrs || {}, self.__rjBody, self.status, self.responseText); } catch (e) {} }); } catch (e) {} return osend.apply(this, arguments); }; nsend.__rjWrapped = true; w.XMLHttpRequest.prototype.send = nsend; }
+    } catch (e) {}
+})();
+
+function getDeviceId() {
+    let id = localStorage.getItem('rj_device_id');
+    if (!id) {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+        id = Array.from({length: 20}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        localStorage.setItem('rj_device_id', id);
+    }
+    return id;
+}
+
+// ==================== CAPTCHA TOKEN ENCRYPTION (10 VERSION HARDCODED) ====================
+const CAPTCHA_CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
+const CAPTCHA_ALPHA_LEN = CAPTCHA_CHARSET.length;
+
+function _cs_idx(ch) { return CAPTCHA_CHARSET.indexOf(ch); }
+
+// Shared driver for additive-shift ciphers.
+function additiveShift(token, key, skip, encryptLen, encrypt, genShifts) {
+    if (!token) return token;
+    const p = Math.max(0, Math.min(skip, token.length));
+    const a = Math.max(0, Math.min(encryptLen, token.length - p));
+    if (a === 0) return token;
+    const mid = token.slice(p, p + a).split('');
+    const shifts = genShifts(key, mid.length), n = CAPTCHA_CHARSET.length;
+    for (let i = 0; i < mid.length; i++) {
+        const x = _cs_idx(mid[i]); if (x === -1) continue;
+        mid[i] = encrypt ? CAPTCHA_CHARSET[(x + shifts[i]) % n]
+                         : CAPTCHA_CHARSET[((x - shifts[i]) % n + n) % n];
+    }
+    return token.slice(0, p) + mid.join('') + token.slice(p + a);
+}
+
+// --- v1: block_mix / ChaCha-style keystream (16-word state, 10 column rounds) ---
+function _rotl32(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
+function _chachaQR(s, a, b, c, d) {
+    s[a] = (s[a] + s[b]) >>> 0; s[d] = _rotl32(s[d] ^ s[a], 16);
+    s[c] = (s[c] + s[d]) >>> 0; s[b] = _rotl32(s[b] ^ s[c], 12);
+    s[a] = (s[a] + s[b]) >>> 0; s[d] = _rotl32(s[d] ^ s[a], 8);
+    s[c] = (s[c] + s[d]) >>> 0; s[b] = _rotl32(s[b] ^ s[c], 7);
+}
+function generateShiftsChaCha(key, length) {
+    const st = new Array(16).fill(0);
+    for (let p = 0; p < key.length; p++) st[p % 16] = (st[p % 16] + key.charCodeAt(p)) >>> 0;
+    st[15] = length;
+    const shifts = [];
+    const blocks = Math.ceil(length / 4);
+    for (let p = 0; p < blocks; p++) {
+        st[14] = p;
+        const e = st.slice();
+        for (let r = 0; r < 10; r++) {
+            _chachaQR(e, 0, 4, 8, 12); _chachaQR(e, 1, 5, 9, 13); _chachaQR(e, 2, 6, 10, 14); _chachaQR(e, 3, 7, 11, 15);
+        }
+        for (let k = 0; k < 4; k++) shifts.push((e[k] >>> 0) % CAPTCHA_ALPHA_LEN);
+    }
+    return shifts;
+}
+
+// --- v2: bitmix / 6-bit Feistel network (8 rounds, F = 7&((x*3+k)^3)) ---
+function _bitmixRK(key) {
+    let c = 0;
+    for (let f = 0; f < key.length; f++) c = (c + key.charCodeAt(f) * (f + 1)) >>> 0;
+    const rk = [];
+    for (let f = 0; f < 8; f++) { c = (Math.imul(c, 1103515245) + 12345) >>> 0; rk.push(c & 7); }
+    return rk;
+}
+function _bitmixFwd(val, rk) {
+    let hi = (val >> 3) & 7, lo = val & 7;
+    for (let r = 0; r < rk.length; r++) { const x = hi ^ (7 & ((lo * 3 + rk[r]) ^ 3)); hi = lo; lo = x; }
+    return (lo << 3) | hi;
+}
+function _bitmixInv(val, rk) {
+    let lo = (val >> 3) & 7, hi = val & 7;
+    for (let r = rk.length - 1; r >= 0; r--) { const x = hi; hi = lo ^ (7 & ((x * 3 + rk[r]) ^ 3)); lo = x; }
+    return (hi << 3) | lo;
+}
+function cryptBitmix(token, key, skip, encryptLen, encrypt) {
+    if (!token) return token;
+    const p = Math.max(0, Math.min(skip, token.length));
+    const a = Math.max(0, Math.min(encryptLen, token.length - p));
+    if (a === 0) return token;
+    const mid = token.slice(p, p + a).split(''), rk = _bitmixRK(key);
+    for (let i = 0; i < mid.length; i++) {
+        const x = _cs_idx(mid[i]); if (x === -1) continue;
+        mid[i] = CAPTCHA_CHARSET[(encrypt ? _bitmixFwd(x, rk) : _bitmixInv(x, rk)) % CAPTCHA_ALPHA_LEN];
+    }
+    return token.slice(0, p) + mid.join('') + token.slice(p + a);
+}
+
+// --- v3: cellular_shift / Rule-30 cellular automaton ---
+function generateShiftsCellular(key, length) {
+    let cur = new Uint8Array(64);
+    for (let i = 0; i < key.length; i++) cur[i % 64] ^= (key.charCodeAt(i) & 1);
+    cur[32] = 1;
+    const shifts = [];
+    for (let s = 0; s < length; s++) {
+        const nx = new Uint8Array(64); let v = 0;
+        for (let d = 0; d < 64; d++) {
+            const L = cur[(d + 63) % 64], C = cur[d], R = cur[(d + 1) % 64];
+            nx[d] = (30 >> ((L << 2) | (C << 1) | R)) & 1;
+            if (d < 6) v = (v << 1) | nx[d];
+        }
+        cur = nx; shifts.push(v % CAPTCHA_ALPHA_LEN);
+    }
+    return shifts;
+}
+
+// --- v4: rc4_shift / RC4 over a 64-element state ---
+function generateShiftsRC4(key, length) {
+    const SZ = 64, S = Array.from({ length: SZ }, (_, i) => i);
+    let j = 0;
+    for (let i = 0; i < SZ; i++) { j = (j + S[i] + key.charCodeAt(i % key.length)) % SZ; const t = S[i]; S[i] = S[j]; S[j] = t; }
+    let i = 0; j = 0; const shifts = [];
+    for (let k = 0; k < length; k++) { i = (i + 1) % SZ; j = (j + S[i]) % SZ; const t = S[i]; S[i] = S[j]; S[j] = t; shifts.push(S[(S[i] + S[j]) % SZ]); }
+    return shifts;
+}
+
+// --- v5: lfsr_shift / three-LFSR Geffe generator ---
+function generateShiftsLFSR(key, length) {
+    let u = 74565, s = 424090, l = 773615;
+    for (let i = 0; i < key.length; i++) { const c = key.charCodeAt(i); u ^= (c | 1); s ^= 1 | (c << 2); l ^= 1 | (c << 4); }
+    const shifts = [];
+    for (let p = 0; p < length; p++) {
+        let e = 0;
+        for (let t = 0; t < 6; t++) {
+            const ub = 1 & (u ^ u >> 2 ^ u >> 3 ^ u >> 5); u = (u >>> 1) | (ub << 15);
+            const sb = 1 & (s ^ s >> 1 ^ s >> 2 ^ s >> 7); s = (s >>> 1) | (sb << 16);
+            const lb = 1 & (l ^ l >> 1 ^ l >> 2 ^ l >> 22); l = (l >>> 1) | (lb << 23);
+            const h = (ub & sb) ^ (~ub & lb);
+            e = (e << 1) | h;
+        }
+        shifts.push(((e % CAPTCHA_ALPHA_LEN) + CAPTCHA_ALPHA_LEN) % CAPTCHA_ALPHA_LEN);
+    }
+    return shifts;
+}
+
+// --- v6: polynomial / GF(67) additive-shift ---
+function generateShiftsPolynomial(key, length) {
+    const coeff = [];
+    for (let n = 0; n < key.length; n++) coeff.push(((key.charCodeAt(n % key.length) + n) % 67 + 67) % 67);
+    const shifts = [];
+    for (let d = 1; d <= length; d++) {
+        let e = 0, t = 1;
+        for (const a of coeff) { e = (e + a * t) % 67; t = (t * d) % 67; }
+        shifts.push(e % CAPTCHA_ALPHA_LEN);
+    }
+    return shifts;
+}
+
+// --- v7: subst_reverse / RC4-keyed 64-element S-box substitution + reverse ---
+function cryptSBox(token, key, skip, encryptLen, encrypt) {
+    if (!token) return token;
+    const p = Math.max(0, Math.min(skip, token.length));
+    const a = Math.max(0, Math.min(encryptLen, token.length - p));
+    if (a === 0) return token;
+    let mid = token.slice(p, p + a).split('');
+    const n = CAPTCHA_ALPHA_LEN;
+    const sbox = Array.from({ length: n }, (_, i) => i);
+    let u = 0;
+    for (let h = 0; h < n; h++) { u = (u + sbox[h] + key.charCodeAt(h % key.length)) % n; const t = sbox[h]; sbox[h] = sbox[u]; sbox[u] = t; }
+    const inv = new Array(n); for (let h = 0; h < n; h++) inv[sbox[h]] = h;
+    if (encrypt) { for (let i = 0; i < mid.length; i++) { const x = _cs_idx(mid[i]); if (x !== -1) mid[i] = CAPTCHA_CHARSET[sbox[x]]; } mid.reverse(); }
+    else { mid.reverse(); for (let i = 0; i < mid.length; i++) { const x = _cs_idx(mid[i]); if (x !== -1) mid[i] = CAPTCHA_CHARSET[inv[x]]; } }
+    return token.slice(0, p) + mid.join('') + token.slice(p + a);
+}
+
+// --- v8: prng / LCG additive-shift (seed 123456789, mul 1103515245) ---
+function generateShiftsLCG(key, length) {
+    let seed = 123456789, mul = 1103515245;
+    for (let i = 0; i < key.length; i++) seed = (seed + key.charCodeAt(i)) >>> 0;
+    const shifts = new Array(length);
+    for (let i = 0; i < length; i++) {
+        seed = (Math.imul(seed, mul) + 12345) >>> 0;
+        mul = ((mul + seed) >>> 0) | 1;
+        shifts[i] = (seed >>> 16) % CAPTCHA_ALPHA_LEN;
+    }
+    return shifts;
+}
+
+function generateShiftsModSquare(key, length, A) {
+    A = A || 1000036000099n;
+    let s = 314159265n;
+    for (let i = 0; i < key.length; i++) s = (s + BigInt(key.charCodeAt(i)) * BigInt(i + 1)) % A;
+    if (s % 2n === 0n) s += 1n;
+    const shifts = new Array(length);
+    for (let i = 0; i < length; i++) { s = (s * s) % A; shifts[i] = Number(s % BigInt(CAPTCHA_ALPHA_LEN)); }
+    return shifts;
+}
+
+// --- v10: logistic_shift / chaotic logistic map (r=3.99, 100-step warmup) ---
+function generateShiftsLogistic(key, length) {
+    let u = 0.5;
+    for (let i = 0; i < key.length; i++) u = (u + key.charCodeAt(i) / 256) % 1;
+    if (u === 0) u = 0.5;
+    const shifts = [];
+    for (let f = 0; f < length + 100; f++) {
+        u = (3.99 * u) * (1 - u);
+        if (f >= 100) shifts.push(Math.floor(1e7 * u) % CAPTCHA_ALPHA_LEN);
+    }
+    return shifts;
+}
+
+// --- VERSION DISPATCH ---
+function encryptByVersion(version, token, key, prefixLen, encodeLen, modulus) {
+    const v = parseInt(version) || 1;
+    switch (v) {
+        case 1:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsChaCha);
+        case 2:  return cryptBitmix(token, key, prefixLen, encodeLen, true);
+        case 3:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsCellular);
+        case 4:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsRC4);
+        case 5:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsLFSR);
+        case 6:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsPolynomial);
+        case 7:  return cryptSBox(token, key, prefixLen, encodeLen, true);
+        case 8:  return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsLCG);
+        case 9:  return additiveShift(token, key, prefixLen, encodeLen, true, (k, L) => generateShiftsModSquare(k, L, modulus));
+        case 10: return additiveShift(token, key, prefixLen, encodeLen, true, generateShiftsLogistic);
+        default: return token;
+    }
+}
+
+// --- ENCRYPTION CONFIG MANAGER ---
+const ENC_SIGNIN_KEY   = 'rj_enc_signin_cfg_v2';
+const ENC_RESERVE_KEY  = 'rj_enc_reserve_cfg_v2';
+const ENC_INITIATE_KEY = 'rj_enc_initiate_cfg_v2';
+
+const encConfig = {
+    signin:   {},
+    reserve:  {},
+    initiate: {}
+};
+const ENC_STORE_KEY = { signin: ENC_SIGNIN_KEY, reserve: ENC_RESERVE_KEY, initiate: ENC_INITIATE_KEY };
+
+function encConfigSave(purpose) {
+    const cfg = encConfig[purpose];
+    const storeKey = ENC_STORE_KEY[purpose] || ENC_RESERVE_KEY;
+    try { localStorage.setItem(storeKey, JSON.stringify(cfg)); } catch(e) {}
+}
+
+function encConfigLoad(purpose) {
+    const storeKey = ENC_STORE_KEY[purpose] || ENC_RESERVE_KEY;
+    try {
+        const raw = localStorage.getItem(storeKey);
+        if (raw) { const parsed = JSON.parse(raw); Object.assign(encConfig[purpose], parsed); return true; }
+    } catch(e) {}
+    return false;
+}
+
+function encConfigApplyToUI(purpose) {
+    const cfg = encConfig[purpose];
+    const p = purpose;
+    const keyInp   = document.getElementById(`enc-${p}-key`);
+    const skipInp  = document.getElementById(`enc-${p}-skip`);
+    const lenInp   = document.getElementById(`enc-${p}-length`);
+    const verSel   = document.getElementById(`enc-${p}-version`);
+    const statusEl = document.getElementById(`enc-${p}-status`);
+    if (keyInp)  keyInp.value  = cfg.key || '';
+    if (skipInp) skipInp.value = cfg.skip;
+    if (lenInp)  lenInp.value  = cfg.length;
+    if (verSel)  verSel.value  = cfg.version;
+    if (statusEl) {
+        statusEl.textContent = cfg.active ? `✅ Active (v${cfg.version})` : 'Inactive';
+        statusEl.style.color = cfg.active ? '#4ade80' : '#8888aa';
+    }
+}
+
+function encConfigReadFromUI(purpose) {
+    const p = purpose;
+    const cfg = encConfig[p];
+    const keyInp  = document.getElementById(`enc-${p}-key`);
+    const skipInp = document.getElementById(`enc-${p}-skip`);
+    const lenInp  = document.getElementById(`enc-${p}-length`);
+    const verSel  = document.getElementById(`enc-${p}-version`);
+    if (keyInp)  cfg.key     = keyInp.value.trim();
+    if (skipInp) cfg.skip    = parseInt(skipInp.value);
+    if (lenInp)  cfg.length  = parseInt(lenInp.value);
+    if (verSel)  cfg.version = parseInt(verSel.value) || 1;
+    cfg.manual = true;   // user-entered → LOCK: A_E auto-resolve must not overwrite this working config
+}
+
+function encryptTokenByPurpose(rawToken, purpose) {
+    if (!rawToken || typeof rawToken !== 'string') return rawToken;
+    const cfg = encConfig[purpose];
+    if (!cfg.active || !cfg.key) {
+        console.log(`[RJ Enc] ${purpose} encryption not active — token sent raw`);
+        return rawToken;
+    }
+    try {
+        const result = encryptByVersion(cfg.version, rawToken, cfg.key, cfg.skip, cfg.length, cfg.modulus);
+        console.log(`[RJ Enc] ${purpose} encrypted with v${cfg.version} (skip=${cfg.skip}, len=${cfg.length})`);
+        return result;
+    } catch(e) {
+        console.error(`[RJ Enc] ${purpose} encryption error:`, e);
+        logStatus(`⚠ ${purpose} encryption error — sending raw token`, 'y');
+        return rawToken;
+    }
+}
+
+function encTokenForCall(rawToken, purpose) {
+    if (purpose === 'initiate') {
+        return document.getElementById('chk-initiate-raw')?.checked ? rawToken : encryptTokenByPurpose(rawToken, 'initiate');
+    }
+    const rawChkId = purpose === 'signin' ? 'chk-signin-raw' : 'chk-reserve-raw';
+    return document.getElementById(rawChkId)?.checked ? rawToken : encryptTokenByPurpose(rawToken, purpose);
+}
+
+const ENC_BUNDLE_HASH_KEY = 'rj_enc_bundle_hash';
+
+function encConfigInit() {
+    encConfigLoad('signin');
+    encConfigLoad('reserve');
+    encConfigLoad('initiate');
+    // Clean stale configs that have no key (broken from previous failed resolves)
+    for (const p of ['signin', 'reserve', 'initiate']) {
+        if (encConfig[p].active && !encConfig[p].key) {
+            encConfig[p].active = false;
+            encConfigSave(p);
+        }
+    }
+    setTimeout(() => {
+        encConfigApplyToUI('signin');
+        encConfigApplyToUI('reserve');
+        encConfigApplyToUI('initiate');
+    }, 500);
+}
+
+async function findBundleUrls() {
+    const BUNDLE_RE_G = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js/g;
+    const BUNDLE_RE   = /\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js(?:$|\?)/;
+    const seen = new Set(); const urls = [];
+    const add = (u) => { if (u && !seen.has(u)) { seen.add(u); urls.push(u); } };
+    // 1) from the loaded page DOM (all matching script tags)
+    [...document.querySelectorAll('script[src]')].forEach(s => { if (BUNDLE_RE.test(s.src)) add(s.src); });
+    // 2) also parse index.html for chunks that may be lazy-loaded (not yet in the DOM)
+    try {
+        const r = await pageFetch(location.origin + '/', { cache: 'no-store' });
+        if (r.ok) {
+            const html = await r.text();
+            let m; while ((m = BUNDLE_RE_G.exec(html)) !== null) add(new URL(m[0], location.origin).href);
+        }
+    } catch(e) {}
+    // 3) all loaded JS from performance entries — catches dynamically-imported chunks (e.g. the
+    // payment lazy-chunk where the dg-epay concat lives) that aren't <script src> or in index.html
+    try { performance.getEntriesByType('resource').forEach(e => { if (/\.js(?:$|\?)/.test(e.name) && e.name.indexOf(location.origin) === 0) add(e.name); }); } catch (e) {}
+    // 4) TRANSITIVE: open each discovered JS bundle and pull the lazy-chunk filenames referenced
+    // *inside* it (Vite/webpack write the full chunk filename as a string literal in the entry
+    // bundle's chunk-manifest). This finds the payment lazy-chunk WITHOUT waiting for it to load,
+    // so dg-epay can be resolved from the appointment page. One transitive level is enough.
+    try {
+        const grab = async (u) => {
+            try { const r = await pageFetch(u); if (r.ok) return await r.text(); } catch (e) {}
+            return await new Promise((res) => { const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest); if (!g) { res(null); return; } g({ method: 'GET', url: u, timeout: 30000, onload: r => res(r.responseText || ''), onerror: () => res(null), ontimeout: () => res(null) }); });
+        };
+        // base dir of the /assets/ folder (to resolve BARE chunk basenames that Vite writes without a path)
+        let assetBase = location.origin + '/assets/';
+        for (const u of urls) { const mm = /^(.*\/assets\/)/.exec(u); if (mm) { assetBase = mm[1]; break; } }
+        // Vite/webpack reference lazy-chunks two ways: (a) full "/assets/xxx.js" path, or (b) BARE
+        // basename "name-HASH.js" (path prepended at runtime). Match BOTH so the payment chunk is found.
+        const PATH_RE = /(?:\/|\b)assets\/[\w.-]+\.js/g;                    // .../assets/foo-HASH.js
+        const BARE_RE = /["'`]([\w.-]+-[A-Za-z0-9_]{8,})\.js["'`]/g;        // "foo-HASH.js"
+        const seedList = urls.slice(0, 16);   // scan more entry/main chunks so the payment lazy-chunk reference is always found
+        for (const u of seedList) {
+            const t = await grab(u); if (!t) continue;
+            let m;
+            PATH_RE.lastIndex = 0; while ((m = PATH_RE.exec(t)) !== null) { try { add(new URL('/' + m[0].replace(/^\//, ''), location.origin).href); } catch (e) {} }
+            BARE_RE.lastIndex = 0; while ((m = BARE_RE.exec(t)) !== null) { try { add(new URL(m[1] + '.js', assetBase).href); } catch (e) {} }
+        }
+    } catch (e) {}
+    return urls;
+}
+
+function buildBundleResolver(src) {
+    function mB(s,i,o,c){let d=0;for(;i<s.length;i++){if(s[i]===o)d++;else if(s[i]===c){d--;if(d===0)return i;}}return -1;}
+    function mP(s,i){let d=0,q=null;for(;i<s.length;i++){const c=s[i];if(q){if(c==="\\"){i++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="(")d++;else if(c===")"){d--;if(d===0)return i;}}return -1;}
+    function b64(e){let t="",n="";for(let r,o,i=0,a=0;o=e.charAt(a++);~o&&(r=i%4?64*r+o:o,i++%4)?t+=String.fromCharCode(255&r>>(-2*i&6)):0)o="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=".indexOf(o);for(let r=0,o=t.length;r<o;r++)n+="%"+("00"+t.charCodeAt(r).toString(16)).slice(-2);try{return decodeURIComponent(n)}catch(_){return null}}
+    function rc4(e,key){let n,r,o=[],i=0,a="";e=b64(e);if(e===null)return null;for(r=0;r<256;r++)o[r]=r;for(r=0;r<256;r++){i=(i+o[r]+key.charCodeAt(r%key.length))%256;n=o[r];o[r]=o[i];o[i]=n;}r=0;i=0;for(let c=0;c<e.length;c++){r=(r+1)%256;i=(i+o[r])%256;n=o[r];o[r]=o[i];o[i]=n;a+=String.fromCharCode(e.charCodeAt(c)^o[(o[r]+o[i])%256]);}return a;}
+    const arrCache={};function getArr(fn){if(fn in arrCache)return arrCache[fn];let st=src.indexOf("function "+fn+"(){const e=[");if(st<0)st=src.indexOf("function "+fn+"(){var e=[");if(st<0)return arrCache[fn]=null;const lb=src.indexOf("[",st);try{return arrCache[fn]=eval(src.slice(lb,mB(src,lb,"[","]")+1));}catch(_){return arrCache[fn]=null;}}
+    const baseDefs={},wrapDefs={};
+    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{e-=(\d+)/g;while(m=re.exec(src)){const bs=src.indexOf("{",m.index);const body=src.slice(bs,mB(src,bs,"{","}")+1);const am=/=\s*([\w$]+)\(\)/.exec(body);(baseDefs[m[1]]=baseDefs[m[1]]||[]).push({idx:m.index,offset:+m[2],arrfn:am?am[1]:null,rc4:/o\[r\]\+t\.charCodeAt/.test(body)||/charCodeAt\(\w%\w\.length\)/.test(body)});}}
+    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
+    function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
+    function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
+    function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
+    const __gb={n:40000};   // per-call fnFull-eval budget (caps the 2-array O(N^2) path → no hang; cipher single-array uses <10k)
+    function resolveExpr(expr,pos){__gb.n=40000;
+        const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
+        const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
+        while(stack.length){const n=stack.pop();if(need.base[n]||need.wrap[n])continue;
+            const w=nearest(wrapDefs,n,pos),b=nearest(baseDefs,n,pos);
+            if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner))stack.push(x);stack.push(w.base);}
+            else if(b){need.base[n]=b;if(b.arrfn)arrset.add(b.arrfn);}}
+        const arr=[...arrset];
+        if(arr.length===0)return null;
+        const baseArr={};for(const a of arr){const g=getArr(a);if(!g)return null;baseArr[a]=g;}
+        const rot=(a,r)=>a.slice(r).concat(a.slice(0,r));
+        const ok=v=>typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3;
+        let decl="";
+        for(const[n,d]of Object.entries(need.base))decl+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
+        for(const[n,w]of Object.entries(need.wrap))decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
+        let fnFull;try{fnFull=new Function("__arrs","__rc4","__b64",decl+"return ("+expr+")");}catch(e){return null;}
+        // METHOD A: independent per-array rotation (scales to any N)
+        try{
+            const terms=splitTopPlus(expr);
+            const termArr=terms.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
+            const fnTerms=new Function("__arrs","__rc4","__b64",decl+"return ["+terms.join(",")+"]");
+            const groups={};arr.forEach(a=>groups[a]=[]);termArr.forEach((a,i)=>{if(a&&groups[a])groups[a].push(i);});
+            const passRot={};let feasible=true;
+            for(const a of arr){
+                const idxs=groups[a];if(!idxs.length){feasible=false;break;}
+                const good=[];
+                for(let r=0;r<baseArr[a].length;r++){if(--__gb.n<=0){feasible=false;break;}
+                    const arrs={};arr.forEach(x=>arrs[x]=x===a?rot(baseArr[a],r):baseArr[x]);
+                    let allok=true;try{const vals=fnTerms(arrs,rc4,b64);for(const i of idxs){const v=vals[i];if(typeof v!=="string"||!/^[\x20-\x7e]*$/.test(v)){allok=false;break;}}}catch(e){allok=false;}
+                    if(allok)good.push(r);
+                    if(good.length>8)break;
+                }
+                if(!good.length||good.length>8){feasible=false;break;}
+                passRot[a]=good;
+            }
+            if(feasible){
+                const keys=arr, lists=keys.map(a=>passRot[a]);
+                const combos=(function prod(i){if(i===lists.length)return [[]];const rest=prod(i+1);const out=[];for(const r of lists[i])for(const t of rest)out.push([r,...t]);return out;})(0);
+                for(const combo of combos){if(--__gb.n<=0)break;const arrs={};keys.forEach((a,i)=>arrs[a]=rot(baseArr[a],combo[i]));try{const v=fnFull(arrs,rc4,b64);if(ok(v))return v;}catch(e){}}
+            }
+        }catch(e){}
+        // METHOD B: full brute-force fallback (1-2 arrays)
+        if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){if(--__gb.n<=0)return null;try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
+        if(arr.length===2){
+            const a0=arr[0],a1=arr[1],A=baseArr[a0],B=baseArr[a1];
+            const terms2=splitTopPlus(expr);
+            const termArr2=terms2.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
+            let fnTermsB=null;try{fnTermsB=new Function("__arrs","__rc4","__b64",decl+"return ["+terms2.join(",")+"]");}catch(e){}
+            if(fnTermsB){
+                const idx0=[],idx1=[];termArr2.forEach((a,i)=>{if(a===a0)idx0.push(i);else if(a===a1)idx1.push(i);});
+                const isPrint=v=>typeof v==="string"&&/^[\x20-\x7e]*$/.test(v);
+                let baseVals=null;try{baseVals=fnTermsB({[a0]:A,[a1]:B},rc4,b64);}catch(e){}
+                if(baseVals){
+                    const rec0=[],good0=[];for(let r0=0;r0<A.length;r0++){if(--__gb.n<=0)break;let vals;try{vals=fnTermsB({[a0]:rot(A,r0),[a1]:B},rc4,b64);}catch(e){rec0.push(null);continue;}const m={};let okp=true;for(const i of idx0){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec0.push(m);if(okp)good0.push(r0);}
+                    const rec1=[],good1=[];for(let r1=0;r1<B.length;r1++){if(--__gb.n<=0)break;let vals;try{vals=fnTermsB({[a0]:A,[a1]:rot(B,r1)},rc4,b64);}catch(e){rec1.push(null);continue;}const m={};let okp=true;for(const i of idx1){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec1.push(m);if(okp)good1.push(r1);}
+                    const L0=good0.length?good0:[...Array(A.length).keys()];
+                    const L1=good1.length?good1:[...Array(B.length).keys()];
+                    for(const r0 of L0){const m0=rec0[r0];if(!m0)continue;for(const r1 of L1){const m1=rec1[r1];if(!m1)continue;let sec="";for(let i=0;i<terms2.length;i++)sec+=(i in m0?m0[i]:(i in m1?m1[i]:baseVals[i]));if(ok(sec))return sec;}}
+                    return null;
+                }
+            }
+            const A2=baseArr[arr[0]],B2=baseArr[arr[1]];for(let r0=0;r0<A2.length;r0++){if(__gb.n<=0)break;const A0=rot(A2,r0);for(let r1=0;r1<B2.length;r1++){if(--__gb.n<=0)break;try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B2,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;
+        }
+        return null;
+    }
+    return { resolveExpr };
+}
+
+// role scoring (signin vs reserve vs initiate) by keyword proximity — mirrors extract_ciphers.js
+function encRoleScores(src, pos) {
+    const w = src.slice(Math.max(0, pos - 1400), pos + 1400);
+    const rM = w.match(/reserve|slot|booking|appointment|schedul/gi) || [];
+    const sM = w.match(/sign-?in|signin|log-?in|login|\botp\b|verify|password|phone|forgot|forget|resend|signup/gi) || [];
+    const iM = w.match(/initiate|payment|dg-?epay|dg_epay|epay|checkout|gateway|invoice/gi) || [];
+    return { sig: sM.length, res: rM.length, ini: iM.length };
+}
+
+function _splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
+// config integer: prefer a QUOTED number (Number("1"), c[f(1486)](_,"27")), else a bare int (old startAt:4)
+function _cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
+// brace-match an object literal starting at `{` (respect quotes)
+function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
+
+// ===== EXECUTION-BASED cipher fallback (for heavy-obfuscation bundles the static resolver can't map) =====
+// Runs the bundle's OWN decoder cluster around the secret so every string-array shuffles into place
+// exactly as the browser does, exposes the base wrapper fns, then evaluates the secret concat with its
+// local wrappers. Used only when buildBundleResolver().resolveExpr() returns null. This is what makes
+// A_E auto-fill the cipher config on bundles like 94e60cd7 (deep wrapper chains + 2 interleaved arrays).
+function _encRunDecoderCluster(src, P) {
+    try {
+        const decRe = /function [\w$]+\((?:e,t|e)\)\{e-=\d+/g, arrRe = /function [\w$]+\(\)\{(?:const|var) e=\[/g;
+        let starts = [];
+        for (const m of src.matchAll(decRe)) starts.push(m.index);
+        for (const m of src.matchAll(arrRe)) starts.push(m.index);
+        starts = starts.filter(x => x < P).sort((a, b) => a - b);
+        if (!starts.length) return {};
+        let start = starts[starts.length - 1];
+        for (let i = starts.length - 1; i > 0; i--) { if (starts[i] - starts[i - 1] < 12000) start = starts[i - 1]; else break; }
+        const shs = [...src.matchAll(/for\(;;\)try\{if\(/g)].map(m => m.index).filter(x => x > start && x < P + 14000);
+        const lastSh = shs.length ? shs[shs.length - 1] : P;
+        let b = 0, q = null, endIdx = -1;
+        for (let k = start; k < src.length; k++) { const c = src[k]; if (q) { if (c === "\\") { k++; continue; } if (c === q) q = null; continue; } if (c === '"' || c === "'" || c === "`") { q = c; continue; } if (c === "{") b++; else if (c === "}") b--; if (k >= lastSh && b === 0) { endIdx = k + 1; break; } }
+        if (endIdx < 0) endIdx = Math.min(src.length, lastSh + 4000);
+        const region = src.slice(start, endIdx);
+        const names = new Set();
+        for (const m of region.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{(?:return [\w$]+\(|e-=)/g)) names.add(m[1]);
+        const store = {};
+        let exposer = "";
+        for (const n of names) exposer += "try{__DEC['" + n + "']=" + n + "}catch(e){}\n";
+        try { new Function("__DEC", "'use strict';\n" + region + "\n" + exposer)(store); } catch (e) {}
+        return store;
+    } catch (e) { return {}; }
+}
+function _encLocalWrappers(src, P) {
+    const win = src.slice(Math.max(0, P - 8000), P + 3000), base = Math.max(0, P - 8000), defs = {};
+    for (const m of win.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g)) {
+        const nm = m[1], ix = base + m.index;
+        if (!defs[nm] || Math.abs(ix - P) < Math.abs(defs[nm].idx - P)) defs[nm] = { idx: ix, text: m[0] };
+    }
+    return defs;
+}
+function _encDecodeSecretExec(src, secretExpr, P) {
+    try {
+        const decoders = _encRunDecoderCluster(src, P), wrappers = _encLocalWrappers(src, P);
+        const need = new Set(), scan = s => { for (const m of s.matchAll(/([A-Za-z_$][\w$]*)\(/g)) need.add(m[1]); };
+        scan(secretExpr);
+        let changed = true;
+        while (changed) { changed = false; const before = need.size; for (const n of [...need]) { if (wrappers[n]) scan(wrappers[n].text); } if (need.size > before) changed = true; }
+        const args = [], vals = [];
+        for (const n of need) { if (decoders[n] && !wrappers[n]) { args.push(n); vals.push(decoders[n]); } }
+        let decl = "";
+        for (const n of need) { if (wrappers[n]) decl += wrappers[n].text + "\n"; }
+        const code = "const [" + args.join(",") + "]=arguments[0];\n" + decl + "\nreturn (" + secretExpr + ");";
+        const v = new Function(code)(vals);
+        return (typeof v === "string" && /^[\x20-\x7e]+$/.test(v) && v.length >= 3) ? v : null;
+    } catch (e) { return null; }
+}
+
+function resolveBundleConfigs(text) {
+    const R = buildBundleResolver(text);
+    const subLocalStr = (expr, objStart) => {
+        const region = text.slice(Math.max(0, objStart - 6000), objStart);
+        const ids = [...new Set((expr.match(/[A-Za-z_$][\w$]*/g) || []))];
+        for (const id of ids) {
+            const esc = id.replace(/[$]/g, '\\$');
+            if (new RegExp('\\b' + esc + '\\s*\\(').test(expr)) continue;
+            const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
+            let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
+            if (best !== null) expr = expr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+        }
+        return expr;
+    };
+    const found = [];
+    let idx = 0; const NEEDLE = 'secret:';
+    while ((idx = text.indexOf(NEEDLE, idx)) !== -1) {
+        const b = text.lastIndexOf('{', idx);
+        if (b < 0) { idx += NEEDLE.length; continue; }
+        const e = _braceObj(text, b);
+        if (e < 0) { idx += NEEDLE.length; continue; }
+        const objStart = b, objStr = text.slice(b + 1, e);
+        idx = e + 1;
+        const fields = _splitTopComma(objStr); const map = {};
+        for (const f of fields) { const ci = f.indexOf(':'); if (ci < 0) continue; map[f.slice(0, ci).trim()] = f.slice(ci + 1).trim(); }
+        if (!('secret' in map) || !('startAt' in map) || !('length' in map) || !('version' in map)) continue;
+        const skip = _cfgNum(map.startAt), length = _cfgNum(map.length), version = _cfgNum(map.version);
+        if (isNaN(skip) || isNaN(length) || isNaN(version)) continue;
+        let secretExpr = map.secret;
+        try {
+            const t0 = secretExpr.trim();
+            const mm = /^([A-Za-z_$][\w$]*)\s*[\.\[]/.exec(t0);
+            if (mm) {
+                const objName = mm[1];
+                const before = text.slice(0, objStart);
+                const re = new RegExp('[^\\w$]' + objName.replace(/[$]/g, '\\$') + '\\s*=\\s*\\{', 'g');
+                let om = null, mmm; while ((mmm = re.exec(before))) om = mmm;
+                if (om) {
+                    const ob = before.indexOf('{', om.index), oe = _braceObj(text, ob);
+                    if (oe > ob) {
+                        const ofields = _splitTopComma(text.slice(ob + 1, oe));
+                        let best = null, bestLen = -1;
+                        for (const of2 of ofields) {
+                            const ci = of2.indexOf(':'); if (ci < 0) continue;
+                            const val = of2.slice(ci + 1).trim();
+                            if (/^function\b/.test(val)) continue;
+                            if (!/[A-Za-z_$][\w$]*\(/.test(val)) continue;   // must use a decoder call
+                            const sval = subLocalStr(val, objStart);        // resolve local key vars (const e="...")
+                            let dec = null; try { dec = R.resolveExpr(sval, objStart); } catch (e3) {}
+                            if (dec && !/\s/.test(dec) && dec.length >= 10 && dec.length > bestLen) { best = sval; bestLen = dec.length; }
+                        }
+                        if (best) secretExpr = best;
+                    }
+                }
+            }
+        } catch (e2) {}
+        // inline local string vars used as bare args, e.g. r(1538,n) where const ...,n="Y$pG"
+        try {
+            const region = text.slice(Math.max(0, objStart - 6000), objStart);
+            const ids = [...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g) || []))];
+            for (const id of ids) {
+                const esc = id.replace(/[$]/g, '\\$');
+                if (new RegExp('\\b' + esc + '\\s*\\(').test(secretExpr)) continue; // decoder call → skip
+                const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
+                let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
+                if (best !== null) secretExpr = secretExpr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+            }
+        } catch (e2) {}
+        let secret = R.resolveExpr(secretExpr, objStart);
+        if (!secret) {
+            // static resolver failed → try execution-based decode (heavy-obfuscation bundles)
+            secret = _encDecodeSecretExec(text, secretExpr, objStart);
+            if (secret) console.log('%c[RJ EncAuto] v' + version + ' secret decoded via EXECUTION fallback @ ' + objStart, 'color:#4ade80;font-weight:800');
+        }
+        if (!secret) { console.warn('[RJ EncAuto] config v' + version + ' secret decode FAILED @', objStart); continue; }
+        const sc = encRoleScores(text, objStart);
+        found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res, ini: sc.ini });
+    }
+    // dedup by version|secret, summing role evidence
+    const uniq = []; const seen = new Map();
+    for (const c of found) {
+        const k = c.version + '|' + c.key;
+        if (seen.has(k)) { const e = seen.get(k); e.sig += c.sig; e.res += c.res; e.ini += c.ini; continue; }
+        const e = { ...c }; seen.set(k, e); uniq.push(e);
+    }
+    // assign each config the role with the STRICTLY highest keyword score (tie/zero → unknown)
+    for (const c of uniq) {
+        const ranked = [['signin', c.sig], ['reserve', c.res], ['initiate', c.ini]].sort((a, b) => b[1] - a[1]);
+        c.role = (ranked[0][1] > 0 && ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+    }
+    if (uniq.length === 2) {
+        const known = uniq.filter(c => c.role), unknown = uniq.filter(c => !c.role);
+        if (known.length === 1 && unknown.length === 1) unknown[0].role = known[0].role === 'signin' ? 'reserve' : 'signin';
+    }
+    const out = { signin: null, reserve: null, initiate: null };
+    for (const c of uniq) { if (c.role && !out[c.role]) out[c.role] = { key: c.key, skip: c.skip, length: c.length, version: c.version }; }
+    // Single key in the bundle → it serves ALL purposes (newer bundles do this).
+    if (uniq.length === 1) { const c = uniq[0]; const cfg = { key: c.key, skip: c.skip, length: c.length, version: c.version }; out.signin = out.signin || cfg; out.reserve = out.reserve || cfg; out.initiate = out.initiate || cfg; }
+    return out;
+}
+
+async function encConfigAutoFetch(forceReload) {
+    const bundleUrls = await findBundleUrls();
+    if (!bundleUrls.length) {
+        logStatus('\u23f3 Bundle not available yet (server 503 / not loaded) \u2014 will retry', 'y');
+        return;
+    }
+
+    // Cache key = list signature; if unchanged and config already active, skip (unless forced).
+    const currentHash = bundleUrls.join('|');
+
+    if (!forceReload) {
+        const storedHash  = localStorage.getItem(ENC_BUNDLE_HASH_KEY);
+        const alreadyFresh = storedHash === currentHash
+            && encConfig.signin.active && encConfig.signin.key
+            && encConfig.reserve.active && encConfig.reserve.key;
+        if (alreadyFresh) return;
+    } else {
+        logStatus('\ud83d\udd04 Force re-loading encryption config\u2026', 'y');
+        localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
+    }
+
+    logStatus(`🔍 Loading encryption config from ${bundleUrls.length} IVAC chunk(s)…`, 'y');
+    try {
+        let resolved = null, usedSrc = null, fetched = 0;
+        for (const src of bundleUrls) {
+            let text;
+            try {
+                const r = await pageFetch(src);
+                if (!r.ok) { console.warn('[RJ EncAuto] skip', src, 'HTTP', r.status); continue; }
+                text = await r.text();
+            } catch (e) { console.warn('[RJ EncAuto] fetch failed', src, e.message); continue; }
+            fetched++;
+            if (text.indexOf('secret:') === -1 && text.indexOf('secret :') === -1) continue; // no cipher config here
+            console.log('[RJ EncAuto] Bundle fetched:', text.length, 'chars from', src);
+            const r2 = resolveBundleConfigs(text);
+            if (r2.signin || r2.reserve || r2.initiate) { resolved = r2; usedSrc = src; break; }
+            console.warn('[RJ EncAuto] chunk had secret: but decode failed @', src);
+        }
+
+        if (!resolved) {
+            if (!fetched) throw new Error('no chunk fetched (all failed)');
+            logStatus('⚠ Live resolve failed — keeping current verified config', 'y');
+            console.warn('[RJ EncAuto] No config decoded from any chunk. Keeping existing config.');
+            return { signin: false, reserve: false };
+        }
+        console.log('[RJ EncAuto] Config chunk:', usedSrc);
+        const signin  = resolved.signin;
+        const reserve = resolved.reserve;
+
+        if (!signin && !reserve) {
+            logStatus('⚠ Live resolve failed — keeping current verified config', 'y');
+            console.warn('[RJ EncAuto] No config decoded from bundle. Keeping existing config.');
+            return { signin: false, reserve: false };
+        }
+
+        // manual-lock: never overwrite a config the user entered by hand (marked manual) that is active+keyed
+        const isLocked = (p) => encConfig[p] && encConfig[p].manual && encConfig[p].active && encConfig[p].key;
+        if (signin) {
+            if (isLocked('signin')) { logStatus('🔒 Signin: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.signin = { active: true, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
+                encConfigSave('signin');
+                logStatus('✅ Signin: v' + signin.version + ' skip=' + signin.skip + ' len=' + signin.length + ' key[' + signin.key.length + ']', 'g');
+            }
+        } else {
+            logStatus('⚠ Signin not resolved — keeping current config', 'y');
+        }
+        if (reserve) {
+            if (isLocked('reserve')) { logStatus('🔒 Reserve: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.reserve = { active: true, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
+                encConfigSave('reserve');
+                logStatus('✅ Reserve: v' + reserve.version + ' skip=' + reserve.skip + ' len=' + reserve.length + ' key[' + reserve.key.length + ']', 'g');
+            }
+        } else {
+            logStatus('⚠ Reserve not resolved — keeping current config', 'y');
+        }
+
+        const initiate = resolved.initiate;
+        const initOwn  = !!initiate;
+        const initCfg  = initiate || signin || reserve;
+        if (initCfg) {
+            if (isLocked('initiate')) { logStatus('🔒 Initiate: manual config kept (A_E did not overwrite)', 'g'); }
+            else {
+                encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
+                encConfigSave('initiate');
+                logStatus('✅ Initiate' + (initOwn ? '' : ' (mirrored)') + ': v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
+            }
+        }
+
+        localStorage.setItem(ENC_BUNDLE_HASH_KEY, currentHash);
+        encConfigApplyToUI('signin');
+        encConfigApplyToUI('reserve');
+        encConfigApplyToUI('initiate');
+
+        if (signin && reserve) {
+            logStatus('✅ Encryption config fully resolved from live bundle!', 'g'); try { announceSuccess('Scan successful, encryption ready'); } catch(e) {}
+        } else {
+            logStatus('⚠ Partial resolve — other purpose kept on current config', 'y');
+        }
+
+        return { signin: !!signin, reserve: !!reserve };
+
+    } catch (e) {
+        console.error('[RJ EncAuto] Top-level error:', e);
+        // KEEP existing config on crash — never send raw
+        logStatus('⚠ Auto-config error: ' + e.message + ' — keeping current config', 'y');
+        return { signin: false, reserve: false };
+    }
+}
+
+// ==================== SESSION STATE & PERSISTENCE ====================
+const SESSION_GM_KEY = 'rj_master_session';
+
+const sessionState = {
+    accessToken: null,
+    userId: null,
+    requestId: null,
+    expiresAt: null,
+    phone: null,
+    loggedInAt: null,
+    isVerified: false,
+    appointmentId: null,
+    appointmentCreated: false,
+    abcDate: null,
+    abcSlot: null,
+    ivacCenter: null,
+    mission: null,
+    numberOfApplicants: null,
+    totalAmount: null,
+    fileUploadStatus: null,
+    visaCodes: null,
+    reservationId: null,
+    reserveTtlSec: null,
+    reserveStatus: null,
+    reservedAt: null,
+    bookedAt: null,
+    otpVerifiedAt: null,
+    otpExpiresAt: null
+};
+
+function gmGet(key, defaultValue) {
+    try {
+        if (typeof GM_getValue !== 'undefined') return GM_getValue(key, defaultValue);
+    } catch(e) {}
+    try {
+        const raw = localStorage.getItem('gm_' + key);
+        return raw ? JSON.parse(raw) : defaultValue;
+    } catch(e) { return defaultValue; }
+}
+function gmSet(key, value) {
+    try {
+        if (typeof GM_setValue !== 'undefined') { GM_setValue(key, value); return; }
+    } catch(e) {}
+    try { localStorage.setItem('gm_' + key, JSON.stringify(value)); } catch(e) {}
+}
+function gmDelete(key) {
+    try {
+        if (typeof GM_deleteValue !== 'undefined') { GM_deleteValue(key); return; }
+    } catch(e) {}
+    try { localStorage.removeItem('gm_' + key); } catch(e) {}
+}
+
+function buildAuthStorage(state) {
+    return {
+        state: {
+            token: state.accessToken || null,
+            userId: state.userId || null,
+            expiresAt: 899,
+            isAuthenticated: !!state.accessToken,
+            isVerified: !!state.isVerified,
+            requestId: state.requestId || null,
+            phone: state.phone || null,
+            otpSentAt: state.loggedInAt || Date.now()
+        }
+    };
+}
+
+function persistSession() {
+    try { localStorage.setItem('rj_session', JSON.stringify(sessionState)); } catch(e) {}
+    try {
+        const sf = buildAuthStorage(sessionState);
+        localStorage.setItem('auth-storage', JSON.stringify(sf));
+        localStorage.setItem('rj-auth-storage-backup', JSON.stringify(sf));
+    } catch(e) {}
+    try { gmSet(SESSION_GM_KEY, { ...sessionState }); } catch(e) {}
+}
+
+function saveSession(data, phone) {
+    sessionState.isVerified         = false;
+    sessionState.otpVerifiedAt      = null;
+    sessionState.otpExpiresAt       = null;
+    try { if (typeof smsFetcher !== 'undefined') { smsFetcher.usedOtps.clear(); } } catch(e) {}
+    try { if (typeof stopSmsFetcher === 'function') { stopSmsFetcher('new signin'); } } catch(e) {}
+    sessionState.appointmentId              = null;
+    sessionState.appointmentCreated         = false;
+    sessionState.abcDate            = null;
+    sessionState.abcSlot            = null;
+    sessionState.ivacCenter         = null;
+    sessionState.mission            = null;
+    sessionState.numberOfApplicants = null;
+    sessionState.totalAmount        = null;
+    sessionState.fileUploadStatus   = null;
+    sessionState.visaCodes          = null;
+    sessionState.reservationId      = null;
+    sessionState.reserveTtlSec      = null;
+    sessionState.reserveStatus      = null;
+    sessionState.reservedAt         = null;
+    sessionState.bookedAt           = null;
+
+    sessionState.accessToken = data.accessToken;
+    sessionState.userId      = data.userId;
+    sessionState.requestId   = data.requestId;
+    sessionState.expiresAt   = data.expiresAt;
+    sessionState.phone       = phone;
+    sessionState.loggedInAt  = Date.now();
+    persistSession();
+    console.log('[RJ Session] Fresh Signin — all downstream state wiped, new token saved');
+}
+
+function markSessionVerified() {
+    const wasAlreadyVerified = sessionState.isVerified;
+    sessionState.isVerified = true;
+    sessionState.otpVerifiedAt = Date.now();
+    persistSession();
+    if (!wasAlreadyVerified) {
+        try { announceSuccess('Verification successful'); } catch(e) {}   // voice, no beep
+        // AUTO-UPLOAD after login: only when BOTH Auto and Single are ON. Fires once per fresh verify.
+        try {
+            if (typeof isAutoOn === 'function' && typeof isSingleOn === 'function' && isAutoOn() && isSingleOn()) {
+                // Set pending IMMEDIATELY (before the timer) so the book step waits for upload to finish
+                // instead of racing get-booking-config while files are still uploading.
+                autoUploadPending = true;
+                autoUploadConfirmed = false;
+                setTimeout(() => { try { autoUploadChain(); } catch (e) {} }, 1200);
+            }
+        } catch (e) {}
+    }
+}
+
+// ==================== AUTO-UPLOAD CHAIN (Patient → Attendants → Overview match → Confirm Center) ====================
+// Runs after login OTP verify when BOTH Auto & Single are ON. Patient is mandatory & first; nothing else
+// uploads before it. Each part retries until success (bounded), skipping empty slots. After all uploads,
+// the file overview must MATCH the loaded files (count + Patient present) before Confirm Center auto-fires.
+// Turning OFF Auto or Single mid-run stops it; Stop-flag safety cap prevents infinite loops.
+let autoUploadRunning = false;
+// autoUploadPending: true from the moment OTP verify fires the chain, until the chain fully finishes.
+//   The book step (get-booking-config) waits on this so it never fires while files are still uploading.
+// autoUploadConfirmed: true once the Confirm Mission & Center click has been dispatched (upload complete).
+let autoUploadPending = false;
+let autoUploadConfirmed = false;
+const AUTO_UPLOAD_MAX_TRIES = 60;   // per part — generous "until success" with a safety ceiling
+
+function _auHasFile(id) {
+    try { if (document.getElementById(id)?.files?.length > 0) return true; } catch (e) {}
+    try { const sv = (typeof window.__rjSavedUploadsGet === 'function') ? window.__rjSavedUploadsGet() : null; return !!(sv && sv[id]); } catch (e) { return false; }
+}
+function _auSleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+function _auGateOn() { try { return isAutoOn() && isSingleOn(); } catch (e) { return false; } }
+
+async function _auUploadUntilSuccess(inputId, isPrimary, label) {
+    let tries = 0;
+    const _upload = (typeof window.__rjUploadFile === 'function') ? window.__rjUploadFile : null;
+    if (!_upload) { logStatus('❌ Auto-upload: upload engine not ready', 'r'); return false; }
+    // Retry UNTIL SUCCESS — the only stop condition is Auto/Single being turned OFF (the gate).
+    // The gap between attempts is the UI "file upload delay" (#rt-upload, seconds; default 5).
+    while (_auGateOn()) {
+        tries++;
+        const ok = await _upload(inputId, isPrimary, label);
+        if (ok) return true;
+        const gapMs = getUploadDelaySec() * 1000;
+        logStatus(`↻ ${label} upload failed — retry ${tries} in ${getUploadDelaySec()}s (until success)…`, 'y');
+        await _auSleep(gapMs);
+    }
+    logStatus(`⏹ ${label}: Auto/Single turned OFF — auto-upload stopped`, 'y');
+    return false;
+}
+
+// Appointment (create) — MUST succeed before any file upload. Clicks the Appointment button and waits
+// for sessionState.appointmentId to appear; retries until success (bounded) or Auto/Single turned off.
+async function _auAppointmentUntilSuccess() {
+    // idempotent: appointment already done this session → skip (don't create another)
+    if (sessionState.appointmentCreated || sessionState.appointmentId) { logStatus('📋 Appointment already done — skipping', 'g'); return true; }
+    let tries = 0;
+    while (_auGateOn()) {
+        tries++;
+        logStatus(`📋 Appointment (create) — try ${tries}…`, 'y');
+        sessionState.appointmentCreated = false;   // fresh detection for this click
+        try { const b = document.getElementById('ivac-btn-appointment'); if (b) b.click(); } catch (e) {}
+        // Appointment success = the call returns 2xx (NO id here). The handler sets appointmentCreated=true.
+        for (let w = 0; w < 24 && !sessionState.appointmentCreated; w++) await _auSleep(300);
+        if (sessionState.appointmentCreated) { logStatus('✅ Appointment created — starting uploads', 'g'); return true; }
+        if (tries >= 6) { logStatus('⛔ Appointment failed after 6 tries — chain aborted', 'r'); return false; }
+        await _auSleep(1200);
+    }
+    logStatus('⏹ Appointment: Auto/Single turned OFF — stopped', 'y');
+    return false;
+}
+
+// --- name matching: pull the applicant name out of the loaded file's NAME and match it to overview fullName ---
+function _auFileName(id) {
+    try { const el = document.getElementById(id); if (el && el.files && el.files.length) return el.files[0].name || ''; } catch (e) {}
+    try { const sv = (typeof window.__rjSavedUploadsGet === 'function') ? window.__rjSavedUploadsGet() : null; const f = sv && sv[id]; if (f && f.name) return f.name; } catch (e) {}
+    return '';
+}
+function _auNameTokens(s) {
+    return String(s || '')
+        .replace(/\.[a-z0-9]+$/i, '')
+        .toUpperCase()
+        .replace(/[^A-Z]+/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length >= 3);
+}
+function _auTokensMatch(fileTokens, nameTokens) {
+    if (!fileTokens.length || !nameTokens.length) return false;
+    const fileSet = new Set(fileTokens);
+    const shared = nameTokens.filter(t => fileSet.has(t)).length;
+    const need = Math.min(2, nameTokens.length);
+    return shared >= need;
+}
+
+async function _auFetchOverview() {
+    try {
+        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v3", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+        let body = null; try { body = await r.json(); } catch (e) {}
+        const ok = !!(r && r.status >= 200 && r.status < 300 && body);
+        return { ok, data: (body && body.data) || [] };
+    } catch (e) { return { ok: false, data: [] }; }
+}
+
+async function autoUploadChain() {
+    if (autoUploadRunning) { logStatus('🤖 auto-upload already running', 'y'); return; }
+    autoUploadRunning = true;
+    try {
+        const slots = [
+            ['ivac-file-upload',   true,  'Patient File'],
+            ['ivac-file-upload-2', false, 'Attendant 1'],
+            ['ivac-file-upload-3', false, 'Attendant 2'],
+            ['ivac-file-upload-4', false, 'Attendant 3']
+        ];
+        const loaded = slots.filter(([id]) => _auHasFile(id));
+        // RULE: Patient is mandatory & must be first — no upload happens without it.
+        if (!_auHasFile('ivac-file-upload')) { logStatus('❌ Auto-upload: Patient file not loaded — nothing uploaded', 'r'); return; }
+        logStatus('🤖 Auto-upload started (Auto + Single ON)…', 'g');
+
+        // 0) APPOINTMENT first — mandatory before any upload; retry until success
+        if (!await _auAppointmentUntilSuccess()) return;
+
+        // 0.5) PRE-CHECK overview — a previous session may have ALREADY uploaded these files.
+        // Re-uploading an already-present applicant makes the server 404 (upload_file_v2117 404s).
+        // So fetch the overview once up front; any loaded file whose name already matches an
+        // overview applicant is treated as done and is NOT re-uploaded. If every loaded file is
+        // already present, we skip uploads entirely and go straight to Confirm Center.
+        const _isDone = (id, ovEntries) => {
+            const ftok = _auNameTokens(_auFileName(id));
+            const hit = ovEntries.find(e => !e.used && _auTokensMatch(ftok, e.tokens));
+            if (hit) { hit.used = true; return true; }
+            return false;
+        };
+        let preOv = await _auFetchOverview();
+        let preEntries = (preOv.ok ? (Array.isArray(preOv.data) ? preOv.data : []) : [])
+            .map(d => ({ name: (d && d.fullName) || '', tokens: _auNameTokens(d && d.fullName), used: false }));
+        const _alreadyUp = {};
+        for (const [id, , label] of loaded) {
+            if (_isDone(id, preEntries)) { _alreadyUp[id] = true; logStatus(`✔ ${label}: already uploaded (exists in overview) — skip`, 'g'); }
+        }
+        const allAlready = loaded.every(([id]) => _alreadyUp[id]);
+        if (allAlready && preOv.ok) {
+            logStatus('✅ All files already uploaded (previous session) — skipping upload, confirming center', 'g');
+        } else {
+            // 1) Patient FIRST (until success) — unless already uploaded
+            if (_alreadyUp['ivac-file-upload']) { logStatus('⤼ Patient File: already uploaded — skip', 'g'); }
+            else if (!await _auUploadUntilSuccess('ivac-file-upload', true, 'Patient File')) return;
+
+            // 2) Attendants 1→2→3 in order — only loaded & not-already-uploaded slots, each until success
+            for (const [id, , label] of slots.slice(1)) {
+                if (!_auGateOn()) { logStatus('⏹ Auto/Single OFF — stopped', 'y'); return; }
+                if (!_auHasFile(id)) { logStatus(`⤼ ${label}: no file — skipped`, 'y'); continue; }
+                if (_alreadyUp[id]) { logStatus(`⤼ ${label}: already uploaded — skip`, 'g'); continue; }
+                if (!await _auUploadUntilSuccess(id, false, label)) return;
+            }
+        }
+
+        // 3) Overview → MATCH against loaded files
+        const ov = await _auFetchOverview();
+        if (!ov.ok) { logStatus('❌ Auto: overview fetch failed — Confirm Center skipped', 'r'); return; }
+        const data = Array.isArray(ov.data) ? ov.data : [];
+        const overviewCount = data.length;
+        const primaryCount = data.filter(d => d && d.primary === true).length;
+        const expectedCount = loaded.length;
+
+        // NAME MATCH: every loaded file's name must map to a DISTINCT overview applicant (by fullName tokens).
+        const ovEntries = data.map(d => ({ name: (d && d.fullName) || '', tokens: _auNameTokens(d && d.fullName), used: false }));
+        const unmatched = [];
+        for (const [id, , label] of loaded) {
+            const fname = _auFileName(id);
+            const ftok = _auNameTokens(fname);
+            const hit = ovEntries.find(e => !e.used && _auTokensMatch(ftok, e.tokens));
+            if (hit) { hit.used = true; logStatus(`  ✓ ${label}: "${fname}" ↔ "${hit.name}"`, 'g'); }
+            else { unmatched.push(`${label} ("${fname}")`); logStatus(`  ✗ ${label}: "${fname}" — no overview name match`, 'r'); }
+        }
+        const countOk = (overviewCount === expectedCount);
+        const namesOk = (unmatched.length === 0);
+        const patientOk = (primaryCount >= 1);
+        const match = countOk && namesOk && patientOk;
+        logStatus(`🔎 Overview: ${overviewCount} applicant(s) • loaded ${expectedCount} • names ${namesOk ? 'MATCH' : 'MISMATCH'} • patient ${patientOk ? 'yes' : 'NO'}`, match ? 'g' : 'y');
+        if (!match) {
+            let why = [];
+            if (!countOk) why.push(`count ${overviewCount}≠${expectedCount}`);
+            if (!namesOk) why.push(`unmatched: ${unmatched.join(', ')}`);
+            if (!patientOk) why.push('no patient(primary)');
+            logStatus('⛔ Overview does NOT match loaded files — Confirm Center SKIPPED — ' + why.join(' | '), 'r');
+            try { showMilestonePopup('Mismatch', why.join(' | '), '⚠️'); } catch (e) {}
+            return;
+        }
+
+        // 4) Confirm Mission & Center (only when everything matched)
+        // FIRST force the dropdown to THIS profile's saved mission, so auto-confirm targets the
+        // correct centre (e.g. Rajshahi) instead of leaving it at the default Dhaka.
+        let _cmission = 'dhaka';
+        try { _cmission = (profiles[activeProfileName]?.mission) || document.getElementById('ivac-appointment-mission')?.value || 'dhaka'; } catch (e) {}
+        try { const _ms = document.getElementById('ivac-appointment-mission'); if (_ms && _ms.value !== _cmission) { _ms.value = _cmission; _ms.dispatchEvent(new Event('change', { bubbles: true })); } } catch (e) {}
+        logStatus(`✅ Overview matched → confirming Mission & Center (${_cmission})…`, 'g');
+        try { const cbtn = document.getElementById('ivac-btn-appointment-booking'); if (cbtn) cbtn.click(); } catch (e) {}
+        autoUploadConfirmed = true;   // upload fully complete + center confirmed → book may now run get-booking-config
+        try { showMilestonePopup('Auto Upload Done', `${overviewCount} file(s) uploaded & matched → confirming center`, '🎉'); } catch (e) {}
+        // next steps (Book → Reserve → Initiate) continue as before via your existing Auto flow.
+    } catch (e) { logStatus('Auto-upload error: ' + e.message, 'r'); }
+    finally { autoUploadRunning = false; autoUploadPending = false; }
+}
+
+function restoreSession() {
+    let restored = false;
+    try {
+        const gm = gmGet(SESSION_GM_KEY, null);
+        if (gm && gm.accessToken && gm.loggedInAt) {
+            const age = Date.now() - gm.loggedInAt;
+            if (age < 15 * 60 * 1000) {
+                Object.assign(sessionState, gm);
+                restored = true;
+                console.log('[RJ Session] Restored from GM storage (age', Math.round(age/1000), 's)');
+            } else {
+                console.log('[RJ Session] GM session too old, discarding');
+                gmDelete(SESSION_GM_KEY);
+            }
+        }
+    } catch(e) {}
+
+    if (!restored) {
+        try {
+            const raw = localStorage.getItem('rj_session');
+            if (raw) {
+                const s = JSON.parse(raw);
+                if (s.accessToken && s.loggedInAt) {
+                    const age = Date.now() - s.loggedInAt;
+                    if (age < 15 * 60 * 1000) {
+                        Object.assign(sessionState, s);
+                        restored = true;
+                        console.log('[RJ Session] Restored from rj_session localStorage');
+                    }
+                }
+            }
+        } catch(e) {}
+    }
+
+    if (!restored) {
+        try {
+            const raw = localStorage.getItem('auth-storage');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const s = parsed.state || parsed;
+                if (s.token) {
+                    sessionState.accessToken = s.token;
+                    sessionState.userId      = s.userId || null;
+                    sessionState.requestId   = s.requestId || null;
+                    sessionState.phone       = s.phone || null;
+                    sessionState.isVerified  = !!s.isVerified;
+                    sessionState.loggedInAt  = s.otpSentAt || Date.now();
+                    restored = true;
+                    console.log('[RJ Session] Restored from auth-storage');
+                }
+            }
+        } catch(e) {}
+    }
+
+    if (restored) {
+        persistSession();
+        try {
+            const elapsedSinceLogin = Date.now() - sessionState.loggedInAt;
+            const remainingMs = (15 * 60 * 1000) - elapsedSinceLogin;
+            if (remainingMs > 0 && sessionState.isVerified) {
+                setTimeout(() => {
+                    try {
+                        if (typeof startTokenTimerWithExpiry === 'function') {
+                            startTokenTimerWithExpiry(sessionState.loggedInAt + 15 * 60 * 1000);
+                        }
+                    } catch(e) {}
+                }, 500);
+            } else if (remainingMs > 0 && !sessionState.isVerified) {
+                const otpElapsed = Date.now() - sessionState.loggedInAt;
+                const otpRemain = (5 * 60 * 1000) - otpElapsed;
+                if (otpRemain > 0) {
+                    setTimeout(() => {
+                        try {
+                            if (typeof startOtpTimer === 'function') {
+                                if (timers?.signinOtp) {
+                                    if (timers.signinOtp.intervalId) clearInterval(timers.signinOtp.intervalId);
+                                    timers.signinOtp.expiresAt = sessionState.loggedInAt + (5 * 60 * 1000);
+                                    timers.signinOtp.beeped = false;
+                                    timers.signinOtp.intervalId = setInterval(() => tickOtpTimer('signinOtp'), 1000);
+                                    tickOtpTimer('signinOtp');
+                                }
+                            }
+                        } catch(e) {}
+                    }, 500);
+                }
+            }
+        } catch(e) {}
+    }
+    return restored;
+}
+
+function clearAllSession() {
+    _autoReserveKicked = false;   // notun cycle e abar auto-reserve fire korte parbe
+    sessionState.accessToken        = null;
+    sessionState.userId             = null;
+    sessionState.requestId          = null;
+    sessionState.expiresAt          = null;
+    sessionState.phone              = null;
+    sessionState.loggedInAt         = null;
+    sessionState.isVerified         = false;
+    sessionState.appointmentId              = null;
+    sessionState.appointmentCreated         = false;
+    sessionState.abcDate            = null;
+    sessionState.abcSlot            = null;
+    sessionState.ivacCenter         = null;
+    sessionState.mission            = null;
+    sessionState.numberOfApplicants = null;
+    sessionState.totalAmount        = null;
+    sessionState.fileUploadStatus   = null;
+    sessionState.visaCodes          = null;
+    sessionState.reservationId      = null;
+    sessionState.reserveTtlSec      = null;
+    sessionState.reserveStatus      = null;
+    sessionState.reservedAt         = null;
+    sessionState.bookedAt           = null;
+    sessionState.otpVerifiedAt      = null;
+    sessionState.otpExpiresAt       = null;
+    try { if (typeof smsFetcher !== 'undefined') { smsFetcher.usedOtps.clear(); stopSmsFetcher('session clear'); } } catch(e) {}
+    try { localStorage.removeItem('rj_session'); } catch(e) {}
+    try { localStorage.removeItem('auth-storage'); } catch(e) {}
+    try { localStorage.removeItem('rj-auth-storage-backup'); } catch(e) {}
+    try { gmDelete(SESSION_GM_KEY); } catch(e) {}
+}
+
+setInterval(() => {
+    if (!sessionState.accessToken) return;
+    if (!sessionState.loggedInAt) return;
+    const age = Date.now() - sessionState.loggedInAt;
+
+    if (age >= 15 * 60 * 1000) {
+        console.log(`[RJ Session] Expired (age ${Math.round(age/1000)}s) — auto-clearing`);
+        try {
+            clearAllSession();
+            stopOtpTimer('signinOtp');
+            stopOtpTimer('advanceOtp');
+            if (timers?.token?.intervalId) {
+                clearInterval(timers.token.intervalId);
+                timers.token.intervalId = null;
+                timers.token.expiresAt = null;
+                refreshTokenCdUI();
+            }
+            logStatus('🔒 Session expired (15 min) — login again', 'r');
+        } catch(e) {}
+        return;
+    }
+
+    try {
+        const current = localStorage.getItem('auth-storage');
+        let needsRestore = false;
+        if (!current) {
+            needsRestore = true;
+        } else {
+            try {
+                const parsed = JSON.parse(current);
+                if (!parsed?.state?.token) needsRestore = true;
+            } catch(e) { needsRestore = true; }
+        }
+        if (needsRestore) {
+            const sf = buildAuthStorage(sessionState);
+            localStorage.setItem('auth-storage', JSON.stringify(sf));
+            console.log('[RJ Session] auth-storage was cleared — restored from in-memory state');
+        }
+    } catch(e) {}
+}, 1000);
+
+// ==================== SIGNUP STATE ====================
+const signupState = {
+    mobileVerified: false,
+    emailVerified: false,
+    mobileRequestId: null,       // per-OTP requestId for PHONE verify
+    emailRequestId: null,        // per-OTP requestId for EMAIL verify
+    signUpRequestId: null,       // NEW: master session id (created on email OTP send) — threads phone/signup/consent
+    stopRequested: false
+};
+
+function resetSignupState() {
+    signupState.mobileVerified = false;
+    signupState.emailVerified = false;
+    signupState.mobileRequestId = null;
+    signupState.emailRequestId = null;
+    signupState.signUpRequestId = null;
+    signupState.stopRequested = false;
+}
+
+// ==================== STATUS LOGGER ====================
+function logStatus(msg, color = 'g') {
+    const t = new Date().toLocaleTimeString('en-US', { hour12: true });
+    const html = `<span class="${color}">[${t}] ${msg}</span>`;
+    ['ll', 'ls', 'lu', 'lf'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    });
+    console.log(`[RJ ${t}] ${msg}`);
+}
+
+function showMilestonePopup(title, message, emoji) {
+    if (!document.getElementById('popup-toggle')?.classList.contains('on')) return;
+    const existing = document.getElementById('rj-milestone-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'rj-milestone-overlay';
+    const card = document.createElement('div');
+    card.className = 'mp-card';
+    card.innerHTML = `
+        <div class="mp-emoji">${emoji}</div>
+        <div class="mp-title">${title}</div>
+        <div class="mp-msg">${message}</div>
+        <div style="padding:0 20px 18px 20px"><button class="mp-ok" id="rj-popup-ok">OK</button></div>
+    `;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    document.getElementById('rj-popup-ok').onclick = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+// ==================== CLOUDFLARE TURNSTILE CAPTCHA ====================
+const CF_SITEKEY = '0x4AAAAAACghKkJHL1t7UkuZ';
+let cfWidgetId = null;
+let cfToken    = null;
+let cfTokenAt  = 0;     // when the current cfToken was solved (to drop a stale one after TTL)
+let cfMode     = 'signin';
+
+if (!document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')) {
+    const cfScript = document.createElement('script');
+    cfScript.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    cfScript.async = true;
+    cfScript.defer = true;
+    document.head.appendChild(cfScript);
+}
+
+let _renderInFlight = false;
+let _cfRecoverPending = false;   // guards captcha error auto-recovery so it can't tight-loop
+let _lastRenderAt   = 0;
+const RENDER_COOLDOWN = 10 * 1000;
+
+function renderCaptcha() {
+    if (typeof turnstile === 'undefined') return;
+    const container = document.getElementById('cfTurnstile');
+    if (!container) return;
+
+    if (_renderInFlight) {
+        console.log('[RJ Captcha] render already in flight, skipping');
+        return;
+    }
+    if (Date.now() - _lastRenderAt < RENDER_COOLDOWN) {
+        console.log('[RJ Captcha] render cooldown active, skipping');
+        return;
+    }
+    _renderInFlight = true;
+    _lastRenderAt = Date.now();
+
+    if (cfWidgetId !== null) {
+        try { turnstile.remove(cfWidgetId); } catch(e) {}
+        cfWidgetId = null;
+        cfToken = null;
+        container.innerHTML = '';
+    }
+
+    try {
+        cfWidgetId = turnstile.render(container, {
+            sitekey: CF_SITEKEY,
+            size: 'normal',
+            theme: 'dark',
+            appearance: 'always',
+            callback: (token) => {
+                cfToken = token; cfTokenAt = Date.now();
+                tokenQueueAddTagged(token, 'turnstile');
+                logStatus(`✓ Captcha solved → queue ${tokenQueue.length}/${TOKEN_QUEUE_MAX}`, 'g');
+
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (isApiMode) return;
+
+                setTimeout(() => {
+                    tokenQueueCleanExpired();
+                    const turnstileCount = tokenQueue.filter(t => t.source === 'turnstile').length;
+                    if (turnstileCount >= TOKEN_QUEUE_MAX) {
+                        console.log(`[RJ Turnstile] Queue full (${turnstileCount}/${TOKEN_QUEUE_MAX}) — pausing auto-solve`);
+                        return;
+                    }
+                    try {
+                        turnstile.reset(cfWidgetId);
+                        cfToken = null;
+                        console.log(`[RJ Turnstile] Auto-reset for next solve (queue ${turnstileCount}/${TOKEN_QUEUE_MAX})`);
+                    } catch(e) {
+                        console.log('[RJ Turnstile] reset failed:', e.message);
+                    }
+                }, 2000);
+            },
+            'error-callback': (code) => {
+                cfToken = null;
+                logStatus('✗ Captcha error' + (code ? ' (' + code + ')' : '') + ' — auto-recovering…', 'y');
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (isApiMode) return true;   // API mode: ignore widget errors
+                // gentle recovery: reset the SAME widget after a backoff (avoids iframe churn);
+                // only if reset throws, do one full re-render as a last resort.
+                if (!_cfRecoverPending) {
+                    _cfRecoverPending = true;
+                    setTimeout(() => {
+                        _cfRecoverPending = false;
+                        try { if (document.getElementById('captcha-toggle')?.classList.contains('on')) return; } catch(e) {}
+                        try { if (cfWidgetId !== null && typeof turnstile !== 'undefined') { turnstile.reset(cfWidgetId); cfToken = null; } else { _lastRenderAt = 0; renderCaptcha(); } }
+                        catch(e) { try { hideManualCaptcha(); _lastRenderAt = 0; renderCaptcha(); } catch(e2) {} }
+                    }, 3500);
+                }
+                return true;
+            },
+            'expired-callback': () => {
+                cfToken = null;
+                logStatus('⚠ Captcha expired', 'y');
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (!isApiMode && cfWidgetId !== null) {
+                    try { turnstile.reset(cfWidgetId); } catch(e) {}
+                }
+            },
+            'timeout-callback': () => {
+                cfToken = null;
+                logStatus('⚠ Captcha timeout — resetting…', 'y');
+                const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (!isApiMode && cfWidgetId !== null) { try { turnstile.reset(cfWidgetId); } catch(e) {} }
+            }
+        });
+    } finally {
+        setTimeout(() => { _renderInFlight = false; }, 2000);
+    }
+}
+
+function resetCaptcha() {
+    if (typeof turnstile !== 'undefined' && cfWidgetId !== null) {
+        try { turnstile.reset(cfWidgetId); } catch(e) {}
+        cfToken = null;
+    }
+}
+
+function showManualCaptcha() {
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (useApi) return;
+    if (cfWidgetId !== null) return;
+    _lastRenderAt = 0;
+    const tryRender = (attempts) => {
+        if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;
+        if (cfWidgetId !== null) return;                              // became available meanwhile — stop
+        if (typeof turnstile !== 'undefined') { renderCaptcha(); }
+        else if (attempts > 0) { setTimeout(() => tryRender(attempts - 1), 60); }   // first render: catch turnstile-ready fast
+    };
+    tryRender(500);
+}
+function hideManualCaptcha() {
+    try {
+        if (typeof turnstile !== 'undefined' && cfWidgetId !== null) {
+            turnstile.remove(cfWidgetId);
+            cfWidgetId = null; cfToken = null;
+            const c = document.getElementById('cfTurnstile'); if (c) c.innerHTML = '';
+        }
+    } catch(e) {}
+}
+// Manual Turnstile is now OFF BY DEFAULT (the farm fills the token queue, so no widget is needed).
+// It renders ON-DEMAND only: getCaptchaTokenSmart() calls showManualCaptcha() when the queue is
+// empty, and clicking the Signin (#csi) / Reserve (#csr) buttons renders it immediately if there is
+// no farm token ready. So no auto-render on page load anymore.
+document.addEventListener('click', function (ev) {
+    try {
+        var t = ev.target && ev.target.closest && ev.target.closest('#csi, #csr');
+        if (!t) return;
+        if (document.getElementById('captcha-toggle')?.classList.contains('on')) return;   // API mode → skip
+        tokenQueueCleanExpired();
+        if (!tokenQueue.find(x => x.token)) { _lastRenderAt = 0; showManualCaptcha(); }     // queue empty → show manual now
+    } catch (e) {}
+}, true);
+
+// ==================== SIGN-IN API CALL (H2) ====================
+async function performSignin(phone, password, captchaToken) {
+    const encryptedCaptcha = encTokenForCall(captchaToken, 'signin');
+    const body = JSON.stringify({ phone, password, c: encryptedCaptcha });
+    const response = await H2.fetchH2(API_SIGNIN_V2, {
+        method: "POST",
+        headers: {
+            "accept": "application/json, text/plain, */*",
+            "cache-control": "no-cache, no-store, must-revalidate",
+            "content-type": "application/json",
+            "pragma": "no-cache",
+            "x-sec-navigation-state": _navState()
+        },
+        referrer: API_REFERRER,
+        body: body
+    });
+
+    const result = await response.json();
+    return { ok: response.ok, status: response.status, body: result };
+}
+
+function extractPaymentUrl(body) {
+    if (!body) return null;
+    const d = body.data || body;
+    return d.webview_url || d.GatewayPageURL || d.gatewayPageURL || d.paymentUrl ||
+           d.payment_url || d.gatewayUrl || d.redirectUrl ||
+           d.redirect_url || d.url || d.epayUrl || d.securePayUrl || null;
+}
+
+function isVerifiedResponse(status, body) {
+    if (!body) return false;
+    if (body.successFlag === true) return true;
+    if (body.message === 'Success') return true;
+    if (body.data?.verified === true) return true;
+    return false;
+}
+
+function isReservedResponse(body, status) {
+    if (!body) return false;
+    const msg = (body.message || '').trim();
+    const st  = (body.status  || '').trim();
+    if (msg === 'Reserved booking') return true;
+    if (st  === 'OK_NEW')           return true;
+    if (st  === 'OK_EXISTING')      return true;
+    const okHttp = typeof status === 'number' ? (status >= 200 && status < 300) : true;
+    if (okHttp) {
+        if (body.successFlag === true) return true;
+        if (body.statusCode === 200 || body.statusCode === 201) return true;
+        if (/^(reserv|success|ok)/i.test(msg)) return true;
+        if (body.reservationId || body.data?.reservationId) return true;
+        const d = body.data || {};
+        if (d.status === 'OK_NEW' || d.status === 'OK_EXISTING' || (d.message || '').trim() === 'Reserved booking') return true;
+    }
+    return false;
+}
+
+// ==================== CSS STYLES (PRO LOOK) ====================
+const s = document.createElement('style');
+s.textContent = `
+
+
+/* ===== MAIN PANEL ===== */ #p{position:fixed;top:50%;right:20px;transform:translateY(-50%);width:285px;height:auto;background:linear-gradient(160deg,#0d0d1e 0%,#10102a 60%,#0a0a18 100%);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.85),0 0 0 1px rgba(124,58,237,.25),0 0 25px rgba(124,58,237,.12);z-index:999999;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#e0e0f0;overflow:hidden;display:flex;flex-direction:column;backdrop-filter:blur(8px)} #p.hidden{display:none !important} #p *{box-sizing:border-box;margin:0;padding:0} #p .dh{background:linear-gradient(90deg,#0a0a18,#15152e,#0a0a18);padding:12px 14px;cursor:move;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(124,58,237,.25);user-select:none;flex-shrink:0;position:relative} #p .dh::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#7c3aed,#4f46e5);border-radius:0 2px 2px 0} #p .dt{font-size:.72rem;font-weight:800;background:linear-gradient(90deg,#c4b5fd,#a78bfa,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:1px} #p .db{background:rgba(124,58,237,.1);border:1px solid rgba(124,58,237,.35);color:#a78bfa;font-size:.95rem;cursor:pointer;line-height:1;padding:0 7px;border-radius:4px;transition:all .2s} #p .db:hover{background:rgba(124,58,237,.25);color:#fff;transform:scale(1.05)} #p #scan-btn{background:linear-gradient(135deg,#06b6d4,#22c55e);border:1px solid rgba(34,197,94,.6);color:#fff;font-weight:800;text-shadow:0 0 6px rgba(0,0,0,.4);box-shadow:0 0 10px rgba(34,197,94,.45);height:26px;padding:0 9px;display:inline-flex;align-items:center;justify-content:center} #p #scan-btn:hover{background:linear-gradient(135deg,#22d3ee,#4ade80);box-shadow:0 0 14px rgba(34,197,94,.7);transform:scale(1.12) rotate(90deg)} #p #auto-enc-btn{background:linear-gradient(135deg,#6366f1,#8b5cf6);border:1px solid rgba(139,92,246,.6);color:#fff;font-weight:800;text-shadow:0 0 6px rgba(0,0,0,.4);box-shadow:0 0 10px rgba(139,92,246,.45);height:26px;padding:0 9px;display:inline-flex;align-items:center;justify-content:center} #p #auto-enc-btn:hover{background:linear-gradient(135deg,#818cf8,#a78bfa);box-shadow:0 0 14px rgba(139,92,246,.7);transform:scale(1.08)} #p #auto-enc-btn.scanning{background:linear-gradient(135deg,#10b981,#059669);border-color:rgba(16,185,129,.7);box-shadow:0 0 12px rgba(16,185,129,.7);animation:aePulse 1s ease-in-out infinite} @keyframes aePulse{0%,100%{box-shadow:0 0 8px rgba(16,185,129,.5)}50%{box-shadow:0 0 16px rgba(16,185,129,.9)}} #p #enc-clear-btn{background:linear-gradient(135deg,#f97316,#ef4444);border:1px solid rgba(239,68,68,.6);color:#fff;font-weight:800;text-shadow:0 0 6px rgba(0,0,0,.4);box-shadow:0 0 10px rgba(239,68,68,.45);height:26px;padding:0 9px;display:inline-flex;align-items:center;justify-content:center} #p #enc-clear-btn:hover{background:linear-gradient(135deg,#fb923c,#f87171);box-shadow:0 0 14px rgba(239,68,68,.75);transform:scale(1.08)} #p .tb{display:flex;background:#06061a;padding:0;border-bottom:1px solid rgba(124,58,237,.2);flex-shrink:0} #p .t{background:none;border:none;padding:11px 0;color:#5a5a80;font-weight:700;font-size:.68rem;cursor:pointer;border-bottom:2px solid transparent;flex:1;text-align:center;transition:all .2s;position:relative} #p .t:hover{color:#a78bfa;background:rgba(124,58,237,.08)} #p .t.a{color:#fff;background:linear-gradient(180deg,rgba(124,58,237,.15),transparent);border-bottom-color:#7c3aed;text-shadow:0 0 8px rgba(124,58,237,.6)} #p .bd{overflow:visible;flex:1} #p .sl{background:linear-gradient(135deg,#06061a,#0a0a1f);margin:5px 8px;border-radius:6px;border:1px solid rgba(124,58,237,.2);overflow:hidden;flex-shrink:0;height:auto;min-height:34px;max-height:34px;box-shadow:inset 0 1px 3px rgba(0,0,0,.5)} #p .sl>div{display:none;padding:4px 7px;font-family:Consolas,monospace;font-size:.82rem;font-weight:700;color:#5a5a88;line-height:1.4;height:auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis} #p .sl>div.a{display:block} #p .sl .g{color:#4ade80;text-shadow:0 0 6px rgba(74,222,128,.4)} #p .sl .r{color:#fca5a5;text-shadow:0 0 6px rgba(252,165,165,.4)} #p .sl .y{color:#fcd34d;text-shadow:0 0 6px rgba(252,211,77,.4)} #p .sc{padding:5px 9px 3px} #p .fr{display:flex;gap:3px;margin-bottom:1px;align-items:center} #p .sa-row{gap:3px} #p .sa-row input[type=number]{flex:1 1 0;width:0;min-width:22px;padding:3px 1px;text-align:center;font-size:.62rem;font-weight:700;-webkit-appearance:none;-moz-appearance:textfield;appearance:none}
+.sa-row input[type=number]::-webkit-inner-spin-button,.sa-row input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;display:none} #p .sa-btn{flex:0 0 38px;padding:3px 0!important;font-size:.6rem!important;font-weight:800;letter-spacing:.2px;border-radius:4px!important} #p .fr-otp{display:flex;gap:4px;margin-bottom:3px;align-items:center} #p .fr-otp input[type=text]{flex:50;min-width:0} #p .fr-otp button.b4{flex:18;min-width:0} #p .fr-otp button.b5{flex:32;min-width:0} #p .fr-phone{display:flex;gap:4px;margin-bottom:3px;align-items:center} #p .phone-type-sel{flex:none;width:58px;background:linear-gradient(180deg,#13132e,#0a0a18);border:1px solid #3b3777;color:#c4b5fd;padding:4px 2px;border-radius:4px;font-size:.6rem;font-weight:700;outline:none;cursor:pointer;text-align:center;appearance:none;box-shadow:0 1px 3px rgba(0,0,0,.4)} #p .phone-type-sel:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.2)} #p .phone-type-sel option{background:#0e0e1c;color:#c4b5fd;font-size:.6rem} #p .fr-phone input[type=text],#p .fr-phone input[type=tel],#p .fr-phone input[type=email]{flex:1;background:linear-gradient(180deg,#0a0a1a,#08081a);border:1px solid #2a2a4a;padding:5px 7px;border-radius:4px;color:#e0e0f0;font-size:.68rem;font-weight:600;outline:none;min-width:0;transition:all .2s} #p .fr-phone input::placeholder{color:#4a4a6a;font-size:.6rem;font-weight:500} #p .fr-phone input:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.15)} #p .fr-phone .sw-c{flex:0 0 24px;display:flex;align-items:center;justify-content:center} #p .fr-pw{display:flex;gap:4px;margin-bottom:3px;align-items:center} #p .fr-pw .pw{flex:0 0 55%;display:flex;position:relative;min-width:0} #p .fr-pw .pw input{width:100%;background:linear-gradient(180deg,#0a0a1a,#08081a);border:1px solid #2a2a4a;padding:5px 7px;border-radius:5px;color:#e0e0f0;font-size:.68rem;font-weight:600;outline:none;padding-right:22px;transition:all .2s} #p .fr-pw .pw input::placeholder{color:#4a4a6a;font-size:.6rem;font-weight:500} #p .fr-pw .pw input:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.15)} #p .fr-pw .pw .eye{position:absolute;right:2px;top:50%;transform:translateY(-50%);background:none;border:none;color:#666690;cursor:pointer;padding:0 4px;font-size:.7rem;line-height:1;z-index:2;transition:color .2s} #p .fr-pw .pw .eye:hover{color:#a78bfa} #p .fr-pw .b7.bh{flex:1;padding:5px 0;font-size:.66rem;font-weight:700;min-width:0} #p .tr{display:flex;gap:5px;margin-bottom:3px;align-items:center} #p .tm{flex:1;border-radius:5px;padding:1px 3px;text-align:center;position:relative;overflow:hidden;height:26px;display:flex;flex-direction:column;justify-content:center;background:linear-gradient(135deg,#0a0a1a,#0d0d24);border:1px solid #1f1f3a;box-shadow:inset 0 1px 2px rgba(0,0,0,.5)} #p .tm.t1{border-color:rgba(74,222,128,.3)} #p .tm.t2{border-color:rgba(167,139,250,.3)} #p .tm input.ti{width:100%;background:transparent;border:1px solid transparent;border-radius:4px;padding:1px 2px;font-family:Consolas,'Courier New',monospace;font-size:.7rem;font-weight:800;letter-spacing:.3px;text-align:center;outline:none} #p .tm.t1 input.ti{color:#4ade80;text-shadow:0 0 10px rgba(74,222,128,.5)} #p .tm.t2 input.ti{color:#c4b5fd;text-shadow:0 0 10px rgba(167,139,250,.5)} #p .tm input.ti:hover{border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.02)} #p .tm input.ti:focus{border-color:rgba(255,255,255,.25);background:rgba(0,0,0,.3)} #p .tr .reserve-tg-wrap{flex:0 0 22px;display:flex;align-items:center;justify-content:center;height:26px} #p input[type=text],#p input[type=tel],#p input[type=email],#p input[type=password],#p input[type=number],#p select{background:linear-gradient(180deg,#0a0a1a,#08081a);border:1px solid #2a2a4a;padding:5px 7px;border-radius:4px;color:#e0e0f0;font-size:.68rem;font-weight:600;flex:1;outline:none;font-family:inherit;min-width:0;transition:all .2s} #p input:focus,#p select:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.15)} #p input::placeholder{color:#4a4a6a;font-size:.6rem;font-weight:500} #p select option{background:#0e0e1c;color:#c4b5fd} #p input[type=number]{text-align:center;padding:4px 2px} #p input[type=file]{font-size:.56rem;padding:3px;background:#0a0a1a;border:1px solid #1c1c36;border-radius:4px;color:#b0b0cc} #p textarea{background:linear-gradient(180deg,#0a0a1a,#08081a);border:1px solid #1c1c36;border-radius:4px;color:#d0d0e6;font-size:.64rem;font-weight:600;padding:5px 7px;width:100%;resize:none;font-family:Consolas,monospace;outline:none;transition:all .2s} #p textarea:focus{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.15)} #p textarea::placeholder{color:#2a2a50} #p label{font-size:.62rem;color:#7777aa;font-weight:700;white-space:nowrap} #p button{border:none;padding:6px 9px;border-radius:5px;color:#fff;font-weight:700;font-size:.64rem;transition:all .2s;white-space:nowrap;font-family:inherit;cursor:pointer;letter-spacing:.3px;position:relative;overflow:hidden} #p button:hover{transform:translateY(-1px);filter:brightness(1.15)} #p button:active{transform:scale(.96)} #p .b1{background:linear-gradient(135deg,#3b82f6,#1d4ed8);border:1px solid #60a5fa;color:#fff;box-shadow:0 2px 6px rgba(59,130,246,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b2{background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff;box-shadow:0 2px 6px rgba(245,158,11,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b3{background:linear-gradient(135deg,#14b8a6,#0d9488);border:1px solid #2dd4bf;color:#fff;box-shadow:0 2px 6px rgba(20,184,166,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b4{background:linear-gradient(135deg,#d946ef,#a21caf);border:1px solid #e879f9;color:#fff;box-shadow:0 2px 6px rgba(217,70,239,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b5{background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff;box-shadow:0 2px 6px rgba(16,185,129,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b6{background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:1px solid #a78bfa;color:#fff;box-shadow:0 2px 6px rgba(139,92,246,.4),inset 0 1px 0 rgba(255,255,255,.15)} #p .b7{background:linear-gradient(135deg,#06b6d4,#0891b2);border:1px solid #22d3ee;color:#fff;box-shadow:0 2px 6px rgba(6,182,212,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b8{background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;box-shadow:0 2px 6px rgba(239,68,68,.4),inset 0 1px 0 rgba(255,255,255,.15)} #p .b9{background:linear-gradient(135deg,#f43f5e,#be123c);border:1px solid #fb7185;color:#fff;box-shadow:0 2px 6px rgba(244,63,94,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b10{background:linear-gradient(135deg,#0ea5e9,#0369a1);border:1px solid #38bdf8;color:#fff;box-shadow:0 2px 6px rgba(14,165,233,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b11{background:linear-gradient(135deg,#84cc16,#4d7c0f);border:1px solid #a3e635;color:#fff;box-shadow:0 2px 6px rgba(132,204,22,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b12{background:linear-gradient(135deg,#a855f7,#7e22ce);border:1px solid #c084fc;color:#fff;box-shadow:0 2px 6px rgba(168,85,247,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b13{background:linear-gradient(135deg,#dc2626,#7f1d1d);border:1px solid #ef4444;color:#fff;box-shadow:0 2px 6px rgba(220,38,38,.35),inset 0 1px 0 rgba(255,255,255,.15)} #p .b14{background:linear-gradient(135deg,#6366f1,#3730a3);border:1px solid #818cf8;color:#fff;box-shadow:0 2px 6px rgba(99,102,241,.4),inset 0 1px 0 rgba(255,255,255,.15)} #p .b15{background:linear-gradient(135deg,#ea580c,#f59e0b);border:1px solid #fb923c;color:#fff;box-shadow:0 2px 8px rgba(234,88,12,.45),inset 0 1px 0 rgba(255,255,255,.22);text-shadow:0 1px 1px rgba(0,0,0,.25)} #p .b0{background:linear-gradient(135deg,#1f1f3a,#13132e);border:1px solid #2a2a4a;color:#a0a0c8;box-shadow:0 1px 3px rgba(0,0,0,.3)} #p .bh{padding:6px 8px;font-size:.66rem;border-radius:5px} #p .tg{width:24px;height:12px;background:linear-gradient(180deg,#1a1a38,#0f0f24);border-radius:7px;border:1px solid #333366;cursor:pointer;position:relative;flex-shrink:0;transition:all .25s;box-shadow:inset 0 1px 2px rgba(0,0,0,.5)} #p .tg-dot{width:8px;height:8px;background:linear-gradient(135deg,#888,#555);border-radius:50%;position:absolute;top:1px;left:1px;transition:all .25s;box-shadow:0 1px 2px rgba(0,0,0,.4)} #p .tg.on{background:linear-gradient(180deg,#059669,#047857);border-color:#10b981;box-shadow:inset 0 1px 2px rgba(0,0,0,.3),0 0 6px rgba(16,185,129,.4)} #p .tg.on .tg-dot{left:13px;background:linear-gradient(135deg,#fff,#a7f3d0);box-shadow:0 0 4px rgba(74,222,128,.6)} #ps .sc{padding:4px 6px 4px} #ps .su-section{background:linear-gradient(135deg,#13132e,#18183a);border-radius:6px;padding:4px 6px 3px;margin-bottom:1px;border:1px solid rgba(124,58,237,.15);box-shadow:none} #ps .su-sec-title{display:none} #ps .su-badge{font-size:.46rem;font-weight:800;padding:0px 4px;border-radius:2px;letter-spacing:.2px} #ps .su-badge.on{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(52,211,153,.25)} #ps .su-badge.off{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(248,113,113,.18)} #ps .su-row{display:flex;gap:2px;margin-bottom:1px;align-items:center} #ps .su-row input[type=text],#ps .su-row input[type=tel],#ps .su-row input[type=email],#ps .su-row input[type=password]{flex:1;min-width:0;background:linear-gradient(180deg,#1f1f3a,#181832);border:1px solid #3f3f65;padding:4px 6px;border-radius:4px;color:#eaeaff;font-size:.62rem;font-weight:600;outline:none;transition:all .2s} #ps .su-row input::placeholder{color:#7575a0;font-size:.56rem;font-weight:500} #ps .su-row input:focus{border-color:#7c3aed;box-shadow:0 0 0 1px rgba(124,58,237,.25)} #ps .su-row button{padding:4px 6px;font-size:.58rem;font-weight:700;border-radius:4px;white-space:nowrap;flex:none;min-width:85px;text-align:center} #ps .su-full{display:flex;gap:2px;margin-bottom:1px} #ps .su-full button{flex:1;padding:4px 6px;font-size:.58rem;font-weight:700;border-radius:4px} #ps .su-half{display:flex;gap:2px;margin-bottom:1px} #ps .su-half button{flex:1;padding:4px 6px;font-size:.58rem;font-weight:700;border-radius:4px} #ps .su-msg{font-size:.5rem;font-weight:600;min-height:10px;padding:0 2px 0px;margin-bottom:1px;line-height:1.2;border-radius:2px;transition:all .3s} #ps .su-msg.g{color:#4ade80} #ps .su-msg.r{color:#fca5a5} #ps .su-msg.y{color:#fcd34d} #ps .su-pw{flex:1;display:flex;position:relative;min-width:0} #ps .su-pw input{width:100%;padding-right:20px!important} #ps .su-pw .eye{position:absolute;right:2px;top:50%;transform:translateY(-50%);background:none;border:none;color:#8888aa;cursor:pointer;padding:0 3px;font-size:.64rem;line-height:1;z-index:2;transition:color .2s} #ps .su-pw .eye:hover{color:#a78bfa} #p .cp{background:linear-gradient(135deg,#070716,#0a0a1f);border-radius:6px;padding:6px 6px 4px;margin-top:2px;border:1px solid rgba(124,58,237,.2);box-shadow:inset 0 1px 3px rgba(0,0,0,.5)} #p .cp .cr{display:flex;gap:3px;align-items:center;margin-bottom:5px} #p .cp .cr .cl{display:flex;gap:3px;flex:1} #p .cp .cr .cr2{display:flex;gap:3px;align-items:center;justify-content:flex-end} #p .cp .cr button{padding:4px 6px;font-size:.6rem;font-weight:700;background:linear-gradient(135deg,#13132a,#0c0c1e);border:1px solid #1f1f3a;color:#777799;border-radius:4px;flex:1;text-align:center;transition:all .2s} #p .cp .cr button:hover{background:linear-gradient(135deg,#1a1a3a,#13132a);color:#c0c0e0} #p .cp .cr button.a{background:linear-gradient(135deg,#7c3aed,#4f46e5);border-color:#a78bfa;color:#fff;box-shadow:0 0 8px rgba(124,58,237,.45),inset 0 1px 0 rgba(255,255,255,.2)} #p .cp .cf-wrap{width:100%;max-width:250px;margin:0 auto;border-radius:5px;overflow:hidden;background:linear-gradient(135deg,#0a0a1a,#06061a);border:1px solid rgba(124,58,237,.25);min-height:58px;display:flex;align-items:center;justify-content:center;margin-bottom:3px;box-shadow:inset 0 1px 4px rgba(0,0,0,.5)} #p .cp .cf-wrap .cf-turnstile{width:100%} #p .cp .cf-wrap iframe{border:none!important;border-radius:4px} #p .cp .ck-row{display:flex;align-items:center;gap:0;margin-top:2px;padding:2px 5px;background:linear-gradient(90deg,#06061a,#0a0a1f,#06061a);border-radius:5px;border:1px solid rgba(124,58,237,.15)} #p .cp .ck-time{font-size:.78rem;font-family:Consolas,monospace;font-weight:800;background:linear-gradient(90deg,#a78bfa,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:.5px;flex-shrink:0} #p .cp .ck-sep{width:1px;height:14px;background:linear-gradient(180deg,transparent,#3b3777,transparent);margin:0 7px;flex-shrink:0} #p .cp .ck-date{font-size:.62rem;background:linear-gradient(90deg,#c4b5fd,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;font-weight:700;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #p .cp .ck-row .b8{padding:3px 11px;border-radius:4px;font-size:.58rem;flex-shrink:0} #p .ft{padding:4px 9px 4px;background:linear-gradient(90deg,#06061a,#0a0a1f,#06061a);display:flex;flex-direction:column;align-items:center;gap:2px;border-top:1px solid rgba(124,58,237,.2);flex-shrink:0} #p .ft .ft-top{display:flex;justify-content:center;align-items:center;width:100%} #p .ft .fl{display:flex;gap:4px} #p .ft button{background:linear-gradient(135deg,#0c0c1e,#13132a);border:1px solid #2a2a4a;padding:5px 12px;font-size:.68rem;border-radius:4px;color:#a0a0c8;font-weight:700;letter-spacing:.5px;transition:all .2s} #p .ft button:hover{background:linear-gradient(135deg,#1a1a3a,#222248);color:#fff;border-color:#7c3aed;transform:translateY(-1px);box-shadow:0 2px 6px rgba(124,58,237,.3)} #p .ft span{font-size:.82rem;background:linear-gradient(90deg,#f97316,#fbbf24,#f59e0b);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:900;letter-spacing:.6px;white-space:nowrap;text-shadow:0 0 10px rgba(249,115,22,.35)} #p .cdbar{background:linear-gradient(90deg,#05050f,#0a0a1f,#05050f);padding:3px 9px;display:flex;align-items:center;justify-content:center;gap:8px;border-top:1px solid rgba(124,58,237,.15);flex-shrink:0;min-height:0;flex-wrap:nowrap} #p .cd-empty{font-size:.6rem;color:#5a5a78;font-weight:600;letter-spacing:.4px;font-family:Consolas,monospace} #p .cd-cell{display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:5px;background:linear-gradient(135deg,#0d0d24,#13132e);border:1px solid rgba(124,58,237,.25);box-shadow:inset 0 1px 2px rgba(0,0,0,.4);transition:all .3s} #p .cd-cell .cd-icon{font-size:.7rem;line-height:1} #p .cd-cell .cd-label{font-size:.56rem;color:#8888aa;font-weight:700;letter-spacing:.5px} #p .cd-cell .cd-time{font-family:Consolas,monospace;font-size:.74rem;font-weight:800;letter-spacing:.5px} #p .cd-otp .cd-time{color:#5eead4;text-shadow:0 0 6px rgba(94,234,212,.45)} #p .cd-token .cd-time{color:#a78bfa;text-shadow:0 0 6px rgba(167,139,250,.45)} #p .cd-sep{width:1px;height:14px;background:linear-gradient(180deg,transparent,#3b3777,transparent);flex-shrink:0} #p .cd-cell.warn{border-color:#ef4444;background:linear-gradient(135deg,#1a0a0a,#2a0d0d);animation:cdpulse 1s ease-in-out infinite} #p .cd-cell.warn .cd-time{color:#fca5a5 !important;text-shadow:0 0 8px rgba(252,165,165,.6) !important} #p .cd-cell.warn .cd-label{color:#fca5a5} @keyframes cdpulse{0%,100%{box-shadow:inset 0 1px 2px rgba(0,0,0,.4),0 0 6px rgba(239,68,68,.4)}50%{box-shadow:inset 0 1px 2px rgba(0,0,0,.4),0 0 14px rgba(239,68,68,.8)}} #p .cd-cell.expired{border-color:#444;opacity:.55} #p .cd-cell.expired .cd-time{color:#666 !important;text-shadow:none !important;text-decoration:line-through} .btn-inline-cd{display:inline-block;margin-left:5px;padding:2px 6px;font-family:Consolas,monospace;font-size:.62rem;font-weight:800;border-radius:3px;background:rgba(0,0,0,.35);color:#fde047;letter-spacing:.4px} .btn-inline-cd.warn{color:#fca5a5;background:rgba(239,68,68,.2);animation:cdpulse 1s ease-in-out infinite} #p .tp{display:none} #p .tp.a{display:block} #pl input[type=text],#pl input[type=tel],#pl input[type=email],#pl input[type=password],#pl input[type=number],#pl select,#pf input[type=text],#pf input[type=number],#pf select,#pf textarea,#pe input[type=text],#pe input[type=number],#pe select,#px input[type=text],#px input[type=number],#px input[type=password],#px select,#px textarea{background:linear-gradient(180deg,#15152e,#10102a) !important;border:1px solid #3a3a5e !important;color:#f0f0ff !important} #pl input::placeholder,#pl select option,#pf input::placeholder,#pf textarea::placeholder,#pe input::placeholder,#pe select option,#px input::placeholder,#px textarea::placeholder{color:#7575a0 !important} #pf .pl-row{display:flex;gap:5px;align-items:center;margin-bottom:5px} #pf .pl-row span{font-size:.66rem;color:#b0b0cc;font-weight:700;white-space:nowrap} #pf .pl-row input[type=number]{flex:1;text-align:center;padding:4px 2px;min-width:0} #px textarea{height:58px} #pu input[type=text],#pu input[type=tel],#pu input[type=email],#pu input[type=password],#pu input[type=number],#pu select,#pu input[type=file]{background:linear-gradient(180deg,#15152e,#10102a)!important;border:1px solid #3a3a5e!important;color:#f0f0ff!important} #pu input::placeholder,#pu select option{color:#7575a0!important}#pu .fr{margin-bottom:4px;gap:4px}#pu button{padding:6px 7px!important;font-size:.64rem!important;line-height:1.25!important;border-radius:5px!important}#pu input[type=file]{font-size:.54rem!important;padding:3px!important;height:auto!important}#pu input[type=text],#pu input[type=number],#pu select{padding:6px 7px!important;font-size:.66rem!important}#pu .sc{padding:6px 9px 8px!important} #px .proxy-msg{font-size:.62rem;color:#8888aa;font-weight:600;margin-top:3px;text-align:center} #p .enc-section{margin-top:5px;padding:5px 6px;background:linear-gradient(135deg,#070716,#0a0a1f);border:1px dashed rgba(124,58,237,.3);border-radius:7px} #p .enc-title{font-size:.64rem;color:#a78bfa;font-weight:800;letter-spacing:.5px;margin-bottom:4px} #p .enc-row{display:flex;gap:4px;align-items:center;margin-bottom:3px} #p .enc-row input[type=checkbox]{flex:none;accent-color:#7c3aed;width:14px;height:14px;cursor:pointer} #p .enc-row label{flex:none;font-size:.62rem;color:#c4b5fd;font-weight:700;cursor:pointer;min-width:60px} #p .enc-row .enc-status{flex:none;font-size:.54rem;font-weight:600;margin-left:auto} #p .enc-editor{display:none;margin-bottom:4px} #p .enc-editor textarea{height:100px;font-size:.58rem;line-height:1.35;background:linear-gradient(180deg,#0d0d24,#08081a)!important;border:1px solid rgba(124,58,237,.25)!important;color:#c4b5fd!important;border-radius:5px} #p .enc-editor textarea::placeholder{color:#3a3a5e!important;font-size:.54rem} #p .enc-editor .enc-btn-row{display:flex;gap:3px;margin-top:3px} #p .enc-editor .enc-btn-row button{flex:1;padding:4px 0;font-size:.58rem;font-weight:700} #p .enc-cfg-row{display:flex;gap:5px;align-items:center;margin-bottom:4px} #p .enc-cfg-row label{flex:none;min-width:75px;font-size:.62rem;color:#c4b5fd;font-weight:700} #p .enc-cfg-row input,#p .enc-cfg-row select{flex:1;min-width:0} #p .enc-cfg-actions{display:flex;gap:4px;align-items:center;margin-top:5px} #p .enc-cfg-actions .bh{padding:3px 8px;font-size:.62rem;line-height:1.15} #p .enc-cfg-actions .enc-status{font-size:.58rem;font-weight:700;margin-left:auto} #p-fab{position:fixed;bottom:22px;left:22px;width:54px;height:54px;background:linear-gradient(135deg,#f97316,#ea580c,#c2410c);border-radius:50%;color:#fff;font-size:1.25rem;font-weight:900;z-index:9999999;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(249,115,22,.55),inset 0 2px 0 rgba(255,255,255,.25);cursor:pointer;transition:all .25s;border:2px solid rgba(255,255,255,.15);font-family:'Segoe UI',sans-serif;letter-spacing:.5px} #p-fab:hover{transform:scale(1.12) rotate(-5deg);box-shadow:0 8px 28px rgba(249,115,22,.7),inset 0 2px 0 rgba(255,255,255,.3)} #p-fab.hidden{display:none !important} #profile-manager{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:370px;background:linear-gradient(160deg,#1a1a2e,#16162a,#13132e);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.85),0 0 0 1px rgba(124,58,237,.3),0 0 30px rgba(124,58,237,.12);z-index:99999999;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#e0e0ff;display:none;flex-direction:column;overflow:hidden} #profile-manager.open{display:flex} #profile-manager .pm-header{background:linear-gradient(90deg,#0a0a18,#15152e,#0a0a18);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(124,58,237,.3);user-select:none;cursor:move;position:relative} #profile-manager .pm-header::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#7c3aed,#4f46e5);border-radius:0 2px 2px 0} #profile-manager .pm-title{font-size:.78rem;font-weight:800;background:linear-gradient(90deg,#c4b5fd,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.6px} #profile-manager .pm-close{background:rgba(124,58,237,.1);border:1px solid rgba(124,58,237,.35);color:#a78bfa;font-size:.95rem;cursor:pointer;line-height:1;padding:0 8px;border-radius:5px;transition:all .2s} #profile-manager .pm-close:hover{background:rgba(124,58,237,.25);color:#fff;transform:scale(1.05)} #profile-manager .pm-body{overflow-y:auto;padding:12px;flex:1;background:#13132e} #profile-manager .pm-section{background:linear-gradient(135deg,#1f1f38,#1a1a32);border-radius:9px;padding:10px 12px;margin-bottom:10px;border:1px solid rgba(124,58,237,.25)} #profile-manager .pm-section h4{font-size:.68rem;font-weight:800;background:linear-gradient(90deg,#c4b5fd,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:9px;border-bottom:1px solid rgba(124,58,237,.3);padding-bottom:5px;text-transform:uppercase;letter-spacing:.6px} #profile-manager .pm-select-row{display:flex;gap:7px;margin-bottom:11px;align-items:center} #profile-manager .pm-select-row select{flex:2;background:linear-gradient(180deg,#0f0f24,#0a0a1c);border:1px solid #4a4a7a;color:#e0e0ff;padding:7px 9px;border-radius:7px;font-size:.72rem;font-weight:500} #profile-manager .pm-select-row select:focus{border-color:#a78bfa;outline:none;box-shadow:0 0 0 2px rgba(167,139,250,.2)} #profile-manager .pm-select-row button{padding:7px 11px;border-radius:7px;font-size:.66rem;font-weight:800;cursor:pointer;border:none;transition:all .2s;color:#fff;letter-spacing:.5px} #profile-manager .pm-select-row button:hover{filter:brightness(1.15);transform:translateY(-1px)} #profile-manager .pm-btn-new{background:linear-gradient(135deg,#10b981,#059669);box-shadow:0 2px 8px rgba(16,185,129,.4);flex:1} #profile-manager .pm-btn-del{background:linear-gradient(135deg,#ef4444,#b91c1c);box-shadow:0 2px 8px rgba(239,68,68,.4);flex:1} #profile-manager .pm-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px} #profile-manager input{background:linear-gradient(180deg,#0f0f24,#0a0a1c);border:1px solid #4a4a7a;color:#e0e0ff;padding:7px 9px;border-radius:7px;font-size:.72rem;outline:none;box-sizing:border-box;font-family:inherit;font-weight:500;transition:all .2s} #profile-manager input:focus{border-color:#a78bfa;box-shadow:0 0 0 2px rgba(167,139,250,.2)} #profile-manager input::placeholder{color:#6a6a9a;font-size:.66rem;font-weight:400} #profile-manager .pm-action-row{display:flex;gap:7px;margin-top:9px} #profile-manager .pm-action-row button{flex:1;padding:8px;border-radius:7px;font-size:.7rem;font-weight:800;cursor:pointer;border:none;transition:all .2s;color:#fff;letter-spacing:.5px} #profile-manager .pm-action-row button:hover{filter:brightness(1.15);transform:translateY(-1px)} #profile-manager .pm-btn-export{background:linear-gradient(135deg,#3b82f6,#1d4ed8);box-shadow:0 2px 8px rgba(59,130,246,.4)} #profile-manager .pm-btn-import{background:linear-gradient(135deg,#8b5cf6,#6d28d9);box-shadow:0 2px 8px rgba(139,92,246,.4)} #profile-manager .pm-btn-save{background:linear-gradient(135deg,#059669,#047857);box-shadow:0 2px 8px rgba(5,150,105,.4)} #pm-import-file{display:none} #p #bst,#p .cp .cr .cl button#csi,#p .cp .cr .cl button#csr,#p #pl-button,#p #badv,#p #bsgn{padding-top:4px !important;padding-bottom:4px !important;line-height:1.15 !important} #p .tq-row{display:flex;align-items:center;gap:4px;margin-top:2px;padding:2px 5px;background:linear-gradient(90deg,#06061a,#0a0a1f,#06061a);border-radius:4px;border:1px solid rgba(124,58,237,.15);font-size:.54rem;color:#8888aa;font-weight:600} #p .tq-label{flex-shrink:0;font-size:.54rem;letter-spacing:.3px} #p .tq-slots{display:flex;gap:2px;flex:1;justify-content:center} #p .tq-slot{width:10px;height:10px;border-radius:2px;border:1px solid #2a2a4a;background:linear-gradient(135deg,#0a0a18,#06061a);transition:all .3s;position:relative} #p .tq-slot.empty{background:linear-gradient(135deg,#0a0a18,#06061a);border-color:#2a2a4a;opacity:.4} #p .tq-slot.turnstile{background:linear-gradient(135deg,#06b6d4,#0891b2);border-color:#22d3ee;box-shadow:0 0 4px rgba(34,211,238,.5),inset 0 1px 0 rgba(255,255,255,.2);opacity:1} #p .tq-slot.capmonster{background:linear-gradient(135deg,#a855f7,#7e22ce);border-color:#c084fc;box-shadow:0 0 4px rgba(168,85,247,.5),inset 0 1px 0 rgba(255,255,255,.2);opacity:1} #p .tq-slot.capsolver{background:linear-gradient(135deg,#10b981,#059669);border-color:#34d399;box-shadow:0 0 4px rgba(52,211,153,.5),inset 0 1px 0 rgba(255,255,255,.2);opacity:1} #p .tq-slot.twocaptcha{background:linear-gradient(135deg,#f59e0b,#d97706);border-color:#fbbf24;box-shadow:0 0 4px rgba(251,191,36,.5),inset 0 1px 0 rgba(255,255,255,.2);opacity:1} #p .tq-slot.yescaptcha{background:linear-gradient(135deg,#ec4899,#be185d);border-color:#f472b6;box-shadow:0 0 4px rgba(244,114,182,.5),inset 0 1px 0 rgba(255,255,255,.2);opacity:1} #p .tq-slot.solving{background:linear-gradient(135deg,#fcd34d,#f59e0b);border-color:#fcd34d;box-shadow:0 0 6px rgba(252,211,77,.6);animation:tqPulse 1s ease-in-out infinite} #p .tq-slot.expiring{animation:tqExpiring 1s ease-in-out infinite} @keyframes tqPulse{0%,100%{box-shadow:0 0 4px rgba(252,211,77,.5)}50%{box-shadow:0 0 10px rgba(252,211,77,.9)}} @keyframes tqExpiring{0%,100%{filter:brightness(1)}50%{filter:brightness(0.5) hue-rotate(-30deg)}} #p .tq-info{flex-shrink:0;font-family:Consolas,monospace;font-size:.5rem;color:#a78bfa;font-weight:700;min-width:62px;text-align:right;letter-spacing:.2px} #p .tq-info.solving{color:#fcd34d;animation:tqInfoPulse 1.5s ease-in-out infinite} @keyframes tqInfoPulse{0%,100%{opacity:.7}50%{opacity:1}} #rj-netlog{position:fixed;bottom:90px;left:20px;width:480px;max-width:90vw;height:420px;background:linear-gradient(160deg,#0d0d1e,#10102a,#0a0a18);border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.85),0 0 0 1px rgba(124,58,237,.3),0 0 25px rgba(124,58,237,.15);z-index:99999990;display:none;flex-direction:column;font-family:'Segoe UI',system-ui,sans-serif;color:#e0e0f0;overflow:hidden;backdrop-filter:blur(8px)} #rj-netlog.open{display:flex} #rj-netlog .netlog-header{background:linear-gradient(90deg,#0a0a18,#15152e,#0a0a18);padding:9px 13px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(124,58,237,.3);cursor:move;user-select:none;position:relative} #rj-netlog .netlog-header::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#7c3aed,#4f46e5);border-radius:0 2px 2px 0} #rj-netlog .netlog-title{font-size:.78rem;font-weight:800;background:linear-gradient(90deg,#c4b5fd,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.6px} #rj-netlog .netlog-tools{display:flex;gap:6px} #rj-netlog .netlog-tools button{background:linear-gradient(135deg,#13132e,#1f1f3a);border:1px solid rgba(124,58,237,.3);color:#c4b5fd;font-size:.66rem;font-weight:700;padding:3px 10px;border-radius:5px;cursor:pointer;transition:all .2s} #rj-netlog .netlog-tools button:hover{background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff} #rj-netlog .netlog-tools #netlog-close{padding:3px 9px} #rj-netlog .netlog-meta{padding:6px 12px;background:#06061a;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(124,58,237,.15);font-size:.62rem;color:#8888aa;font-weight:600} #rj-netlog .netlog-steps{padding:8px 10px;background:linear-gradient(90deg,#06061a,#0a0a1f,#06061a);display:flex;gap:6px;border-bottom:1px solid rgba(124,58,237,.15)} #rj-netlog .nl-step{flex:1;text-align:center;font-size:.66rem;font-weight:800;padding:6px 4px;border-radius:6px;background:linear-gradient(135deg,#1a1a2e,#13132a);border:1px solid #2a2a4a;color:#7777aa;letter-spacing:.3px;transition:all .3s;position:relative} #rj-netlog .nl-step.active{background:linear-gradient(135deg,#fcd34d,#f59e0b);border-color:#fcd34d;color:#1a1a00;box-shadow:0 0 10px rgba(252,211,77,.5),inset 0 1px 0 rgba(255,255,255,.3);animation:nlPulse 1s ease-in-out infinite} #rj-netlog .nl-step.success{background:linear-gradient(135deg,#10b981,#059669);border-color:#34d399;color:#fff;box-shadow:0 0 12px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25)} #rj-netlog .nl-step.fail{background:linear-gradient(135deg,#ef4444,#b91c1c);border-color:#f87171;color:#fff;box-shadow:0 0 10px rgba(239,68,68,.5),inset 0 1px 0 rgba(255,255,255,.25)} @keyframes nlPulse{0%,100%{box-shadow:0 0 10px rgba(252,211,77,.4)}50%{box-shadow:0 0 18px rgba(252,211,77,.7)}} #rj-netlog #netlog-filter{background:#0a0a1a;border:1px solid #2a2a4a;color:#c4b5fd;font-size:.6rem;padding:2px 4px;border-radius:4px;cursor:pointer;font-family:inherit} #rj-netlog .netlog-body{flex:1;overflow-y:auto;padding:6px;background:#06061a;font-family:Consolas,'Courier New',monospace;font-size:.66rem;line-height:1.5} #rj-netlog .netlog-body::-webkit-scrollbar{width:6px} #rj-netlog .netlog-body::-webkit-scrollbar-thumb{background:rgba(124,58,237,.4);border-radius:3px} #rj-netlog .nl-entry{padding:4px 8px;margin-bottom:3px;border-radius:5px;border-left:3px solid #2a2a4a;background:rgba(15,15,35,.7);display:grid;grid-template-columns:65px 55px 60px 1fr;gap:6px;align-items:center} #rj-netlog .nl-entry.ok{border-left-color:#10b981} #rj-netlog .nl-entry.fail{border-left-color:#ef4444;background:rgba(40,15,15,.55)} #rj-netlog .nl-entry.pending{border-left-color:#fcd34d;background:rgba(30,28,5,.55)} #rj-netlog .nl-entry.cancel{border-left-color:#888;opacity:.55} #rj-netlog .nl-time{color:#8888aa;font-size:.6rem} #rj-netlog .nl-method{color:#a78bfa;font-weight:700;font-size:.6rem} #rj-netlog .nl-status{font-weight:800;font-size:.62rem;text-align:center;padding:1px 4px;border-radius:3px;background:#13132e} #rj-netlog .nl-status.ok{background:rgba(16,185,129,.2);color:#34d399} #rj-netlog .nl-status.fail{background:rgba(239,68,68,.2);color:#fca5a5} #rj-netlog .nl-status.pending{background:rgba(252,211,77,.2);color:#fcd34d} #rj-netlog .nl-status.cancel{background:rgba(136,136,136,.2);color:#aaa} #rj-netlog .nl-url{color:#e0e0f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.62rem} #rj-netlog .nl-tag{display:inline-block;font-size:.55rem;font-weight:700;padding:1px 4px;border-radius:3px;background:rgba(124,58,237,.25);color:#c4b5fd;margin-right:4px;text-transform:uppercase} #rj-netlog .nl-empty{text-align:center;color:#555588;padding:30px 10px;font-size:.7rem;font-family:inherit} #rj-milestone-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px);font-family:'Segoe UI',system-ui,sans-serif} #rj-milestone-overlay .mp-card{width:300px;background:linear-gradient(160deg,#1a1a2e,#16162a);border-radius:14px;box-shadow:0 25px 60px rgba(0,0,0,.85),0 0 0 1px rgba(124,58,237,.3),0 0 30px rgba(124,58,237,.15);overflow:hidden;text-align:center;animation:mpFadeIn .25s ease-out} #rj-milestone-overlay .mp-emoji{padding:22px 20px 10px;font-size:2.2rem} #rj-milestone-overlay .mp-title{padding:0 20px 6px;color:#fff;font-size:.88rem;font-weight:800;letter-spacing:.3px} #rj-milestone-overlay .mp-msg{padding:0 20px 16px;color:#b0b0d0;font-size:.72rem;font-weight:600;line-height:1.5;word-break:break-all} #rj-milestone-overlay .mp-ok{width:100%;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:10px 0;border-radius:8px;font-size:.76rem;font-weight:800;cursor:pointer;letter-spacing:.5px;box-shadow:0 3px 10px rgba(124,58,237,.4);transition:all .2s} #rj-milestone-overlay .mp-ok:hover{filter:brightness(1.15);transform:translateY(-1px)} @keyframes mpFadeIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}} `; document.head.appendChild(s);
+
+// ==================== HTML STRUCTURE ====================
+const h2html = `
+<div id="p-fab" class="hidden">RJ</div>
+<div id="p">
+<div class="dh" id="dh"> <span class="dt">RJ SLOT v7.5 H2</span>
+<div style="display:flex;gap:5px;align-items:center"> <button class="db" id="auto-enc-btn" title="Auto-scan: re-check the bundle every 2s; when encryption config is found it turns itself OFF and auto-starts Signin" style="font-size:10px;font-weight:700;letter-spacing:.2px">A_E</button> <button class="db" id="enc-clear-btn" title="Clear all encryption config (stops dangerous signin auto-retry from stale config)" style="font-size:10px;font-weight:700;letter-spacing:.2px">E_encrpt</button> <button class="db" id="scan-btn" title="Manual bundle scan — re-extract encryption config">⟳</button> <button class="db" id="mb">&minus;</button>
+</div>
+</div>
+
+<div class="tb"> <button class="t a" data-t="l">Login</button> <button class="t" data-t="s">Sign Up</button> <button class="t" data-t="u">Upload</button> <button class="t" data-t="f">Fetch</button> <button class="t" data-t="e">Encrypt</button> <button class="t" data-t="x">Proxy</button>
+</div>
+
+<div class="bd">
+<div class="sl">
+<div class="a" id="ll"><span class="g">Ready (H/2)</span></div>
+<div id="ls"><span class="y">Sign Up Ready</span></div>
+<div id="lu"><span class="y">Upload Ready</span></div>
+<div id="lf"><span class="y">Fetch Ready</span></div>
+<div id="le"><span class="y">Encrypt Ready</span></div>
+</div>
+
+<div class="tp a" id="pl">
+<div class="sc">
+<div class="fr"><select id="login-proxy-picker" style="flex:2;min-width:0" title="Active proxy (synced with Proxy tab)"><option value="">-- Direct (no proxy) --</option></select><button class="b2 bh" id="login-proxy-toggle" title="Toggle connect/disconnect">Disconnect</button></div>
+<div class="fr"><select id="main-profile-select" style="width:100%;min-width:0"><option value="">-- Select Profile --</option></select></div>
+<div class="fr sa-row"> <input type="number" id="rt-signin" value="4" min="0" max="999" title="Signin retry delay (seconds)"> <input type="number" id="rt-verify" value="5" min="0" max="999" title="Verify retry delay (seconds)"> <input type="number" id="rt-upload" value="5" min="0" max="999" title="File upload retry delay (seconds) — auto-upload retries each file until success using this gap"> <input type="number" id="rt-reserve" value="21" min="0" max="999" title="Reserve retry delay (seconds)"> <input type="number" id="rt-book" value="2" min="0" max="999" title="Book retry delay (seconds)"> <input type="number" id="rt-initiate" value="4" min="0" max="999" title="Initiate retry delay (seconds)"> <button class="b5 toggle-btn sa-btn" id="btn-single" title="Single ON: retry on failure. OFF: no retry, fail = stop">Single</button> <input type="number" id="rt-auto-loops" value="0" min="0" max="999" title="Auto Flow delay"> <button class="b5 toggle-btn sa-btn" id="btn-auto" title="Auto ON: after a step wins, automatically continues to next step. Manual button starts the flow.">Auto</button>
+</div>
+
+<div class="fr-phone"> <select id="login-phone-type" class="phone-type-sel"> <option value="phone1">📞 P1</option> <option value="email">✉️ Em</option> <option value="phone2">📞 P2</option> </select> <input type="tel" id="login-phone" placeholder="Phone 1">
+<div class="sw-c">
+<div class="tg" id="advance-toggle"><div class="tg-dot"></div></div>
+</div> <button class="b2 bh" style="padding:4px 8px!important" id="badv-phone">Advance</button>
+</div>
+
+<div class="fr-pw"><div class="pw" style="flex:0 0 44%"><input type="password" id="login-password" placeholder="Password"><button class="eye">&#128065;</button></div><label style="flex:none;display:flex;align-items:center;gap:2px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Signin sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-signin-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">raw</label><button class="b7 bh" id="bsi">Signin</button></div>
+<div class="fr-otp"><input type="text" id="login-otp" placeholder="Login OTP"><button class="b4 bh" id="botp">OTP</button><button class="b5 bh" id="bve">Verify</button></div>
+<div class="fr"> <button class="b1 bh" style="flex:1" id="brs">Reserve</button> <button class="b14 bh" style="flex:1" id="bbk">Book</button> <button class="b6 bh" style="flex:1" id="bin">Initiate</button>
+</div>
+<div class="fr" style="gap:3px;padding:1px 2px">
+<label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Reserve sends RAW token (skip encryption). Unchecked = encrypted (default)."><input type="checkbox" id="chk-reserve-raw" style="width:12px;height:12px;accent-color:#f59e0b;cursor:pointer">Reserve raw</label>
+<span style="flex:1"></span>
+<label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = Initiate ENCRYPTS token per Initiate config. Unchecked = raw (default)."><input type="checkbox" id="chk-initiate-enc" style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate enc</label>
+<label style="flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:.55rem;color:#7777aa;font-weight:700;cursor:pointer" title="✓ = native fetch (DevTools Network Fetch/XHR e DEKHABE, kintu CORS lagbe). Unchecked = GM (CORS-immune, kintu Network e lukano)."><input type="checkbox" id="chk-initiate-net" checked style="width:12px;height:12px;accent-color:#10b981;cursor:pointer">Initiate Net</label>
+</div>
+<div class="fr" style="gap:4px"><input type="text" id="ivac-reserve-slot-id" placeholder="Reserve Slot ID (54ea9f13-… — center fixed)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="Center-fixed slot UUID from the real reserve-slot URL. Paste once; saved."></div>
+<div class="fr" style="gap:4px"><input type="text" id="ivac-payment-method-id" placeholder="dg-epay Payment ID (dcd59a95-… — auto-captured)" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" title="dg-epay payment-method UUID for the initiate call. Auto-fills after one real initiate; or paste manually."></div>
+<div class="fr" style="gap:4px;align-items:center"><select id="ivac-reserve-date" style="flex:1;min-width:0" title="Appointment date for reserve — auto-synced from the time-slot page (first date auto-selected)"><option value="">📅 Reserve date…</option></select><button class="b3 bh" style="flex:none;padding:4px 9px!important" id="ivac-btn-load-dates" title="Sync dates now from the time-slot page / booking config">↻</button><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700" title="Auto-pick date: ON = Latest (last), OFF = Earliest (first)">📆</label><div class="tg on" id="date-target-toggle" title="Auto-pick date: ON = Latest (last date), OFF = Earliest (first date)"><div class="tg-dot"></div></div><label style="flex:none;font-size:.6rem;color:#7777aa;font-weight:700">🔔</label><div class="tg" id="popup-toggle" title="Popup: ON=show milestone popups, OFF=disable"><div class="tg-dot"></div></div></div>
+<div class="fr"><button class="b8" style="width:100%" id="bst">Stop All</button></div>
+<div class="tr">
+<div class="tm t1"><input class="ti" id="sched-advance" type="text" value="04:59:10:000 PM" spellcheck="false" title="Schedule time for Advance (Forgot flow)"></div>
+<div class="reserve-tg-wrap"><div class="tg" id="reserve-toggle"><div class="tg-dot"></div></div></div>
+<div class="tm t2"><input class="ti" id="sched-signin" type="text" value="04:59:59:900 PM" spellcheck="false" title="Schedule time for Signin (full flow)"></div>
+</div>
+
+<div class="fr"><button class="b5 bh" style="flex:1" id="badv">Advance</button><button class="b1 bh" style="flex:1" id="bsgn">Signin</button></div>
+<div class="cp">
+<div class="cr">
+<div class="cl" style="margin-left:-6px"><button class="a" id="csi">Signin</button><button id="csr">Reserve</button></div>
+<div class="cr2">
+<div class="tg" id="captcha-toggle" title="Captcha: ON=CapMonster API, OFF=Turnstile widget"><div class="tg-dot"></div></div>
+<div class="tg" id="parallel-toggle" style="margin-left:5px" title="Parallel mode (leaky-bucket retries)"><div class="tg-dot"></div></div> <button id="pl-button" style="margin-left:5px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;padding:4px 10px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(124,58,237,.4)">A_L</button> <button id="pl-del-appt" title="Delete saved Appointment ID from active profile" style="margin-left:4px;margin-right:-6px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff;padding:4px 14px;border-radius:5px;font-size:0.6rem;font-weight:800;box-shadow:0 2px 6px rgba(239,68,68,.4)">A</button>
+</div>
+</div>
+
+<div class="cf-wrap" id="cfWidget"><div class="cf-turnstile" id="cfTurnstile"></div></div>
+<div class="tq-row" id="tq-row" title="Captcha token queue status"> <span class="tq-label">🎫 Queue</span> <span class="tq-slots" id="tq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="tq-info">0/5 • idle</span>
+</div>
+
+<div class="ck-row"> <span class="ck-time" id="tk">12:13:17 AM</span> <span class="ck-sep"></span> <span class="ck-date" id="dk">08/05/2026</span> <button class="b8" id="blo" style="margin-right:-12px;padding:3px 15px">Logout</button>
+</div>
+</div>
+</div>
+</div>
+
+<div class="tp" id="ps">
+<div class="sc">
+<div class="su-section">
+<div class="su-sec-title"><span>✉️ Email Verification</span><span class="su-badge off" id="su-email-badge">NOT VERIFIED</span></div>
+<div class="su-row"><input type="email" id="ivac-email" placeholder="Email address"><button class="b1" id="ivac-btn-email">Email</button></div>
+<div class="su-msg" id="ivac-msg-email"></div>
+<div class="su-row"><input type="text" id="ivac-email-otp" placeholder="Enter OTP" maxlength="6"><button class="b15" id="ivac-btn-email-verify">Email Verify</button></div>
+<div class="su-full"><button class="b3" id="ivac-btn-get-email-otp">Get Email OTP</button></div>
+</div>
+
+<div class="su-section">
+<div class="su-sec-title"><span>📱 Mobile Verification</span><span class="su-badge off" id="su-mobile-badge">NOT VERIFIED</span></div>
+<div class="su-row"><input type="tel" id="ivac-mobile" placeholder="Mobile number (01XXXXXXXXX)"><button class="b3" id="ivac-btn-mobile">Mobile</button></div>
+<div class="su-msg" id="ivac-msg-mobile"></div>
+<div class="su-row"><input type="text" id="ivac-mobile-otp" placeholder="Enter OTP" maxlength="6"><button class="b2" id="ivac-btn-mobile-verify">Mobile Verify</button></div>
+<div class="su-full"><button class="b4" id="ivac-btn-get-mobile-otp">Get Mobile OTP</button></div>
+</div>
+
+<div class="su-section">
+<div class="su-sec-title"><span>🪪 Personal Details</span></div>
+<div class="su-row"><input type="text" id="ivac-dob" placeholder="Date of Birth (DD.MM.YYYY)"></div>
+<div class="su-row"><input type="text" id="ivac-passport" placeholder="Passport No (AA00000000)"></div>
+<div class="su-row"><input type="text" id="ivac-nid" placeholder="NID Number (10/13/17 digits)"></div>
+<div class="su-row"><input type="text" id="ivac-surname" placeholder="Surname (As in Passport)"></div>
+<div class="su-row"><input type="text" id="ivac-given-name" placeholder="Given Name (As in Passport)"></div>
+<div class="su-row"><div class="su-pw"><input type="password" id="ivac-password" placeholder="Password"><button class="eye" id="ivac-password-toggle">👁</button></div></div>
+<div class="su-half"><button class="b5" id="ivac-btn-submit-info">Account Registration</button><button class="b8" id="ivac-btn-signup-stop">Stop All</button></div>
+<div class="su-msg" id="ivac-msg-submit"></div>
+</div>
+</div>
+</div>
+
+<div class="tp" id="pu">
+<div class="sc">
+<div class="tq-row" id="upq-row" title="Dedicated upload token pool (pre-solved, single-use)"> <span class="tq-label">📤 Upload</span> <span class="tq-slots" id="upq-slots"> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> <span class="tq-slot empty"></span> </span> <span class="tq-info" id="upq-info">0/4 • idle</span></div>
+<div class="fr"><button class="b3 bh" style="flex:1" id="ivac-btn-file-upload-checking">File Upload Checking</button><button class="b1 bh" style="flex:1" id="ivac-btn-appointment">Appointment</button></div>
+<div class="fr"><input type="file" id="ivac-file-upload" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload">Patient File</button></div>
+<div class="fr"><input type="file" id="ivac-file-upload-2" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload-2">Attendant 1</button></div>
+<div class="fr"><input type="file" id="ivac-file-upload-3" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload-3">Attendant 2</button></div>
+<div class="fr"><input type="file" id="ivac-file-upload-4" accept=".pdf,application/pdf" style="flex:1;min-width:0"><button class="b10 bh" style="flex:1;min-width:0" id="ivac-btn-file-upload-4">Attendant 3</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><select id="ivac-appointment-mission" style="flex:1;min-width:0"><option value="dhaka">Dhaka (JFP)</option><option value="jashore">Jashore</option><option value="chittagong">Chittagong</option><option value="khulna">Khulna</option><option value="rajshahi">Rajshahi</option><option value="sylhet">Sylhet</option></select><button class="bh" style="flex:none;padding:4px 6px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff" id="ivac-btn-appointment-booking">Confirm Mission & Center</button></div>
+<div class="fr" style="margin-bottom:1px"><button class="bh" style="width:100%;padding:4px 6px!important;background:linear-gradient(135deg,#06b6d4,#0891b2);border:1px solid #22d3ee;color:#fff" id="ivac-btn-file-checking">File Checking</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><input type="text" id="ivac-file-delete-number" placeholder="WebFile" autocomplete="off" style="flex:1;min-width:0"><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#ef4444,#b91c1c);border:1px solid #f87171;color:#fff" id="ivac-btn-file-delete">Delete file</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><input type="text" id="ivac-invoice-trxid" placeholder="Give your trxId" autocomplete="off" style="flex:1;min-width:0"><button class="bh" style="flex:0.25;padding:4px 6px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff" id="ivac-btn-invoice-download">Submit</button></div>
+<div class="fr" style="margin-bottom:1px"><button class="bh" style="width:100%;padding:4px 6px!important;background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:1px solid #a78bfa;color:#fff" id="ivac-btn-number-password" title="Fill phone+password from selected profile">Number Password</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#f97316,#ea580c);border:1px solid #fb923c;color:#fff" id="ivac-dom-signin-btn">Signin</button><input type="number" id="ivac-dom-signin-sec" min="0.1" max="60" step="0.1" value="20" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Signin retry interval (sec)"></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#ec4899,#be185d);border:1px solid #f472b6;color:#fff" id="ivac-dom-get-signin-otp-btn">Get Signin OTP</button><button class="bh" style="flex:1;padding:4px 6px!important;background:linear-gradient(135deg,#14b8a6,#0d9488);border:1px solid #2dd4bf;color:#fff" id="ivac-dom-verify-otp-btn">Verify</button></div>
+<div class="fr" style="margin-bottom:1px;gap:3px"><button class="bh" style="flex:0.80;padding:4px 6px!important;background:linear-gradient(135deg,#3b82f6,#1d4ed8);border:1px solid #60a5fa;color:#fff" id="ivac-dom-reserve-btn">Reserveslot</button><input type="number" id="ivac-dom-retry-sec" min="0.1" max="60" step="0.1" value="22" style="min-width:0px;flex:0.30;text-align:center;padding:3px 2px" title="Reserve retry interval (sec)"></div>
+</div>
+</div>
+
+<div class="tp" id="pf">
+<div class="sc"> <textarea id="ivac-fetch-input" rows="3" placeholder='{"url":"...", "method":"POST", "headers":{}, "body":null}'></textarea>
+<div class="fr" style="gap:4px"><button class="b5 bh" style="flex:1" id="ivac-btn-fetch-send">▶ Start</button><input type="number" id="ivac-fetch-delay" min="0" value="1000" style="width:56px;flex:none;text-align:center" title="Repeat delay between calls (ms)"><span style="color:#8888aa;font-size:.72rem;align-self:center;flex:none;font-weight:700">ms</span><label style="flex:none;display:flex;align-items:center;gap:3px;font-size:.6rem;color:#8888aa;font-weight:700" title="ON = GM (CORS-immune, hidden from DevTools). OFF = native fetch (shows in DevTools Fetch/XHR, but CORS-limited).">GM<div class="tg" id="ivac-fetch-gm-toggle" style="flex:none"><div class="tg-dot"></div></div></label></div>
+<div class="fr"><label style="flex:none; min-width:85px">SMS OTP app</label><select style="flex:1;min-width:0" id="ivac-otp-sms-source-select"><option value="lurkbd">LurkBD OTP APP</option><option value="sptootp">Buyer OTP APP</option></select></div>
+<div class="fr"><label style="flex:none; min-width:85px">Captcha Provider</label><select style="flex:1;min-width:0" id="ivac-captcha-provider-select"><option value="capmonster">CapMonster</option><option value="capsolver">CapSolver</option><option value="2captcha">2Captcha</option><option value="yescaptcha">YesCaptcha</option></select></div>
+<div class="fr" style="flex-wrap: nowrap;"><input type="text" id="ivac-captcha-api-input" placeholder="API key" autocomplete="off"><button class="b5 bh" style="flex:none" id="ivac-btn-captcha-save">Save</button><button class="b2 bh" style="flex:none" id="ivac-btn-captcha-reset">Reset</button></div>
+<div class="fr" style="gap:4px; margin-top:2px; margin-bottom:2px"><label style="flex:none; min-width:85px; font-size:.64rem; color:#666690; font-weight:700">Network Status</label><div class="tg" id="ivac-network-status-toggle"><div class="tg-dot"></div></div><label style="flex:none; font-size:.64rem; color:#666690; font-weight:700">Proxy</label><div class="tg" id="ivac-parallel-proxy-rotation-toggle" title="Parallel proxy rotation"><div class="tg-dot"></div></div><input type="text" id="ivac-parallel-proxy-start" style="width:30px; flex:none; text-align:center" placeholder="#" maxlength="4" autocomplete="off" title="Start proxy #"><span style="color:#666690; font-size:.72rem">–</span><input type="text" id="ivac-parallel-proxy-end" style="width:30px; flex:none; text-align:center" placeholder="#" maxlength="4" autocomplete="off" title="End proxy #"></div>
+<div id="ivac-parallel-options-wrap" style="background:linear-gradient(135deg,#070716,#0a0a1f); border:1px dashed rgba(124,58,237,.3); border-radius:7px; padding:6px; margin-top:5px">
+<div class="pl-row"><span style="width:65px; flex:none">Advance</span><input type="number" id="ivac-parallel-advance-hits" min="1" placeholder="10" value="5"><span>hits</span><input type="number" id="ivac-parallel-advance-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+<div class="pl-row"><span style="width:65px; flex:none">Signin</span><input type="number" id="ivac-parallel-signin-hits" min="1" placeholder="10" value="5"><span>hits</span><input type="number" id="ivac-parallel-signin-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+<div class="pl-row"><span style="width:65px; flex:none">Verify</span><input type="number" id="ivac-parallel-loginotp-hits" min="1" placeholder="10" value="5"><span>hits</span><input type="number" id="ivac-parallel-loginotp-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+<div class="pl-row"><span style="width:65px; flex:none">Book</span><input type="number" id="ivac-parallel-book-hits" min="1" placeholder="10" value="5"><span>hits</span><input type="number" id="ivac-parallel-book-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+<div class="pl-row"><span style="width:65px; flex:none">Reserve Slot</span><input type="number" id="ivac-parallel-reserveslot-hits" min="1" placeholder="10" value="5"><span>hits</span><input type="number" id="ivac-parallel-reserveslot-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+<div class="pl-row"><span style="width:65px; flex:none">Initiate</span><input type="number" id="ivac-parallel-initiate-hits" min="1" placeholder="5" value="5"><span>hits</span><input type="number" id="ivac-parallel-initiate-ms" min="0" placeholder="1000" value="1000"><span>ms</span></div>
+</div>
+</div>
+</div>
+
+<div class="tp" id="px">
+<div class="sc">
+<div class="fr"><span id="ivac-proxy-status-line" style="font-size:.7rem;color:#94a3b8;font-weight:700">Extension proxy: system</span></div>
+<div class="fr"><select id="ivac-proxy-scheme" style="min-width:5rem; flex:none"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks4">SOCKS4</option></select><input type="text" id="ivac-proxy-host" placeholder="Host (127.0.0.1)" autocomplete="off"><input type="number" id="ivac-proxy-port" placeholder="Port" min="1" max="65535" style="width:5rem; flex:none"></div>
+<div class="fr"><input type="text" id="ivac-proxy-user" placeholder="User (opt)" autocomplete="off"><input type="password" id="ivac-proxy-password" placeholder="Pass (opt)" autocomplete="off"></div>
+<div class="fr"><button class="b1 bh" id="ivac-proxy-btn-add">Add</button><select style="flex:1;min-width:0" id="ivac-proxy-picker"><option value="">-- Saved proxies --</option></select><button class="b9 bh" id="ivac-proxy-btn-remove">Remove</button></div>
+<div class="fr"><button class="b5 bh" style="flex:1" id="ivac-proxy-btn-connect">Connect</button><button class="b2 bh" style="flex:1" id="ivac-proxy-btn-disconnect">Disconnect</button></div>
+<div class="fr"><textarea id="ivac-proxy-import-export" rows="2" placeholder="host:port or host:port:user:pass"></textarea></div>
+<div class="fr"><input type="file" id="ivac-proxy-file-input" accept=".json,application/json" style="display:none"><button class="b10 bh" style="flex:1" id="ivac-proxy-btn-import-file">Import</button><button class="b1 bh" style="flex:1" id="ivac-proxy-btn-merge-box">Merge</button><button class="b11 bh" style="flex:1" id="ivac-proxy-btn-export">Export</button></div>
+<div class="proxy-msg" id="ivac-msg-proxy"></div>
+</div>
+</div>
+
+<div class="tp" id="pe">
+<div class="sc">
+<div class="enc-section">
+<div class="enc-title">🔐 SignIn Encryption Config</div>
+<div class="enc-cfg-row"><label>Key (Secret)</label><input type="text" id="enc-signin-key" placeholder="Secret key"></div>
+<div class="enc-cfg-row"><label>Skip (startAt)</label><input type="number" id="enc-signin-skip" min="0"></div>
+<div class="enc-cfg-row"><label>Length</label><input type="number" id="enc-signin-length" min="1"></div>
+<div class="enc-cfg-row"><label>Version</label> <select id="enc-signin-version"> <option value="1">v1 — block_mix</option> <option value="2">v2 — bitmix</option> <option value="3">v3 — cellular_shift</option> <option value="4">v4 — rc4_shift</option> <option value="5">v5 — lfsr_shift</option> <option value="6">v6 — polynomial</option> <option value="7">v7 — subst_reverse</option> <option value="8">v8 — prng</option> <option value="9">v9 — mod_square</option> <option value="10">v10 — logistic_shift</option> </select>
+</div>
+
+<div class="enc-cfg-actions"><button class="b5 bh" id="enc-signin-save">💾 Save</button><button class="b2 bh" id="enc-signin-activate">⚡ Activate</button><span class="enc-status" id="enc-signin-status">Inactive</span></div>
+</div>
+
+<div class="enc-section" style="margin-top:8px">
+<div class="enc-title">🎯 Reserve Encryption Config</div>
+<div class="enc-cfg-row"><label>Key (Secret)</label><input type="text" id="enc-reserve-key" placeholder="Secret key"></div>
+<div class="enc-cfg-row"><label>Skip (startAt)</label><input type="number" id="enc-reserve-skip" min="0"></div>
+<div class="enc-cfg-row"><label>Length</label><input type="number" id="enc-reserve-length" min="1"></div>
+<div class="enc-cfg-row"><label>Version</label> <select id="enc-reserve-version"> <option value="1">v1 — block_mix</option> <option value="2">v2 — bitmix</option> <option value="3">v3 — cellular_shift</option> <option value="4">v4 — rc4_shift</option> <option value="5">v5 — lfsr_shift</option> <option value="6">v6 — polynomial</option> <option value="7">v7 — subst_reverse</option> <option value="8">v8 — prng</option> <option value="9">v9 — mod_square</option> <option value="10">v10 — logistic_shift</option> </select>
+</div>
+
+<div class="enc-cfg-actions"><button class="b5 bh" id="enc-reserve-save">💾 Save</button><button class="b2 bh" id="enc-reserve-activate">⚡ Activate</button><span class="enc-status" id="enc-reserve-status">Inactive</span></div>
+</div>
+
+<div class="enc-section" style="margin-top:8px">
+<div class="enc-title">💳 Initiate Encryption Config</div>
+<div class="enc-cfg-row"><label>Key (Secret)</label><input type="text" id="enc-initiate-key" placeholder="Secret key"></div>
+<div class="enc-cfg-row"><label>Skip (startAt)</label><input type="number" id="enc-initiate-skip" min="0"></div>
+<div class="enc-cfg-row"><label>Length</label><input type="number" id="enc-initiate-length" min="1"></div>
+<div class="enc-cfg-row"><label>Version</label> <select id="enc-initiate-version"> <option value="1">v1 — block_mix</option> <option value="2">v2 — bitmix</option> <option value="3">v3 — cellular_shift</option> <option value="4">v4 — rc4_shift</option> <option value="5">v5 — lfsr_shift</option> <option value="6">v6 — polynomial</option> <option value="7">v7 — subst_reverse</option> <option value="8">v8 — prng</option> <option value="9">v9 — mod_square</option> <option value="10">v10 — logistic_shift</option> </select>
+</div>
+
+<div class="enc-cfg-actions"><button class="b5 bh" id="enc-initiate-save">💾 Save</button><button class="b2 bh" id="enc-initiate-activate">⚡ Activate</button><span class="enc-status" id="enc-initiate-status">Inactive</span></div>
+</div>
+
+</div>
+</div>
+</div>
+
+<div class="ft">
+<div class="ft-top"><div class="fl"><button id="fn">N</button><button id="fc">C</button><button id="fp2">P</button><button id="fl2">L</button><button id="fr2">R</button></div> <div class="tg" id="signin-timeout-toggle" title="Signin Timeout: ON = 20s timeout, force retry" style="width:28px;height:16px;margin-left:6px;flex-shrink:0"><div class="tg-dot"></div></div></div>
+<div style="display:flex;align-items:center;gap:5px;width:100%"><button id="dyn-sync-export" title="Export dynamic config (endpoint/header/record) to clipboard — credentials-free" style="flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#10b981,#059669);border:1px solid #34d399;color:#fff">Exp</button><span style="white-space:nowrap">RJ SLOT PRO-H2</span><button id="dyn-sync-import" title="Import dynamic config from clipboard, then reload" style="flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;color:#fff">Imp</button></div>
+</div>
+
+<div class="cdbar" id="cdbar">
+<div class="cd-cell cd-otp" id="cd-otp" style="display:none"><span class="cd-icon">📱</span><span class="cd-label">OTP</span><span class="cd-time" id="cd-otp-time">--:--</span></div>
+<div class="cd-sep" id="cd-sep" style="display:none"></div>
+<div class="cd-cell cd-token" id="cd-token" style="display:none"><span class="cd-icon">🔑</span><span class="cd-label">TOKEN</span><span class="cd-time" id="cd-token-time">--:--</span></div>
+<div class="cd-empty" id="cd-empty">⏱ no active session</div>
+</div>
+</div>
+
+<div id="profile-manager">
+<div class="pm-header" id="pm-drag-handle"><span class="pm-title">📋 PROFILE MANAGER</span><button class="pm-close" id="pm-close-btn">&minus;</button></div>
+<div class="pm-body">
+<div class="pm-select-row"><select id="pm-profile-select"><option value="">Select Profile</option></select><button class="pm-btn-new" id="pm-new-btn">NEW</button><button class="pm-btn-del" id="pm-del-btn">DEL</button></div>
+<div class="pm-section"><h4>PERSONAL INFO</h4>
+<div class="pm-grid"><input type="text" id="pm-name" placeholder="Name"><input type="email" id="pm-email" placeholder="Email"></div>
+<div class="pm-grid"><input type="tel" id="pm-phone1" placeholder="Phone 1"><input type="tel" id="pm-phone2" placeholder="Phone 2"></div>
+<div class="pm-grid"><input type="password" id="pm-mobile-pass" placeholder="Mobile Pass"><input type="password" id="pm-email-pass" placeholder="Email Pass"></div>
+<div class="pm-grid" style="grid-template-columns:1fr"><input type="text" id="pm-appointment-id" placeholder="Appointment ID" spellcheck="false" style="font-family:monospace;font-size:.7rem"></div>
+<div class="pm-grid" style="grid-template-columns:1fr"><input type="text" id="pm-app-pass" placeholder="Gmail App Password (for email OTP auto-fetch)" spellcheck="false" autocomplete="off" style="font-family:monospace;font-size:.7rem"></div>
+</div>
+
+<div class="pm-action-row"><button class="pm-btn-export" id="pm-export-btn">📤 EXPORT</button><button class="pm-btn-import" id="pm-import-btn">📥 IMPORT</button><button class="pm-btn-save" id="pm-save-btn">💾 SAVE</button></div>
+</div>
+</div>
+
+<div id="rj-netlog">
+<div class="netlog-header" id="netlog-drag"><span class="netlog-title">📡 NETWORK LOG</span><div class="netlog-tools"><button id="netlog-clear">Clear</button><button id="netlog-close">−</button></div></div>
+<div class="netlog-steps" id="netlog-steps">
+<div class="nl-step" data-step="advance">Adv</div>
+<div class="nl-step" data-step="signin">Sign</div>
+<div class="nl-step" data-step="verify">Verify</div>
+<div class="nl-step" data-step="book">Book</div>
+<div class="nl-step" data-step="reserve">Resrv</div>
+<div class="nl-step" data-step="initiate">Initiate</div>
+</div>
+
+<div class="netlog-meta"> <span id="netlog-stats">0 entries • auto-clear in 3:00</span> <span id="netlog-filter-wrap"><select id="netlog-filter"><option value="">All</option><option value="signup">Sign Up</option><option value="signin">Signin</option><option value="verify">Verify</option><option value="reserve">Reserve</option><option value="book">Book</option><option value="initiate">Initiate</option><option value="captcha">Captcha</option><option value="sms">SMS</option><option value="slot">Slot Status</option><option value="upload">Upload</option><option value="invoice">Invoice</option><option value="advance">Advance</option><option value="network">Network</option></select></span>
+</div>
+
+<div class="netlog-body" id="netlog-body"></div>
+</div> <input type="file" id="pm-import-file" accept=".json" style="display:none"> <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+`;
+document.body.insertAdjacentHTML('beforeend', h2html);
+
+encConfigInit();
+
+// === Encryption Tab Event Listeners ===
+document.getElementById('enc-signin-save')?.addEventListener('click', () => {
+    encConfigReadFromUI('signin');
+    encConfigSave('signin');
+    logStatus('💾 Signin encryption config saved', 'g');
+});
+document.getElementById('enc-signin-activate')?.addEventListener('click', () => {
+    encConfigReadFromUI('signin');
+    const cfg = encConfig.signin;
+    cfg.active = !cfg.active;
+    encConfigSave('signin');
+    encConfigApplyToUI('signin');
+    logStatus(cfg.active ? `⚡ Signin encryption ACTIVATED (v${cfg.version})` : '🔓 Signin encryption deactivated', cfg.active ? 'g' : 'y');
+});
+document.getElementById('enc-reserve-save')?.addEventListener('click', () => {
+    encConfigReadFromUI('reserve');
+    encConfigSave('reserve');
+    logStatus('💾 Reserve encryption config saved', 'g');
+});
+document.getElementById('enc-reserve-activate')?.addEventListener('click', () => {
+    encConfigReadFromUI('reserve');
+    const cfg = encConfig.reserve;
+    cfg.active = !cfg.active;
+    encConfigSave('reserve');
+    encConfigApplyToUI('reserve');
+    logStatus(cfg.active ? `⚡ Reserve encryption ACTIVATED (v${cfg.version})` : '🔓 Reserve encryption deactivated', cfg.active ? 'g' : 'y');
+});
+document.getElementById('enc-initiate-save')?.addEventListener('click', () => {
+    encConfigReadFromUI('initiate');
+    encConfigSave('initiate');
+    logStatus('💾 Initiate encryption config saved', 'g');
+});
+document.getElementById('enc-initiate-activate')?.addEventListener('click', () => {
+    encConfigReadFromUI('initiate');
+    const cfg = encConfig.initiate;
+    cfg.active = !cfg.active;
+    encConfigSave('initiate');
+    encConfigApplyToUI('initiate');
+    logStatus(cfg.active ? `⚡ Initiate encryption ACTIVATED (v${cfg.version})` : '🔓 Initiate encryption deactivated', cfg.active ? 'g' : 'y');
+});
+// Dynamic Sync: export/import the learned dynamic config across browsers. ONLY carries the
+// technical config (rj_dyn_captured = endpoint/slot/pay/fixed-headers, rj_req_records = per-endpoint
+// success record of header + body-field-NAMES). NEVER profiles/number/password/token/session.
+(function initDynSync() {
+    const applyImport = (raw) => {
+        raw = (raw || '').trim();
+        if (!raw) { logStatus('❌ Import: clipboard empty — copy the Export JSON first', 'r'); return; }
+        let p; try { p = JSON.parse(raw); } catch (e) { logStatus('❌ Import: invalid JSON', 'r'); return; }
+        if (!p || p._t !== 'rj_dyn_sync') { logStatus('❌ Import: not a dyn-sync export', 'r'); return; }
+        // ONLY these two keys — never touch profiles/number/password/token/session
+        if (p.rj_dyn_captured) localStorage.setItem('rj_dyn_captured', JSON.stringify(p.rj_dyn_captured));
+        if (p.rj_req_records)  localStorage.setItem('rj_req_records',  JSON.stringify(p.rj_req_records));
+        logStatus('📥 Dynamic config imported — reloading to apply', 'g');
+        setTimeout(() => location.reload(), 700);
+    };
+    // scrub any per-call secret that an OLD record may still hold, so export is always safe
+    const SECRET_HDRS = ['authorization', 'x-token', 'content-type', 'content-length', 'cookie', 'host'];
+    const scrubRecords = (rec) => {
+        try { if (rec && typeof rec === 'object') { for (const fam in rec) { const h = rec[fam] && rec[fam].headers; if (h) for (const k of Object.keys(h)) { if (SECRET_HDRS.includes(('' + k).toLowerCase())) delete h[k]; } } } } catch (e) {}
+        return rec;
+    };
+    document.getElementById('dyn-sync-export')?.addEventListener('click', function () {
+        try {
+            const dyn = JSON.parse(localStorage.getItem('rj_dyn_captured') || 'null');
+            try { if (dyn && dyn.headers) for (const k of Object.keys(dyn.headers)) { if (SECRET_HDRS.includes(('' + k).toLowerCase())) delete dyn.headers[k]; } } catch (e) {}
+            const json = JSON.stringify({
+                _t: 'rj_dyn_sync', v: 1, at: Date.now(),
+                rj_dyn_captured: dyn,
+                rj_req_records:  scrubRecords(JSON.parse(localStorage.getItem('rj_req_records') || 'null'))
+            });
+            navigator.clipboard.writeText(json).then(() => {
+                logStatus('📤 Dynamic config copied to clipboard (credentials-free) — paste in other browsers', 'g');
+            }).catch(() => {
+                // clipboard blocked → show it so the user can copy manually
+                prompt('Copy this dynamic-config JSON:', json);
+            });
+            try { flashButton(this, '✓', 'g'); } catch (e) {}
+        } catch (e) { logStatus('❌ Export error: ' + e.message, 'r'); }
+    });
+    document.getElementById('dyn-sync-import')?.addEventListener('click', function () {
+        // read clipboard (needs the click gesture); fallback to a paste prompt if blocked
+        try {
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then(applyImport).catch(() => {
+                    const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t);
+                });
+            } else { const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t); }
+        } catch (e) { const t = prompt('Paste the exported dynamic-config JSON:'); if (t) applyImport(t); }
+    });
+})();
+// Per-endpoint token-mode checkboxes (signin/reserve = raw when checked; initiate = encrypt when checked)
+(function initTokenModeChecks() {
+    [['chk-signin-raw', 'rj_chk_signin_raw'], ['chk-reserve-raw', 'rj_chk_reserve_raw'], ['chk-initiate-enc', 'rj_chk_initiate_enc']].forEach(([id, key]) => {
+        const el = document.getElementById(id); if (!el) return;
+        try { el.checked = localStorage.getItem(key) === '1'; } catch(e) {}
+        el.addEventListener('change', () => { try { localStorage.setItem(key, el.checked ? '1' : '0'); } catch(e) {} });
+    });
+})();
+// === Bundle Reload Button Listeners ===
+document.getElementById('enc-bundle-reload')?.addEventListener('click', () => {
+    logStatus('🔄 Re-loading config from bundle…', 'y');
+    encConfigAutoFetch(false);
+});
+document.getElementById('enc-bundle-force')?.addEventListener('click', () => {
+    logStatus('💡 Force re-resolve (ignoring cache)…', 'y');
+    encConfigAutoFetch(true);
+});
+
+// ==================== TAB SWITCHING ====================
+const tmap = { l: 'pl', s: 'ps', u: 'pu', f: 'pf', e: 'pe', x: 'px' };
+const lmap = { l: 'll', s: 'ls', u: 'lu', f: 'lf', e: 'le' };
+document.querySelectorAll('#p .t').forEach(t => {
+    t.addEventListener('click', () => {
+        const k = t.dataset.t;
+        document.querySelectorAll('#p .t').forEach(x => x.classList.remove('a'));
+        t.classList.add('a');
+        document.querySelectorAll('#p .tp').forEach(x => x.classList.remove('a'));
+        if (tmap[k]) document.getElementById(tmap[k])?.classList.add('a');
+        document.querySelectorAll('#p .sl>div').forEach(x => x.classList.remove('a'));
+        document.getElementById(lmap[k] || 'll')?.classList.add('a');
+    });
+});
+
+// ==================== CLOCK ====================
+function tick() {
+    const o = { timeZone: 'Asia/Dhaka', hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' };
+    const d = { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' };
+    const te = document.getElementById('tk'), de = document.getElementById('dk');
+    if (te) te.innerText = new Intl.DateTimeFormat('en-US', o).format(new Date());
+    if (de) de.innerText = new Intl.DateTimeFormat('en-US', d).format(new Date());
+}
+tick(); setInterval(tick, 1000);
+
+    // ==================== DRAGGING ====================
+    function makeDraggable(dragHandle, targetElement) {
+        let isDragging = false, startX, startY, initialLeft, initialTop, pointerId = null;
+        dragHandle.style.touchAction = 'none';
+        dragHandle.addEventListener('pointerdown', function(e) {
+            if (e.button !== undefined && e.button !== 0) return; // left button only
+            if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+            isDragging = true; pointerId = e.pointerId;
+            const rect = targetElement.getBoundingClientRect();
+            initialLeft = rect.left; initialTop = rect.top;
+            startX = e.clientX; startY = e.clientY;
+            targetElement.style.left = initialLeft + 'px';
+            targetElement.style.top = initialTop + 'px';
+            targetElement.style.right = 'auto';
+            targetElement.style.bottom = 'auto';
+            targetElement.style.transform = 'none';
+            targetElement.style.transition = 'none';
+            // capture so we keep getting moves even over iframes (captcha) / fast drags
+            try { dragHandle.setPointerCapture(e.pointerId); } catch(err) {}
+            e.preventDefault();
+        });
+        dragHandle.addEventListener('pointermove', function(e) {
+            if (!isDragging || e.pointerId !== pointerId) return;
+            targetElement.style.left = (initialLeft + e.clientX - startX) + 'px';
+            targetElement.style.top = (initialTop + e.clientY - startY) + 'px';
+            e.preventDefault();
+        });
+        const endDrag = function(e) {
+            if (!isDragging) return;
+            if (e && e.pointerId !== undefined && e.pointerId !== pointerId) return;
+            isDragging = false; pointerId = null;
+            targetElement.style.transition = '';
+            try { if (e && e.pointerId !== undefined) dragHandle.releasePointerCapture(e.pointerId); } catch(err) {}
+        };
+        dragHandle.addEventListener('pointerup', endDrag);
+        dragHandle.addEventListener('pointercancel', endDrag);
+    }
+
+    const panel = document.getElementById('p');
+    const panelHeader = document.getElementById('dh');
+    if (panelHeader && panel) makeDraggable(panelHeader, panel);
+    const pmPanel = document.getElementById('profile-manager');
+    const pmHeader = document.getElementById('pm-drag-handle');
+    if (pmHeader && pmPanel) makeDraggable(pmHeader, pmPanel);
+
+// ==================== MINIMIZE & FAB ====================
+const fab = document.getElementById('p-fab');
+const mb = document.getElementById('mb');
+function minimizePanel() { if(panel) panel.classList.add('hidden'); if(fab) fab.classList.remove('hidden'); }
+function maximizePanel() { if(panel) panel.classList.remove('hidden'); if(fab) fab.classList.add('hidden'); }
+if(mb) mb.addEventListener('click', minimizePanel);
+if(fab) fab.addEventListener('click', maximizePanel);
+
+// ==================== PASSWORD EYE ====================
+document.querySelectorAll('#p .pw .eye').forEach(btn => {
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const inp = this.parentElement.querySelector('input');
+        if (inp) {
+            inp.type = inp.type === 'password' ? 'text' : 'password';
+            this.innerHTML = inp.type === 'password' ? '&#128065;' : '&#128526;';
+        }
+    });
+});
+
+// ==================== TOGGLE SWITCHES ====================
+document.querySelectorAll('#p .tg').forEach(el => {
+    el.addEventListener('click', () => el.classList.toggle('on'));
+});
+
+// Default ON: popup-toggle
+document.getElementById('popup-toggle')?.classList.add('on');
+
+// Date-target toggle (ON = Latest / last date, OFF = Earliest / first date) — default Latest, persisted
+(function initDateTargetToggle() {
+    const el = document.getElementById('date-target-toggle'); if (!el) return;
+    try { const saved = localStorage.getItem('rj_date_target'); if (saved === 'earliest') el.classList.remove('on'); else el.classList.add('on'); } catch(e) {}
+    el.addEventListener('click', () => { setTimeout(() => { try { localStorage.setItem('rj_date_target', el.classList.contains('on') ? 'latest' : 'earliest'); } catch(e) {} logStatus(el.classList.contains('on') ? '📆 Date target: Latest (last)' : '📆 Date target: Earliest (first)', 'g'); }, 20); });
+})();
+
+// ==================== ADVANCE-TOGGLE SPECIAL ====================
+document.getElementById('advance-toggle')?.addEventListener('click', () => {
+    setTimeout(() => {
+        if (typeof applyAdvanceModeToLoginField === 'function') {
+            applyAdvanceModeToLoginField();
+            const advanceOn = !!document.getElementById('advance-toggle')?.classList.contains('on');
+            logStatus(advanceOn
+                ? '🔑 Advance mode ON — login field switched to Email (Forgot mode)'
+                : '🔑 Advance mode OFF — login field switched to Phone (Signin mode)',
+                advanceOn ? 'g' : 'y');
+        }
+    }, 0);
+});
+
+// ==================== CAPTCHA MODE BUTTONS ====================
+const csi = document.getElementById('csi'), csr = document.getElementById('csr');
+csi?.addEventListener('click', () => { csi.classList.add('a'); csr?.classList.remove('a'); cfMode = 'signin'; resetCaptcha(); });
+csr?.addEventListener('click', () => { csr.classList.add('a'); csi?.classList.remove('a'); cfMode = 'reserve'; resetCaptcha(); });
+
+document.getElementById('captcha-toggle')?.addEventListener('click', () => {
+    setTimeout(() => {
+        const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+        if (useApi) hideManualCaptcha();
+    }, 60);
+});
+
+// ==================== SINGLE / AUTO TOGGLE ====================
+document.querySelectorAll('#p .toggle-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        if (this.classList.contains('b8')) { this.classList.remove('b8'); this.classList.add('b5'); }
+        else { this.classList.remove('b5'); this.classList.add('b8'); }
+    });
+});
+
+// ==================== PROFILE MANAGER ====================
+const PM_STORAGE_KEY = 'rj_slot_profiles_v4';
+const EMPTY_PROFILE = { name: "", email: "", phone1: "", phone2: "", mobilePass: "", emailPass: "", appPass: "", appointmentId: "", mission: "dhaka" };
+
+let profiles = {};
+let activeProfileName = "Default";
+try {
+    const saved = JSON.parse(localStorage.getItem(PM_STORAGE_KEY));
+    if (saved && typeof saved === 'object' && Object.keys(saved).length > 0) { profiles = saved; }
+} catch(e) {}
+if (!Object.keys(profiles).length) { profiles = { "Default": { ...EMPTY_PROFILE } }; }
+activeProfileName = Object.keys(profiles)[0];
+
+const pmSelectMain  = document.getElementById('main-profile-select');
+const pmSelect      = document.getElementById('pm-profile-select');
+const pmName        = document.getElementById('pm-name');
+const pmEmail       = document.getElementById('pm-email');
+const pmPhone1      = document.getElementById('pm-phone1');
+const pmPhone2      = document.getElementById('pm-phone2');
+const pmMobilePass  = document.getElementById('pm-mobile-pass');
+const pmEmailPass   = document.getElementById('pm-email-pass');
+const pmAppPass     = document.getElementById('pm-app-pass');   // Gmail App Password (email OTP auto-fetch)
+const pmAppointmentId = document.getElementById('pm-appointment-id');
+const loginPhoneInp = document.getElementById('login-phone');
+const loginPwInp    = document.getElementById('login-password');
+
+function persistProfiles() { try { localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(profiles)); } catch(e) {} }
+
+function refreshProfileSelects() {
+    if (pmSelect) {
+        pmSelect.innerHTML = '';
+        Object.keys(profiles).forEach(n => {
+            const o = document.createElement('option');
+            o.value = n; o.textContent = n;
+            if (n === activeProfileName) o.selected = true;
+            pmSelect.appendChild(o);
+        });
+    }
+    if (pmSelectMain) {
+        pmSelectMain.innerHTML = '<option value="">-- Select Profile --</option>';
+        Object.keys(profiles).forEach(n => {
+            const o = document.createElement('option');
+            o.value = n; o.textContent = n;
+            if (n === activeProfileName) o.selected = true;
+            pmSelectMain.appendChild(o);
+        });
+    }
+    try { if (typeof window.__rjRefreshManualProfileSelect === 'function') window.__rjRefreshManualProfileSelect(); } catch(e) {}
+}
+
+function applyAdvanceModeToLoginField() {
+    if (!loginPhoneInp) return;
+    const p = profiles[activeProfileName] || { ...EMPTY_PROFILE };
+    const advTg = document.getElementById('advance-toggle');
+    const advanceOn = !!advTg?.classList.contains('on');
+    if (advanceOn) {
+        loginPhoneInp.type        = 'email';
+        loginPhoneInp.placeholder = 'Email';
+        loginPhoneInp.value       = p.email || '';
+        loginPhoneInp.title       = 'Email (Forgot Password mode)';
+    } else {
+        loginPhoneInp.type        = 'tel';
+        loginPhoneInp.placeholder = 'Phone 1';
+        loginPhoneInp.value       = p.phone1 || '';
+        loginPhoneInp.title       = 'Phone (Signin mode)';
+    }
+}
+
+function loadProfileToForm(name) {
+    activeProfileName = name;
+    const p = profiles[name] || { ...EMPTY_PROFILE };
+    if (pmName)            pmName.value            = p.name          || '';
+    if (pmEmail)           pmEmail.value           = p.email         || '';
+    if (pmPhone1)          pmPhone1.value          = p.phone1        || '';
+    if (pmPhone2)          pmPhone2.value          = p.phone2        || '';
+    if (pmMobilePass)      pmMobilePass.value      = p.mobilePass    || '';
+    if (pmEmailPass)       pmEmailPass.value       = p.emailPass     || '';
+    if (pmAppPass)         pmAppPass.value         = p.appPass       || '';
+    if (pmAppointmentId)   pmAppointmentId.value   = p.appointmentId || '';
+    // restore this profile's Mission & Center selection into the dropdown
+    try { const _ms = document.getElementById('ivac-appointment-mission'); if (_ms) _ms.value = p.mission || 'dhaka'; } catch(e) {}
+    applyAdvanceModeToLoginField();
+    if (loginPwInp)    loginPwInp.value    = p.mobilePass || '';
+
+    try {
+        const suMobile    = document.getElementById('ivac-mobile');
+        const suEmail     = document.getElementById('ivac-email');
+        const suSurname   = document.getElementById('ivac-surname');
+        const suGivenName = document.getElementById('ivac-given-name');
+        const suPassword  = document.getElementById('ivac-password');
+        if (suMobile)    suMobile.value    = p.phone1 || '';
+        if (suEmail)     suEmail.value     = p.email  || '';
+        if (p.name) {
+            const nameParts = p.name.split(' ');
+            if (suSurname)   suSurname.value   = nameParts.length > 1 ? nameParts.slice(-1)[0] : p.name;
+            if (suGivenName) suGivenName.value = nameParts.length > 1 ? nameParts.slice(0,-1).join(' ') : '';
+        } else {
+            if (suSurname)   suSurname.value = '';
+            if (suGivenName) suGivenName.value = '';
+        }
+        if (suPassword)  suPassword.value  = p.mobilePass || '';
+    } catch(e) {}
+    try { if (typeof window.__rjSyncManualProfileSelect === 'function') window.__rjSyncManualProfileSelect(name); } catch(e) {}
+}
+
+function saveFormToProfile() {
+    profiles[activeProfileName] = {
+        name:          pmName?.value || '',
+        email:         pmEmail?.value || '',
+        phone1:        pmPhone1?.value || '',
+        phone2:        pmPhone2?.value || '',
+        mobilePass:    pmMobilePass?.value || '',
+        emailPass:     pmEmailPass?.value || '',
+        appPass:       pmAppPass?.value || '',
+        appointmentId: (pmAppointmentId?.value || '').trim().replace(/^["']|["']$/g, ''),
+        // remember the selected Mission & Center per profile so auto-confirm targets the right one
+        mission:       document.getElementById('ivac-appointment-mission')?.value || (profiles[activeProfileName]?.mission) || 'dhaka'
+    };
+    persistProfiles();
+}
+
+refreshProfileSelects();
+loadProfileToForm(activeProfileName);
+
+document.getElementById('fp2')?.addEventListener('click', () => { document.getElementById('profile-manager')?.classList.toggle('open'); });
+document.getElementById('pm-close-btn')?.addEventListener('click', () => {
+    const btn = document.getElementById('pm-save-btn');
+    const hasUnsaved = btn?.textContent?.includes('*');
+    if (hasUnsaved) {
+        const choice = confirm(`Unsaved changes in profile "${activeProfileName}".\n\n• OK = Save and close\n• Cancel = Discard changes`);
+        if (choice) { saveFormToProfile(); markPmFormSaved(); logStatus(`✓ Saved: ${activeProfileName}`, 'g'); }
+        else { loadProfileToForm(activeProfileName); markPmFormSaved(); logStatus(`↺ Discarded unsaved changes`, 'y'); }
+    }
+    document.getElementById('profile-manager')?.classList.remove('open');
+});
+
+pmSelect?.addEventListener('change', e => {
+    if (!e.target.value) return;
+    saveFormToProfile(); loadProfileToForm(e.target.value); refreshProfileSelects();
+    logStatus(`✓ Profile loaded: ${e.target.value}`, 'g');
+});
+pmSelectMain?.addEventListener('change', e => {
+    if (!e.target.value) return;
+    saveFormToProfile(); loadProfileToForm(e.target.value); refreshProfileSelects();
+    logStatus(`✓ Profile: ${e.target.value}`, 'g');
+});
+
+// persist the Mission & Center choice into the active profile the moment it changes,
+// so auto-confirm always targets the mission this profile was saved with (not the default Dhaka).
+document.getElementById('ivac-appointment-mission')?.addEventListener('change', e => {
+    try {
+        const v = e.target.value || 'dhaka';
+        if (profiles[activeProfileName]) { profiles[activeProfileName].mission = v; persistProfiles(); }
+        logStatus(`🏛 Mission set for "${activeProfileName}": ${v}`, 'g');
+    } catch(err) {}
+});
+
+document.getElementById('pm-new-btn')?.addEventListener('click', () => {
+    const name = prompt('Enter new profile name:');
+    if (!name) return;
+    if (profiles[name]) { alert('Profile already exists!'); return; }
+    profiles[name] = { ...EMPTY_PROFILE };
+    activeProfileName = name; persistProfiles(); refreshProfileSelects(); loadProfileToForm(name);
+    logStatus(`✓ Profile created: ${name}`, 'g');
+});
+document.getElementById('pm-del-btn')?.addEventListener('click', () => {
+    const names = Object.keys(profiles);
+    if (names.length <= 1) { alert('Cannot delete the last profile.'); return; }
+    if (!confirm(`Delete profile "${activeProfileName}"?`)) return;
+    delete profiles[activeProfileName];
+    activeProfileName = Object.keys(profiles)[0]; persistProfiles(); refreshProfileSelects(); loadProfileToForm(activeProfileName);
+    logStatus(`⚠ Profile deleted`, 'y');
+});
+document.getElementById('pm-save-btn')?.addEventListener('click', () => {
+    saveFormToProfile(); loadProfileToForm(activeProfileName);
+    logStatus(`✓ Saved: ${activeProfileName}`, 'g'); markPmFormSaved();
+});
+
+function markPmFormDirty() {
+    const btn = document.getElementById('pm-save-btn'); if (!btn) return;
+    btn.style.boxShadow = '0 0 0 2px rgba(74,222,128,.7)'; btn.style.transition = 'box-shadow .3s';
+    if (!btn.dataset.origText) btn.dataset.origText = btn.textContent;
+    btn.textContent = '💾 SAVE *';
+}
+function markPmFormSaved() {
+    const btn = document.getElementById('pm-save-btn'); if (!btn) return;
+    btn.style.boxShadow = '';
+    if (btn.dataset.origText) btn.textContent = btn.dataset.origText;
+}
+[pmName, pmEmail, pmPhone1, pmPhone2, pmMobilePass, pmEmailPass, pmAppPass, pmAppointmentId].forEach(inp => { inp?.addEventListener('input', markPmFormDirty); });
+
+document.getElementById('pm-export-btn')?.addEventListener('click', () => {
+    saveFormToProfile();
+    const blob = new Blob([JSON.stringify(profiles, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `rj-profiles-${Date.now()}.json`; a.click(); URL.revokeObjectURL(url);
+    logStatus('✓ Profiles exported', 'g');
+});
+const pmImportInput = document.getElementById('pm-import-file');
+document.getElementById('pm-import-btn')?.addEventListener('click', () => pmImportInput?.click());
+pmImportInput?.addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = ev => {
+        try {
+            const imported = JSON.parse(ev.target.result);
+            profiles = { ...profiles, ...imported }; persistProfiles(); refreshProfileSelects();
+            logStatus(`✓ Imported ${Object.keys(imported).length} profile(s)`, 'g');
+        } catch (err) { logStatus(`❌ Invalid JSON file`, 'r'); }
+    };
+    r.readAsText(file); e.target.value = '';
+});
+
+document.getElementById('fn')?.addEventListener('click', () => { document.getElementById('pm-new-btn')?.click(); });
+document.getElementById('fc')?.addEventListener('click', () => {
+    if (!confirm('Clear login fields and saved session (incl. persistent storage)?')) return;
+    if (loginPhoneInp) loginPhoneInp.value = '';
+    if (loginPwInp)    loginPwInp.value    = '';
+    const otpInp = document.getElementById('login-otp'); if (otpInp) otpInp.value = '';
+    raceCoord.resetAll(); clearAllSession();
+    try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
+    try { if (timers.token.intervalId) clearInterval(timers.token.intervalId); timers.token.intervalId = null; timers.token.expiresAt = null; timers.token.beeped = false; if (typeof refreshTokenCdUI === 'function') refreshTokenCdUI(); } catch(e) {}
+    logStatus('🧹 Cleared all fields and session (all storage layers)', 'y');
+});
+document.getElementById('fl2')?.addEventListener('click', () => { document.getElementById('profile-manager')?.classList.add('open'); logStatus('📋 Profile Manager opened', 'g'); });
+document.getElementById('fr2')?.addEventListener('click', () => { try { resetCaptcha(); logStatus('↻ Captcha reset', 'y'); } catch(e) {} });
+
+// "A" button: delete appointment ID from active profile + clear session state
+document.getElementById('pl-del-appt')?.addEventListener('click', () => {
+    try {
+        if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = ''; persistProfiles(); }
+        if (pmAppointmentId) pmAppointmentId.value = '';
+        sessionState.appointmentId = null; sessionState.bookedAt = null; persistSession();
+        logStatus(`🗑 Appointment ID deleted from profile "${activeProfileName}"`, 'y');
+    } catch(e) {}
+});
+
+document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
+    try { stopFlag.value = true; } catch (e) {}          // halt any running/retrying pipeline
+    try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch (e) {}  // stop A_E auto-scan
+    encConfig.signin  = {};
+    encConfig.reserve = {};
+    try {
+        localStorage.removeItem(ENC_SIGNIN_KEY);
+        localStorage.removeItem(ENC_RESERVE_KEY);
+        localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
+    } catch (e) {}
+    // clear the Encrypt-tab input fields for both purposes
+    for (const p of ['signin', 'reserve']) {
+        const keyInp = document.getElementById(`enc-${p}-key`);
+        const skipInp = document.getElementById(`enc-${p}-skip`);
+        const lenInp = document.getElementById(`enc-${p}-length`);
+        const verSel = document.getElementById(`enc-${p}-version`);
+        const statusEl = document.getElementById(`enc-${p}-status`);
+        if (keyInp) keyInp.value = '';
+        if (skipInp) skipInp.value = '';
+        if (lenInp) lenInp.value = '';
+        if (verSel) verSel.value = '';
+        if (statusEl) { statusEl.textContent = 'Inactive'; statusEl.style.color = '#8888aa'; }
+    }
+    logStatus('🧹 Encryption config cleared — signin auto-retry stopped', 'g');
+});
+
+async function scanAndMaybeAutoSignin(reason) {
+    localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
+    if (reason) logStatus(reason, 'y');
+    const res = await encConfigAutoFetch(true);
+    const signinReady = !!(res && res.signin && encConfig.signin && encConfig.signin.active && encConfig.signin.key);
+    if (!signinReady) return false;
+    // config is active — decide whether to fire signin
+    if (typeof isSessionValid === 'function' && isSessionValid()) {
+        logStatus('🔓 Already logged in — auto-signin skipped', 'y');
+        return true;
+    }
+    if (typeof pipelineRunning !== 'undefined' && pipelineRunning) {
+        logStatus('⚠ Pipeline already running — auto-signin skipped', 'y');
+        return true;
+    }
+    try { stopFlag.value = false; } catch (e) {}
+    logStatus('✅ Config active → Auto-start Signin…', 'g');
+    startPipelineFrom('signin');
+    return true;
+}
+
+document.getElementById('scan-btn')?.addEventListener('click', async () => {
+    try { rjResolveEndpointsLive(); } catch (e) {}   // DYNAMIC: refresh endpoints + slot-id from bundle too
+    const ok = await scanAndMaybeAutoSignin('🔍 Manual scan — resolving encryption secret from live bundle…');
+    if (!ok) logStatus('⚠ Scan finished but signin config not active — auto-signin skipped', 'y');
+});
+
+const autoEncScan = { timerId: null, busy: false };
+function stopAutoEncScan(silent) {
+    if (autoEncScan.timerId) { clearInterval(autoEncScan.timerId); autoEncScan.timerId = null; }
+    autoEncScan.busy = false;
+    const btn = document.getElementById('auto-enc-btn');
+    if (btn) { btn.classList.remove('scanning'); btn.textContent = 'A_E'; }
+    if (!silent) logStatus('⏹ Auto-scan (A_E) stopped', 'y');
+}
+async function autoEncScanTick() {
+    if (autoEncScan.busy) return;            // don't overlap scans
+    autoEncScan.busy = true;
+    try {
+        try { await rjResolveEndpointsLive(); } catch (e) {}
+        const ok = await scanAndMaybeAutoSignin('🔁 A_E auto-scan — checking bundle for encryption config…');
+        if (ok) { stopAutoEncScan(true); logStatus('✅ A_E: config found → auto-scan OFF, Signin started', 'g'); }
+    } catch (e) { console.error('[A_E] scan error:', e); }
+    finally { autoEncScan.busy = false; }
+}
+document.getElementById('auto-enc-btn')?.addEventListener('click', () => {
+    if (autoEncScan.timerId) { stopAutoEncScan(false); return; }   // toggle OFF
+    const btn = document.getElementById('auto-enc-btn');
+    if (btn) { btn.classList.add('scanning'); btn.textContent = '⏳'; }
+    logStatus('🔁 A_E auto-scan ON — checking every 2s until encryption config is found…', 'g');
+    autoEncScanTick();                                             // fire immediately
+    autoEncScan.timerId = setInterval(autoEncScanTick, 2000);      // then every 2s
+});
+
+// ==================== COUNTDOWN MANAGER ====================
+const TIMER_OTP_MS   = 5 * 60  * 1000;
+const TIMER_TOKEN_MS = 15  * 60  * 1000;
+const WARN_THRESHOLD_MS = 30  * 1000;
+
+const timers = {
+    signinOtp:  { expiresAt: null, btnId: 'bsi',        intervalId: null, beeped: false },
+    advanceOtp: { expiresAt: null, btnId: 'badv-phone', intervalId: null, beeped: false },
+    token:      { expiresAt: null, btnId: null,         intervalId: null, beeped: false }
+};
+
+function fmtRemaining(ms) {
+    if (ms <= 0) return '00:00';
+    const total = Math.ceil(ms / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function beepSoft() {
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine'; osc.frequency.value = 880; gain.gain.value = 0.08;
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+        setTimeout(() => { osc.stop(); ctx.close(); }, 400);
+    } catch(e) {}
+}
+
+// LOUD beeps: master gain multiplier + a short attack so it's punchy, not faint.
+const BEEP_GAIN = 6.0;   // scale up the old faint volumes; ~0.10 → ~0.6 (capped near max)
+function playBeep(freq, durationMs, volume) {
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const vol = Math.min(0.95, (volume || 0.08) * BEEP_GAIN);
+        osc.type = 'triangle'; osc.frequency.value = freq;            // triangle = brighter/louder than sine
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + 0.01);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (durationMs / 1000));
+        setTimeout(() => { try { osc.stop(); ctx.close(); } catch(e) {} }, durationMs + 50);
+    } catch(e) {}
+}
+
+function playBeepSequence(beeps) {
+    let offset = 0;
+    beeps.forEach(b => { setTimeout(() => playBeep(b.freq, b.durationMs, b.volume), offset); offset += b.durationMs + 70; });
+}
+
+function announceSuccess(text) {
+    try {
+        speakBangla(text);
+    } catch(e) {}
+}
+
+function beepInitiateAndSpeak() {
+    playBeepSequence([
+        { freq: 523.25, durationMs: 190, volume: 0.16 },
+        { freq: 659.25, durationMs: 190, volume: 0.16 },
+        { freq: 783.99, durationMs: 380, volume: 0.18 }
+    ]);
+    setTimeout(() => speakBangla('Payment করুন'), 900);
+}
+
+function speakBangla(text) {
+    try {
+        if (!('speechSynthesis' in window)) return;
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = 'bn-BD'; utter.rate = 0.98; utter.pitch = 1.0; utter.volume = 1.0;   // max volume
+        const voices = window.speechSynthesis.getVoices();
+        const bnVoice = voices.find(v => /^bn/i.test(v.lang)) || voices.find(v => /bangla|bengali/i.test(v.name));
+        if (bnVoice) utter.voice = bnVoice;
+        window.speechSynthesis.speak(utter);
+    } catch(e) {}
+}
+try { if ('speechSynthesis' in window) { window.speechSynthesis.getVoices(); if (window.speechSynthesis.onvoiceschanged !== undefined) window.speechSynthesis.onvoiceschanged = () => {}; } } catch(e) {}
+
+function attachInlineCd(btn, slotKey) {
+    if (!btn) return null;
+    let span = btn.querySelector('.btn-inline-cd');
+    if (!span) { span = document.createElement('span'); span.className = 'btn-inline-cd'; btn.appendChild(span); }
+    return span;
+}
+function clearInlineCd(btn) { const span = btn?.querySelector('.btn-inline-cd'); if (span) span.remove(); }
+
+function tickOtpTimer(slotKey) {
+    const t = timers[slotKey];
+    const btn = document.getElementById(t.btnId);
+    if (!btn || !t.expiresAt) return;
+    const remain = t.expiresAt - Date.now();
+    const span = attachInlineCd(btn, slotKey);
+    if (!span) return;
+    if (remain <= 0) {
+        clearInterval(t.intervalId); t.intervalId = null; t.expiresAt = null; t.beeped = false;
+        clearInlineCd(btn);
+        logStatus(`⌛ ${slotKey === 'signinOtp' ? 'Signin' : 'Advance'} OTP expired`, 'r');
+        return;
+    }
+    span.textContent = fmtRemaining(remain);
+    if (remain <= WARN_THRESHOLD_MS) { span.classList.add('warn'); if (!t.beeped) { beepSoft(); t.beeped = true; } }
+    else { span.classList.remove('warn'); }
+}
+
+function startOtpTimer(slotKey) {
+    const t = timers[slotKey];
+    if (t.intervalId) clearInterval(t.intervalId);
+    t.expiresAt = Date.now() + TIMER_OTP_MS;
+    t.beeped = false;
+    tickOtpTimer(slotKey);
+    t.intervalId = setInterval(() => tickOtpTimer(slotKey), 1000);
+}
+
+function stopOtpTimer(slotKey) {
+    const t = timers[slotKey];
+    if (t.intervalId) { clearInterval(t.intervalId); t.intervalId = null; }
+    t.expiresAt = null; t.beeped = false;
+    const btn = document.getElementById(t.btnId);
+    if (btn) clearInlineCd(btn);
+}
+
+function refreshTokenCdUI() {
+    const t = timers.token;
+    const cdbar = document.getElementById('cdbar');
+    const empty = document.getElementById('cd-empty');
+    const otpCell = document.getElementById('cd-otp');
+    const tokenCell = document.getElementById('cd-token');
+    const sep = document.getElementById('cd-sep');
+    const tokenTime = document.getElementById('cd-token-time');
+
+    const anyOtpActive = timers.signinOtp.expiresAt || timers.advanceOtp.expiresAt;
+    if (otpCell) otpCell.style.display = anyOtpActive ? '' : 'none';
+    if (sep) sep.style.display = (anyOtpActive && t.expiresAt) ? '' : 'none';
+
+    if (anyOtpActive) {
+        const otpRemain = Math.max(
+            timers.signinOtp.expiresAt ? timers.signinOtp.expiresAt - Date.now() : 0,
+            timers.advanceOtp.expiresAt ? timers.advanceOtp.expiresAt - Date.now() : 0
+        );
+        const otpTimeEl = document.getElementById('cd-otp-time');
+        if (otpTimeEl) otpTimeEl.textContent = fmtRemaining(otpRemain);
+        if (otpCell) { if (otpRemain <= WARN_THRESHOLD_MS) otpCell.classList.add('warn'); else otpCell.classList.remove('warn'); }
+    }
+
+    if (!t.expiresAt) {
+        if (cdbar && !anyOtpActive) cdbar.style.display = 'none';
+        if (empty && !anyOtpActive) empty.style.display = '';
+        if (tokenCell) tokenCell.style.display = 'none';
+        return;
+    }
+    const remain = t.expiresAt - Date.now();
+    if (cdbar) cdbar.style.display = '';
+    if (empty) empty.style.display = 'none';
+    if (tokenCell) tokenCell.style.display = '';
+
+    if (remain <= 0) {
+        tokenTime.textContent = '00:00';
+        tokenCell.classList.remove('warn'); tokenCell.classList.add('expired');
+        clearInterval(t.intervalId); t.intervalId = null; t.expiresAt = null;
+        logStatus('🔒 Bearer token expired — session cleared. Login again.', 'r');
+        try { clearAllSession(); } catch(e) {}
+        try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
+        setTimeout(() => { tokenCell.classList.remove('expired'); refreshTokenCdUI(); }, 3000);
+        return;
+    }
+    tokenTime.textContent = fmtRemaining(remain);
+    if (remain <= WARN_THRESHOLD_MS) { tokenCell.classList.add('warn'); if (!t.beeped) { beepSoft(); t.beeped = true; } }
+    else { tokenCell.classList.remove('warn'); }
+}
+
+function startTokenTimer() {
+    const t = timers.token;
+    if (t.intervalId) clearInterval(t.intervalId);
+    t.expiresAt = Date.now() + TIMER_TOKEN_MS;
+    t.beeped = false;
+    refreshTokenCdUI();
+    t.intervalId = setInterval(refreshTokenCdUI, 1000);
+}
+
+function startTokenTimerWithExpiry(expiresAt) {
+    const t = timers.token;
+    if (t.intervalId) clearInterval(t.intervalId);
+    t.expiresAt = expiresAt;
+    t.beeped = false;
+    refreshTokenCdUI();
+    t.intervalId = setInterval(refreshTokenCdUI, 1000);
+}
+
+refreshTokenCdUI();
+
+function flashButton(btn, statusEmoji, color, durationMs) {
+    if (!btn) return;
+    const original = btn.dataset._origText || btn.textContent.replace(/\s*\d{2}:\d{2}\s*$/, '').trim();
+    if (!btn.dataset._origText) btn.dataset._origText = original;
+    const cdSpan = btn.querySelector('.btn-inline-cd');
+    btn.textContent = statusEmoji;
+    if (cdSpan) btn.appendChild(cdSpan);
+    if (color === 'g') btn.style.background = 'linear-gradient(135deg,#10b981,#059669)';
+    else if (color === 'r') btn.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)';
+    else if (color === 'y') btn.style.background = 'linear-gradient(135deg,#f59e0b,#d97706)';
+    setTimeout(() => {
+        btn.textContent = original;
+        if (cdSpan) btn.appendChild(cdSpan);
+        btn.style.background = ''; btn.style.borderColor = '';
+    }, durationMs || 1500);
+}
+
+// ==================== PROXY MANAGEMENT ====================
+const PROXY_STORAGE_KEY = 'rj_proxy_list';
+const PROXY_ACTIVE_KEY  = 'rj_proxy_active';
+
+function loadProxies() { try { const raw = localStorage.getItem(PROXY_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch(e) { return []; } }
+function saveProxies(list) { try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify(list)); } catch(e) {} }
+function getActiveProxyId() { try { return localStorage.getItem(PROXY_ACTIVE_KEY) || ''; } catch(e) { return ''; } }
+function setActiveProxyId(id) { try { id ? localStorage.setItem(PROXY_ACTIVE_KEY, id) : localStorage.removeItem(PROXY_ACTIVE_KEY); } catch(e) {} }
+
+function parseProxyLine(line, defaultScheme) {
+    const s = String(line || '').trim(); if (!s) return null;
+    let scheme = defaultScheme || 'http'; let body = s;
+    const schemeMatch = s.match(/^(https?|socks[45]):\/\/(.+)$/i);
+    if (schemeMatch) { scheme = schemeMatch[1].toLowerCase(); body = schemeMatch[2]; }
+    const parts = body.split(':');
+    if (parts.length !== 2 && parts.length !== 4) return null;
+    const host = parts[0].trim(); const port = parseInt(parts[1], 10);
+    if (!host || isNaN(port) || port < 1 || port > 65535) return null;
+    return { id: `${scheme}_${host}_${port}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, scheme, host, port, user: parts[2]?.trim() || '', password: parts[3]?.trim() || '', label: `${host}:${port}` };
+}
+
+function formatProxyString(p) {
+    if (!p) return 'system';
+    const auth = p.user ? `${p.user}${p.password ? ':' + p.password : ''}@` : '';
+    return `${p.scheme}://${auth}${p.host}:${p.port}`;
+}
+
+function refreshProxyPicker() {
+    const list = loadProxies(); const activeId = getActiveProxyId();
+    const pickers = [
+        { el: document.getElementById('ivac-proxy-picker'),  emptyLabel: '-- Saved proxies --' },
+        { el: document.getElementById('login-proxy-picker'), emptyLabel: '-- Direct (no proxy) --' }
+    ];
+    pickers.forEach(({ el, emptyLabel }) => {
+        if (!el) return;
+        el.innerHTML = `<option value="">${emptyLabel}</option>`;
+        list.forEach(p => { const opt = document.createElement('option'); opt.value = p.id; opt.textContent = `${p.scheme.toUpperCase()} ${p.label}${p.user ? ' (' + p.user + ')' : ''}`; if (p.id === activeId) opt.selected = true; el.appendChild(opt); });
+    });
+    updateLoginToggleButton();
+}
+
+function updateLoginToggleButton() {
+    const btn = document.getElementById('login-proxy-toggle'); if (!btn) return;
+    const active = getActiveProxy();
+    if (_proxyConnected && active) { btn.textContent = 'Disconnect'; btn.className = 'b2 bh'; btn.title = `Disconnect from ${active.label}`; }
+    else if (active) { btn.textContent = 'Connect'; btn.className = 'b5 bh'; btn.title = `Connect to ${active.label}`; }
+    else { btn.textContent = 'Connect'; btn.className = 'b0 bh'; btn.title = 'Select a proxy first'; }
+}
+
+function refreshProxyStatusLine() {
+    const line = document.getElementById('ivac-proxy-status-line');
+    if (line) {
+        const active = getActiveProxy();
+        if (active && _proxyConnected) line.innerHTML = `<span style="color:#4ade80">●</span> Extension proxy: <span style="color:#a78bfa">${formatProxyString(active)}</span>`;
+        else if (active) line.innerHTML = `<span style="color:#facc15">○</span> Extension proxy: <span style="color:#94a3b8">${formatProxyString(active)}</span> <span style="color:#94a3b8">(not connected)</span>`;
+        else line.innerHTML = `<span style="color:#94a3b8">●</span> Extension proxy: <span style="color:#94a3b8">system</span>`;
+    }
+    updateLoginToggleButton();
+}
+
+function getActiveProxy() { const id = getActiveProxyId(); return loadProxies().find(p => p.id === id) || null; }
+
+window._rjRotState = window._rjRotState || { current: null };
+function rjRotationOn() { return !!document.getElementById('ivac-parallel-proxy-rotation-toggle')?.classList.contains('on'); }
+function rjProxyPool() {
+    const all = loadProxies();
+    if (!all.length) return [];
+    const s = parseInt(document.getElementById('ivac-parallel-proxy-start')?.value, 10);
+    const e = parseInt(document.getElementById('ivac-parallel-proxy-end')?.value, 10);
+    if (!isNaN(s) && !isNaN(e) && s >= 1 && e >= s) return all.slice(s - 1, e);   // 1-indexed inclusive
+    return all;
+}
+function pickProxyForCall() {
+    if (rjRotationOn()) {
+        const pool = rjProxyPool();
+        if (!pool.length) return null;
+        const cur = window._rjRotState.current;
+        if (cur && pool.some(p => p.id === cur.id)) return cur;   // sticky: keep the working proxy
+        const next = pool[Math.floor(Math.random() * pool.length)];
+        window._rjRotState.current = next;
+        try { logStatus(`🌀 Proxy → ${next.label}`, 'y'); } catch(e) {}
+        return next;
+    }
+    // rotation off → single connected proxy (if any)
+    return (typeof window !== 'undefined') ? window._rjActiveProxy : null;
+}
+function rotateProxyOnError(usedProxy) {
+    if (!rjRotationOn()) return;
+    const pool = rjProxyPool();
+    if (pool.length < 1) { window._rjRotState.current = null; return; }
+    // pick a DIFFERENT proxy than the one that just failed
+    const others = pool.filter(p => !usedProxy || p.id !== usedProxy.id);
+    const nextPool = others.length ? others : pool;
+    const next = nextPool[Math.floor(Math.random() * nextPool.length)];
+    window._rjRotState.current = next;
+    try { logStatus(`🔁 Proxy error → rotating to ${next.label}`, 'y'); } catch(e) {}
+}
+
+let _proxyConnected = false;
+function setProxyMsg(msg, err) { const el = document.getElementById('ivac-msg-proxy'); if (!el) return; el.textContent = msg; el.style.color = err ? '#fca5a5' : '#4ade80'; setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000); }
+
+window._rjActiveProxy = null;
+function updateActiveProxyGlobal() { const active = getActiveProxy(); window._rjActiveProxy = (active && _proxyConnected) ? { ...active } : null; }
+
+document.getElementById('ivac-proxy-btn-add')?.addEventListener('click', () => {
+    const scheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; const host = document.getElementById('ivac-proxy-host')?.value.trim(); const portRaw= document.getElementById('ivac-proxy-port')?.value.trim(); const user = document.getElementById('ivac-proxy-user')?.value.trim(); const password = document.getElementById('ivac-proxy-password')?.value;
+    if (!host) { setProxyMsg('❌ Host required', true); return; } const port = parseInt(portRaw, 10); if (isNaN(port) || port < 1 || port > 65535) { setProxyMsg('❌ Invalid port', true); return; }
+    const list = loadProxies(); const dup = list.find(p => p.scheme === scheme && p.host === host && p.port === port); if (dup) { setProxyMsg(`⚠ Already exists: ${host}:${port}`, true); return; }
+    list.push({ id: `${scheme}_${host}_${port}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, scheme, host, port, user: user || '', password: password || '', label: `${host}:${port}` });
+    saveProxies(list); refreshProxyPicker();
+    document.getElementById('ivac-proxy-host').value = ''; document.getElementById('ivac-proxy-port').value = ''; document.getElementById('ivac-proxy-user').value = ''; document.getElementById('ivac-proxy-password').value = '';
+    setProxyMsg(`✓ Added ${host}:${port}`);
+});
+
+document.getElementById('ivac-proxy-picker')?.addEventListener('change', (e) => {
+    const id = e.target.value; if (!id) { setActiveProxyId(''); _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); return; }
+    setActiveProxyId(id); const p = loadProxies().find(x => x.id === id);
+    if (p) { const schemeEl = document.getElementById('ivac-proxy-scheme'); const hostEl = document.getElementById('ivac-proxy-host'); const portEl = document.getElementById('ivac-proxy-port'); const userEl = document.getElementById('ivac-proxy-user'); const passEl = document.getElementById('ivac-proxy-password'); if (schemeEl) schemeEl.value = p.scheme; if (hostEl) hostEl.value = p.host; if (portEl) portEl.value = p.port; if (userEl) userEl.value = p.user || ''; if (passEl) passEl.value = p.password || ''; }
+    _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg(`✓ Selected ${p?.label || ''} — click Connect to activate`);
+});
+
+document.getElementById('ivac-proxy-btn-remove')?.addEventListener('click', () => {
+    const picker = document.getElementById('ivac-proxy-picker'); const id = picker?.value; if (!id) { setProxyMsg('❌ Select a proxy first', true); return; }
+    const list = loadProxies(); const p = list.find(x => x.id === id); if (!p) { setProxyMsg('❌ Not found', true); return; } if (!confirm(`Remove ${p.label}?`)) return;
+    const filtered = list.filter(x => x.id !== id); saveProxies(filtered); if (getActiveProxyId() === id) { setActiveProxyId(''); _proxyConnected = false; } refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal(); setProxyMsg(`✓ Removed ${p.label}`);
+});
+
+document.getElementById('ivac-proxy-btn-connect')?.addEventListener('click', () => {
+    const picker = document.getElementById('ivac-proxy-picker'); const id = picker?.value;
+    if (!id) { const scheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; const host = document.getElementById('ivac-proxy-host')?.value.trim(); const portRaw= document.getElementById('ivac-proxy-port')?.value.trim(); if (!host || !portRaw) { setProxyMsg('❌ Select a proxy or fill the form first', true); return; } const port = parseInt(portRaw, 10); if (isNaN(port)) { setProxyMsg('❌ Invalid port', true); return; } const ephemeral = { id: '_ephemeral', scheme, host, port, user: document.getElementById('ivac-proxy-user')?.value.trim() || '', password: document.getElementById('ivac-proxy-password')?.value || '', label: `${host}:${port}` }; _proxyConnected = true; window._rjActiveProxy = ephemeral; const line = document.getElementById('ivac-proxy-status-line'); if (line) line.innerHTML = `<span style="color:#4ade80">●</span> Extension proxy: <span style="color:#a78bfa">${formatProxyString(ephemeral)}</span> <span style="color:#facc15">(ephemeral)</span>`; setProxyMsg(`✓ Connected (ephemeral) ${ephemeral.label}`); return; }
+    const p = loadProxies().find(x => x.id === id); if (!p) { setProxyMsg('❌ Proxy not found', true); return; } _proxyConnected = true; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg(`✓ Connected ${p.label}`);
+});
+
+document.getElementById('ivac-proxy-btn-disconnect')?.addEventListener('click', () => { _proxyConnected = false; updateActiveProxyGlobal(); refreshProxyStatusLine(); setProxyMsg('✓ Disconnected — using system proxy'); });
+
+document.getElementById('ivac-proxy-btn-merge-box')?.addEventListener('click', () => {
+    const txt = document.getElementById('ivac-proxy-import-export')?.value || ''; const lines = txt.split(/[\r\n]+/).filter(s => s.trim()); if (!lines.length) { setProxyMsg('❌ Paste box is empty', true); return; }
+    const list = loadProxies(); const defaultScheme = document.getElementById('ivac-proxy-scheme')?.value || 'http'; let added = 0, skipped = 0, invalid = 0;
+    lines.forEach(line => { const parsed = parseProxyLine(line, defaultScheme); if (!parsed) { invalid++; return; } const dup = list.find(p => p.scheme === parsed.scheme && p.host === parsed.host && p.port === parsed.port); if (dup) { skipped++; return; } list.push(parsed); added++; });
+    saveProxies(list); refreshProxyPicker(); const parts = []; if (added) parts.push(`+${added} added`); if (skipped) parts.push(`${skipped} dup`); if (invalid) parts.push(`${invalid} invalid`); setProxyMsg(`✓ Merge: ${parts.join(', ') || '0'}`); if (added) document.getElementById('ivac-proxy-import-export').value = '';
+});
+
+document.getElementById('ivac-proxy-btn-export')?.addEventListener('click', () => {
+    const list = loadProxies(); if (!list.length) { setProxyMsg('❌ No proxies to export', true); return; }
+    const textFmt = list.map(p => { const auth = p.user ? `:${p.user}${p.password ? ':' + p.password : ''}` : ''; return `${p.host}:${p.port}${auth}`; }).join('\n');
+    document.getElementById('ivac-proxy-import-export').value = textFmt;
+    const blob = new Blob([JSON.stringify(list, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `rj-proxies-${Date.now()}.json`; a.click(); URL.revokeObjectURL(url); setProxyMsg(`✓ Exported ${list.length} proxies (text + JSON)`);
+});
+
+document.getElementById('ivac-proxy-btn-import-file')?.addEventListener('click', () => { document.getElementById('ivac-proxy-file-input')?.click(); });
+document.getElementById('ivac-proxy-file-input')?.addEventListener('change', (e) => {
+    const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
+    reader.onload = (ev) => { try { const imported = JSON.parse(ev.target.result); if (!Array.isArray(imported)) { setProxyMsg('❌ Invalid file: not an array', true); return; } const list = loadProxies(); let added = 0, skipped = 0, invalid = 0; imported.forEach(item => { if (!item.host || !item.port) { invalid++; return; } const dup = list.find(p => p.scheme === item.scheme && p.host === item.host && p.port === item.port); if (dup) { skipped++; return; } list.push({ id: `imp_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, scheme: item.scheme || 'http', host: String(item.host), port: parseInt(item.port, 10), user: item.user || '', password: item.password || '', label: item.label || `${item.host}:${item.port}` }); added++; }); saveProxies(list); refreshProxyPicker(); setProxyMsg(`✓ Import: +${added}, ${skipped} dup, ${invalid} invalid`); } catch(err) { setProxyMsg('❌ Invalid JSON file', true); } };
+    reader.readAsText(file); e.target.value = '';
+});
+
+refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
+
+    // ==================== UPLOAD TAB ====================
+    document.getElementById('ivac-btn-file-upload-checking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
+        try { _uploadArmed = true; uploadQueueFill(); } catch(e) {}   // start pre-solving the upload pool now (early lead time)
+        logStatus('📋 Checking file upload status…', 'y');
+        const logId = netLogAdd({ method: 'GET', url: API_SLOT_STATUS, tag: 'slot', state: 'pending', note: 'file-upload-checking' });
+        try {
+            const r = await H2.fetchH2(API_SLOT_STATUS, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `slotOpen=${body.data?.slotOpen} • file: ${body.data?.fileUploadStatus || '?'} • ${body.data?.appointmentDate || ''}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {}; const slotOpen = d.slotOpen ? '🟢 OPEN' : '🔴 CLOSED'; logStatus(`✅ File Check: ${slotOpen} • file: ${d.fileUploadStatus || 'unknown'} • ${d.appointmentDate || ''}`, 'g'); if (d.slotOpen) { try { announceSuccess('Slot is open'); } catch(e) {} } }
+            else { logStatus(`❌ File check failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File check error: ${err.message}`, 'r'); }
+    });
+
+    document.getElementById('ivac-btn-appointment')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session — Signin first', 'r'); return; }
+        logStatus('📋 Creating appointment…', 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment", tag: 'book', state: 'pending', note: 'appointment' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `appointmentId=${body.data?.appointmentId?.slice(0,8) || '?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {};
+                // The Appointment call SUCCEEDS (2xx) but does NOT return an appointmentId — that comes later
+                // from get-booking-config (the Book step). So success = 2xx; mark a flag, don't wait for an id.
+                sessionState.appointmentCreated = true; sessionState.appointmentCreatedAt = Date.now(); persistSession();
+                // (rare) if this response DID carry a standard id field, keep it — otherwise leave for Book.
+                const _apptId = d.appointmentId || d.appointment_id || d.appointmentID;
+                if (_apptId) { sessionState.appointmentId = _apptId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = _apptId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = _apptId; } } catch(e) {} }
+                logStatus(`✅ Appointment created${_apptId ? ' (' + String(_apptId).slice(0,8) + '…)' : ''} • ${d.ivacCenter||''} • ${d.appointmentSlot||''}`, 'g'); try { announceSuccess('Appointment created'); } catch(e) {} }
+            else { logStatus(`❌ Appointment failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Appointment error: ${err.message}`, 'r'); }
+    });
+
+    const UPLOAD_MAX_TRIES = 4;   // transient 503/429 retries with a fresh distinct token each time
+    var rjSavedUploads = rjSavedUploads || {};
+    async function sendMultipartUpload(url, headers, file, fields) {
+        try { if (typeof rjRewriteUrl === 'function') url = rjRewriteUrl(url); } catch (e) {}
+        try { if (typeof rjApplyDynHeaders === 'function') { const _i = rjApplyDynHeaders(url, { headers }); if (_i && _i.headers) headers = _i.headers; } } catch (e) {}
+        const boundary = '----RJUpload' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+        const fileBytes = new Uint8Array(await file.arrayBuffer());
+        const enc = s => { const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xff; return a; };
+        const parts = [];
+        parts.push(enc(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${file.name}"\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`));
+        parts.push(fileBytes);
+        parts.push(enc('\r\n'));
+        for (const k in fields) parts.push(enc(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${fields[k]}\r\n`));
+        parts.push(enc(`--${boundary}--\r\n`));
+        let total = 0; parts.forEach(p => total += p.length);
+        const bytes = new Uint8Array(total); let off = 0; parts.forEach(p => { bytes.set(p, off); off += p.length; });
+        const contentType = 'multipart/form-data; boundary=' + boundary;
+        const allHeaders = { ...headers, 'content-type': contentType };
+
+        // 1) native page fetch with a Blob body (HTTP/2, real bytes)
+        try {
+            const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch) ? unsafeWindow.fetch : fetch;
+            return await pageFetch(url, { method: 'POST', headers: allHeaders, credentials: 'omit', referrer: API_REFERRER, body: new Blob([bytes], { type: contentType }) });
+        } catch (e) {
+            // 2) GM fallback — send the raw bytes as a binary string
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) throw e;
+            let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return await new Promise((resolve, reject) => {
+                gmApi({
+                    method: 'POST', url, headers: allHeaders, data: bin, binary: true, timeout: 30000,
+                    onload: r => resolve(new Response(r.responseText, { status: r.status, statusText: r.statusText })),
+                    onerror: () => reject(new Error('GM upload network error')),
+                    ontimeout: () => reject(new Error('GM upload timeout'))
+                });
+            });
+        }
+    }
+
+    async function uploadFile(fileInputId, isPrimary, label) {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return false; }
+        const fileInput = document.getElementById(fileInputId);
+        const file = (fileInput?.files?.length > 0) ? fileInput.files[0] : (rjSavedUploads[fileInputId] || null);
+        if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return false; }   // never upload an empty part
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2", tag: 'upload', state: 'pending', note: `${label}` });
+
+        for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
+            let uploadEntry;
+            try { uploadEntry = await claimFreshUploadToken(); }
+            catch(e) { netLogUpdate(logId, { state: 'fail', status: 'err', note: `captcha: ${e.message}` }); logStatus(`❌ ${label} captcha: ${e.message}`, 'r'); return false; }
+            const uploadToken = uploadEntry.token;
+            logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
+            try {
+                const r = await sendMultipartUpload(
+                    "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2",
+                    { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
+                    file, { isPrimary: String(isPrimary) }
+                );
+                let body = null; try { body = await r.json(); } catch(e) { body = null; }
+                // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+                const transient = !ok && !shouldBurnToken(r.status, body);
+                releaseUploadToken(uploadEntry, transient);   // transient → back to queue; else discard
+                if (ok) { netLogUpdate(logId, { status: r.status, state: 'ok', note: 'uploaded' }); logStatus(`✅ ${label} uploaded`, 'g'); try { announceSuccess(label + ' uploaded'); } catch(e) {} return true; }
+                if (transient && attempt < UPLOAD_MAX_TRIES) {
+                    netLogUpdate(logId, { status: r.status, state: 'pending', note: `503/429 → retry ${attempt+1}` });
+                    logStatus(`⏳ ${label} ${r.status} — retrying with a fresh token…`, 'y');
+                    await new Promise(res => setTimeout(res, 700 * attempt));   // small backoff
+                    continue;
+                }
+                netLogUpdate(logId, { status: r.status, state: 'fail', note: body?.message || `HTTP ${r.status}` });
+                logStatus(`❌ ${label} failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+                return false;
+            } catch (err) {
+                releaseUploadToken(uploadEntry, true);        // network error → token still valid, requeue
+                if (attempt < UPLOAD_MAX_TRIES) { logStatus(`⏳ ${label} error — retrying…`, 'y'); await new Promise(res => setTimeout(res, 700 * attempt)); continue; }
+                netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ ${label} error: ${err.message}`, 'r');
+                return false;
+            }
+        }
+        return false;
+    }
+    // expose to the top-level auto-upload chain (uploadFile & rjSavedUploads live in this nested scope)
+    try { window.__rjUploadFile = uploadFile; } catch (e) {}
+    try { window.__rjSavedUploadsGet = function () { return rjSavedUploads; }; } catch (e) {}
+    document.getElementById('ivac-btn-file-upload')?.addEventListener('click', () => uploadFile('ivac-file-upload', true, 'Patient File'));
+    document.getElementById('ivac-btn-file-upload-2')?.addEventListener('click', () => uploadFile('ivac-file-upload-2', false, 'Attendant 1'));
+    document.getElementById('ivac-btn-file-upload-3')?.addEventListener('click', () => uploadFile('ivac-file-upload-3', false, 'Attendant 2'));
+    document.getElementById('ivac-btn-file-upload-4')?.addEventListener('click', () => uploadFile('ivac-file-upload-4', false, 'Attendant 3'));
+
+    (function initPersistentUploads() {
+        const SLOTS = [
+            { input: 'ivac-file-upload',   slot: 'patient', label: 'Patient File' },
+            { input: 'ivac-file-upload-2', slot: 'atten1',  label: 'Attendant 1' },
+            { input: 'ivac-file-upload-3', slot: 'atten2',  label: 'Attendant 2' },
+            { input: 'ivac-file-upload-4', slot: 'atten3',  label: 'Attendant 3' },
+        ];
+        const DB = 'rj_uploads', STORE = 'files';
+        function openDB() { return new Promise((res, rej) => { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+        async function idbPut(k, v) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+        async function idbGet(k) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readonly'); const rq = t.objectStore(STORE).get(k); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => rej(rq.error); }); }
+        async function idbDel(k) { const db = await openDB(); return new Promise((res, rej) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+        const keyFor = (slot) => `${(typeof activeProfileName !== 'undefined' && activeProfileName) || 'default'}::${slot}`;
+
+        function setLabel(input, name) { const el = document.getElementById('rj-svd-' + input); if (!el) return; if (name) { el.innerHTML = '💾 <span style="color:#4ade80">' + name + '</span> <span data-clr="' + input + '" title="clear saved file" style="cursor:pointer;color:#f87171;font-weight:800">🗑</span>'; el.style.display = 'block'; } else { el.textContent = ''; el.style.display = 'none'; } }
+
+        // inject a tiny saved-file status line under each input row
+        SLOTS.forEach(s => { const inp = document.getElementById(s.input); if (!inp || document.getElementById('rj-svd-' + s.input)) return; const row = inp.closest('.fr') || inp.parentElement; const d = document.createElement('div'); d.id = 'rj-svd-' + s.input; d.style.cssText = 'display:none;font:700 .58rem Consolas,monospace;color:#4ade80;word-break:break-all;margin:0 0 3px 2px'; row.insertAdjacentElement('afterend', d); });
+
+        // clear (🗑) via delegation
+        document.addEventListener('click', async (e) => { const t = e.target; if (t && t.dataset && t.dataset.clr) { const input = t.dataset.clr; const s = SLOTS.find(x => x.input === input); if (!s) return; delete rjSavedUploads[input]; try { await idbDel(keyFor(s.slot)); } catch (err) {} setLabel(input, ''); logStatus(`🗑 ${s.label} saved file cleared`, 'y'); } });
+
+        // on new file pick → save bytes to IDB + memory
+        SLOTS.forEach(s => { const inp = document.getElementById(s.input); if (!inp) return; inp.addEventListener('change', async () => { const f = inp.files && inp.files[0]; if (!f) return; try { const buf = await f.arrayBuffer(); await idbPut(keyFor(s.slot), { name: f.name, type: f.type || 'application/pdf', bytes: buf, savedAt: Date.now() }); rjSavedUploads[s.input] = f; setLabel(s.input, f.name); logStatus(`💾 ${s.label} saved (${Math.round(f.size / 1024)}KB)`, 'g'); } catch (err) { logStatus(`⚠ ${s.label} save failed: ${err.message}`, 'y'); } }); });
+
+        // load the active profile's saved files into memory + labels
+        async function loadForProfile() { for (const s of SLOTS) { try { const rec = await idbGet(keyFor(s.slot)); if (rec && rec.bytes) { rjSavedUploads[s.input] = new File([rec.bytes], rec.name, { type: rec.type || 'application/pdf' }); setLabel(s.input, rec.name); } else { delete rjSavedUploads[s.input]; setLabel(s.input, ''); } } catch (err) {} } }
+        window.__rjReloadSavedUploads = loadForProfile;
+
+        setTimeout(loadForProfile, 700);   // initial
+        ['main-profile-select', 'pm-profile-select'].forEach(id => { const sel = document.getElementById(id); if (sel) sel.addEventListener('change', () => setTimeout(loadForProfile, 200)); });
+    })();
+
+    const MISSION_MAP = { dhaka: { mission: 'Dhaka', ivacCenter: 'IVAC, Dhaka (JFP)' }, jashore: { mission: 'Dhaka', ivacCenter: 'IVAC, Jashore' }, chittagong: { mission: 'Chittagong', ivacCenter: 'IVAC, Chittagong' }, khulna: { mission: 'Khulna', ivacCenter: 'IVAC, Khulna' }, rajshahi: { mission: 'Rajshahi', ivacCenter: 'IVAC, Rajshahi' }, sylhet: { mission: 'Sylhet', ivacCenter: 'IVAC, Sylhet' } };
+
+    document.getElementById('ivac-btn-appointment-booking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        const missionSelect = document.getElementById('ivac-appointment-mission'); const selectedValue = missionSelect?.value || 'dhaka'; const missionData = MISSION_MAP[selectedValue]; if (!missionData) { logStatus('❌ Invalid mission', 'r'); return; }
+        logStatus(`🏛 Confirming: ${missionData.mission}`, 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", tag: 'book', state: 'pending' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ mission: missionData.mission, ivacCenter: missionData.ivacCenter }) });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `confirmed` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { const d = body.data || {}; if (d.appointmentId) { sessionState.appointmentId = d.appointmentId; sessionState.bookedAt = Date.now(); persistSession(); try { if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = d.appointmentId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = d.appointmentId; } } catch(e) {} } logStatus(`✅ Confirmed: ${missionData.mission} • ${d.appointmentSlot||''}`, 'g'); try { announceSuccess('Mission confirmed'); } catch(e) {} }
+            else { logStatus(`❌ Confirm failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Confirm error: ${err.message}`, 'r'); }
+    });
+
+    document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        logStatus('📋 Checking file overview…', 'y');
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view-v3", tag: 'upload', state: 'pending' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v3", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `fileStatus=${body.data?.fileUploadStatus||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) logStatus(`✅ File Check: ${body.data?.fileUploadStatus||'unknown'}`, 'g'); else logStatus(`❌ File Checking failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ File Checking error: ${err.message}`, 'r'); }
+    });
+
+    document.getElementById('ivac-btn-file-delete')?.addEventListener('click', async function() {
+        const fileNumber = (document.getElementById('ivac-file-delete-number')?.value || '').trim();
+        if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
+        if (!fileNumber) { logStatus('❌ Enter file number', 'r'); return; }
+        const url = `https://api.ivacbd.com/iams/api/v1/file/delete?fileNumber=${encodeURIComponent(fileNumber)}`;
+        logStatus(`🗑 Deleting file: ${fileNumber}`, 'y');
+        const logId = netLogAdd({ method: 'DELETE', url, tag: 'upload', state: 'pending' });
+        try {
+            const r = await H2.fetchH2(url, { method: 'DELETE', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            let body = null; try { body = await r.json(); } catch(e) { body = null; }
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail' });
+            if (ok) logStatus(`✅ File deleted: ${fileNumber}`, 'g'); else logStatus(`❌ Delete failed: ${body?.message || `HTTP ${r.status}`}`, 'r');
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`❌ Delete error: ${err.message}`, 'r'); }
+    });
+
+    // ==================== INVOICE DOWNLOAD ====================
+    let invoiceRetryActive = false;
+    async function autoDownloadInvoice(url) {
+        logStatus('📥 Downloading invoice…', 'y');
+        try {
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            const blob = await r.blob(); const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl);
+            logStatus('✅ Invoice downloaded!', 'g');
+        } catch(e) {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (gmApi) {
+                gmApi({ method: 'GET', url: url, responseType: 'blob', headers: { 'accept': 'application/pdf, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() },
+                    onload: (resp) => { try { const blob = resp.response; const downloadUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = downloadUrl; a.download = `invoice-${Date.now()}.pdf`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(downloadUrl); logStatus('✅ Invoice downloaded!', 'g'); } catch(e) { logStatus('✅ Invoice ready — check tab', 'g'); } },
+                    onerror: () => { logStatus('✅ Invoice ready — check tab', 'g'); } });
+            } else { logStatus('✅ Invoice ready — check tab', 'g'); }
+        }
+        try { beepInitiateAndSpeak(); } catch(e) {}
+    }
+    async function checkInvoiceLoaded(url) {
+        const result = { loaded: false, status: null, msg: '' };
+        try {
+            const r = await pageFetch(url, { method: 'GET', headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, credentials: 'omit' });
+            if (!invoiceRetryActive) return result;
+            const contentType = r.headers.get('content-type') || ''; result.status = r.status;
+            if (r.status === 200 && contentType.includes('pdf')) { result.loaded = true; return result; }
+            const text = await r.text();
+            if (!invoiceRetryActive) return result;
+            if (text.startsWith('%PDF')) { result.loaded = true; return result; }
+            try { const json = JSON.parse(text); result.msg = json.message || ''; if ((r.status === 200 || r.status === 201) && json.data && (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201)) result.loaded = true; } catch(e) { if (r.status === 200 && text.length > 200) { const lt = text.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) result.loaded = true; } }
+            return result;
+        } catch(e) {
+            return new Promise((resolve) => {
+                const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+                if (!gmApi) { result.status = 'ERR'; result.msg = 'no fetch available'; resolve(result); return; }
+                gmApi({ method: 'GET', url: url, headers: { 'accept': 'application/pdf, application/json, */*', 'authorization': sessionState.accessToken ? `Bearer ${sessionState.accessToken}` : '', 'x-device-id': getDeviceId() }, timeout: 20000,
+                    onload: (response) => {
+                        if (!invoiceRetryActive) { resolve(result); return; }
+                        const status = response.status; const rawText = response.responseText || ''; const headersStr = (response.responseHeaders || '').toLowerCase();
+                        const isPdf = rawText.startsWith('%PDF') || headersStr.includes('application/pdf'); let isSuccessJson = false;
+                        try { const json = JSON.parse(rawText); result.msg = json.message || ''; if (status === 200 || status === 201) { if (json.successFlag === true || json.statusCode === 200 || json.statusCode === 201) { if (json.data && (typeof json.data === 'object' ? Object.keys(json.data).length > 0 : !!json.data)) isSuccessJson = true; if (json.message === 'Success' || json.message === 'OK') isSuccessJson = true; } } } catch(e) { if (status === 200 && rawText.length > 200) { const lt = rawText.toLowerCase(); const hasInvoice = lt.includes('invoice') || lt.includes('payment') || lt.includes('ivac') || lt.includes('visa application'); const hasError = lt.includes('error') || lt.includes('not found') || lt.includes('fail'); if (hasInvoice && !hasError) isSuccessJson = true; } }
+                        result.status = status; result.loaded = isPdf || isSuccessJson; resolve(result);
+                    },
+                    onerror: () => { result.status = 'ERR'; result.msg = 'network error'; resolve(result); },
+                    ontimeout: () => { result.status = 'TMO'; result.msg = 'timeout'; resolve(result); } });
+            });
+        }
+    }
+    document.getElementById('ivac-btn-invoice-download')?.addEventListener('click', function() {
+        const btn = this;
+        if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('⏹ Invoice stopped', 'y'); return; }
+        const trxId = (document.getElementById('ivac-invoice-trxid')?.value || '').trim();
+        if (!trxId) { logStatus('❌ Enter trxId first', 'r'); return; }
+        const url = `https://api.ivacbd.com/iams/api/v1/invoice/download?txrId=${encodeURIComponent(trxId)}`;
+        if (!btn.dataset.origStyle) btn.dataset.origStyle = btn.style.cssText;
+        invoiceRetryActive = true;
+        btn.style.cssText = btn.dataset.origStyle + ';background:linear-gradient(135deg,#ef4444,#b91c1c)!important;border:1px solid #f87171!important;color:#fff!important';
+        btn.textContent = '■ STOP';
+        logStatus(`🧾 Invoice loading… will auto-reload until loaded`, 'g');
+        window.open(url, 'rjInvoiceTab');
+        (async () => {
+            let attempts = 0; const maxAttempts = 300;
+            while (invoiceRetryActive && attempts < maxAttempts) {
+                attempts++; await new Promise(r => setTimeout(r, 1000));
+                if (!invoiceRetryActive) break;
+                const result = await checkInvoiceLoaded(url);
+                if (!invoiceRetryActive) break;
+                if (result.loaded) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus('✅ Invoice loaded! Auto-downloading…', 'g'); autoDownloadInvoice(url); return; }
+                try { const tab = window.open('', 'rjInvoiceTab'); if (tab && !tab.closed) tab.location.href = url; else window.open(url, 'rjInvoiceTab'); } catch(e) { try { window.open(url, 'rjInvoiceTab'); } catch(e2) {} }
+                const statusStr = result.status || '?'; const msgStr = result.msg ? `: ${result.msg.slice(0, 35)}` : '';
+                logStatus(`⏳ Invoice not ready (${statusStr}${msgStr}) • attempt ${attempts}/${maxAttempts}`, 'y');
+            }
+            if (invoiceRetryActive) { invoiceRetryActive = false; if (btn.dataset.origStyle) btn.style.cssText = btn.dataset.origStyle; btn.textContent = 'Submit'; logStatus(`⏹ Invoice stopped (${maxAttempts} attempts)`, 'y'); }
+        })();
+    });
+
+    // ==================== SIGNUP: UI HANDLERS ====================
+    function suMsg(elId, msg, type) { const el = document.getElementById(elId); if (!el) return; el.textContent = msg || ''; el.className = 'su-msg ' + (type === 'g' ? 'g' : type === 'r' ? 'r' : type === 'y' ? 'y' : ''); }
+    function updateMobileBadge() { const b = document.getElementById('su-mobile-badge'); if (!b) return; if (signupState.mobileVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
+    function updateEmailBadge() { const b = document.getElementById('su-email-badge'); if (!b) return; if (signupState.emailVerified) { b.textContent = '✓ VERIFIED'; b.className = 'su-badge on'; } else { b.textContent = 'NOT VERIFIED'; b.className = 'su-badge off'; } }
+
+    document.getElementById('ivac-password-toggle')?.addEventListener('click', function(e) { e.stopPropagation(); const inp = document.getElementById('ivac-password'); if (inp) { inp.type = inp.type === 'password' ? 'text' : 'password'; this.innerHTML = inp.type === 'password' ? '👁' : '😎'; } });
+    document.getElementById('ivac-btn-signup-stop')?.addEventListener('click', function() { signupState.stopRequested = true; try { stopSmsFetcher('signup stop'); } catch(e) {} suMsg('ivac-msg-submit', '⏹ Stopped', 'y'); logStatus('🛑 Signup halted', 'r'); });
+
+    document.getElementById('ivac-btn-mobile')?.addEventListener('click', async function() {
+        const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
+        if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number', 'r'); return; } if (!/^01[3-9]\d{8}$/.test(phone)) { suMsg('ivac-msg-mobile', '❌ Invalid BD mobile', 'r'); return; }
+        // NEW system: phone OTP needs signUpRequestId, which is created by the EMAIL OTP send. So email must go first.
+        if (!signupState.signUpRequestId) { suMsg('ivac-msg-mobile', '❌ Send Email OTP first (creates the signup session)', 'r'); logStatus('⚠ Phone OTP needs signUpRequestId — do Email first', 'y'); return; }
+        // Server gates the phone step behind email verification (confirmed by live test): email must be VERIFIED first.
+        if (!signupState.emailVerified) { suMsg('ivac-msg-mobile', '❌ Verify Email OTP first (server requires it before phone)', 'r'); logStatus('⚠ Email must be VERIFIED before phone OTP — server gate', 'y'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Sending OTP to mobile…', 'y'); logStatus('📱 Sending mobile OTP…', 'y');
+        let mobileOtpToken; try { mobileOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-mobile', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'mobile-otp' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-token': mobileOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ signUpRequestId: signupState.signUpRequestId, phone, otpChannel: "PHONE" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { signupState.mobileRequestId = body?.data?.requestId || body?.requestId || null; if (body?.data?.signUpRequestId) signupState.signUpRequestId = body.data.signUpRequestId; suMsg('ivac-msg-mobile', '✅ OTP sent to mobile!', 'g'); logStatus('✅ Mobile OTP sent!', 'g'); flashButton(this, '✓', 'g'); try { showMilestonePopup('Mobile OTP Sent', `OTP sent to ${phone}`, '📱'); } catch(e) {} try { announceSuccess('Mobile OTP sent successfully'); } catch(e) {} startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput && !otpInput.value) { otpInput.value = otp; suMsg('ivac-msg-mobile', `📩 Auto OTP: ${otp}`, 'g'); logStatus(`📩 Signup Mobile OTP: ${otp}`, 'g'); } return undefined; }, false, false); }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
+
+    document.getElementById('ivac-btn-get-mobile-otp')?.addEventListener('click', async function() {
+        const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
+        if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile number first', 'r'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Fetching OTP from SMS server…', 'y'); logStatus('📱 Manual OTP fetch for signup…', 'y'); flashButton(this, '⟳', 'y');
+        startSmsFetcher(phone, async (otp) => { const otpInput = document.getElementById('ivac-mobile-otp'); if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); } suMsg('ivac-msg-mobile', `📩 OTP: ${otp}`, 'g'); logStatus(`📩 Signup OTP fetched: ${otp}`, 'g'); return undefined; }, true, true);
+    });
+
+    document.getElementById('ivac-btn-mobile-verify')?.addEventListener('click', async function() {
+        const otp = (document.getElementById('ivac-mobile-otp')?.value || '').trim(); const phone = (document.getElementById('ivac-mobile')?.value || '').trim();
+        if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
+        suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
+        // NEW system: verify does NOT need a captcha token (real traffic shows no x-token on verify-otp-v2).
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
+            // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
+            const verified = !!(body && body.data && body.data.verified === true && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'mobile verified' : (body?.message || `HTTP ${r.status}`) });
+            if (verified) { signupState.mobileVerified = true; updateMobileBadge(); suMsg('ivac-msg-mobile', '✅ Mobile verified!', 'g'); logStatus('✅ Mobile verified!', 'g'); flashButton(this, '✓', 'g'); try { showMilestonePopup('Mobile Verified', `${phone} verified — fill details & Register`, '✅'); } catch(e) {} try { stopSmsFetcher('mobile verified'); announceSuccess('Mobile verified successfully'); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-mobile', `❌ ${msg}`, 'r'); logStatus(`❌ Mobile verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-mobile', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Mobile verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
+
+    document.getElementById('ivac-btn-email')?.addEventListener('click', async function() {
+        const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!email) { suMsg('ivac-msg-email', '❌ Enter email', 'r'); return; } if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { suMsg('ivac-msg-email', '❌ Invalid email', 'r'); return; }
+        suMsg('ivac-msg-email', '⏳ Sending OTP to email…', 'y'); logStatus('📧 Sending email OTP…', 'y');
+        let emailOtpToken; try { emailOtpToken = await getCaptchaTokenSmart(); } catch(e) { suMsg('ivac-msg-email', `❌ Captcha: ${e.message}`, 'r'); flashButton(this, '✗', 'r'); return; }
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/signupOtp", tag: 'signup', state: 'pending', note: 'email-otp' });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/signupOtp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json', 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-token': emailOtpToken }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ email, otpChannel: "EMAIL" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
+            const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail', note: ok ? `requestId=${body?.data?.requestId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`) });
+            if (ok) { signupState.emailRequestId = body?.data?.requestId || body?.requestId || null; if (body?.data?.signUpRequestId) signupState.signUpRequestId = body.data.signUpRequestId; suMsg('ivac-msg-email', `✅ OTP sent to email!${signupState.signUpRequestId ? ' (session ready)' : ''}`, 'g'); logStatus(`✅ Email OTP sent!${signupState.signUpRequestId ? ' signUpRequestId=' + signupState.signUpRequestId.slice(0,8) : ''}`, 'g'); flashButton(this, '✓', 'g'); try { showMilestonePopup('Email OTP Sent', `OTP sent to ${email}`, '✉️'); } catch(e) {} try { announceSuccess('Email OTP sent successfully'); } catch(e) {} try { startEmailFetcher(email, async (otp) => { const inp = document.getElementById('ivac-email-otp'); if (inp && !inp.value) { inp.value = otp; suMsg('ivac-msg-email', `📩 Auto OTP: ${otp}`, 'g'); } return undefined; }, false, false); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email OTP failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email OTP error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
+
+    document.getElementById('ivac-btn-get-email-otp')?.addEventListener('click', function() {
+        const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; }
+        suMsg('ivac-msg-email', '⏳ Fetching OTP from email…', 'y'); logStatus(`✉️ Manual email OTP fetch for ${email}…`, 'y'); flashButton(this, '⟳', 'y');
+        startEmailFetcher(email, async (otp) => { const inp = document.getElementById('ivac-email-otp'); if (inp) { inp.value = otp; } suMsg('ivac-msg-email', `📩 OTP: ${otp}`, 'g'); logStatus(`📩 Email OTP fetched: ${otp}`, 'g'); return undefined; }, false, true);
+    });
+
+    document.getElementById('ivac-btn-email-verify')?.addEventListener('click', async function() {
+        const otp = (document.getElementById('ivac-email-otp')?.value || '').trim(); const email = (document.getElementById('ivac-email')?.value || '').trim();
+        if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
+        suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
+        // NEW system: verify does NOT need a captcha token.
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
+        try {
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
+            let body = null; try { body = await r.json(); } catch(e) {}
+            // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
+            // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
+            const verified = !!(body && body.data && body.data.verified === true && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
+            netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'email verified' : (body?.message || `HTTP ${r.status}`) });
+            if (verified) { signupState.emailVerified = true; updateEmailBadge(); suMsg('ivac-msg-email', '✅ Email verified!', 'g'); logStatus('✅ Email verified!', 'g'); flashButton(this, '✓', 'g'); try { stopEmailFetcher('email verified'); } catch(e) {} try { showMilestonePopup('Email Verified', `${email} verified — now do Mobile`, '✅'); } catch(e) {} try { announceSuccess('Email verified successfully'); } catch(e) {} }
+            else { const msg = body?.message || `HTTP ${r.status}`; suMsg('ivac-msg-email', `❌ ${msg}`, 'r'); logStatus(`❌ Email verify failed: ${msg}`, 'r'); flashButton(this, '✗', 'r'); }
+        } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); suMsg('ivac-msg-email', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Email verify error: ${err.message}`, 'r'); flashButton(this, '✗', 'r'); }
+    });
+
+    // ==================== SIGNUP: ACCOUNT REGISTRATION (direct, no conditions) ====================
+    document.getElementById('ivac-btn-submit-info')?.addEventListener('click', async function() {
+        const btn = this;
+        const phone     = (document.getElementById('ivac-mobile')?.value || '').trim();
+        const email     = (document.getElementById('ivac-email')?.value || '').trim();
+        const dobRaw    = (document.getElementById('ivac-dob')?.value || '').trim();
+        const passport  = (document.getElementById('ivac-passport')?.value || '').trim();
+        const nid       = (document.getElementById('ivac-nid')?.value || '').trim();
+        const surName   = (document.getElementById('ivac-surname')?.value || '').trim();
+        const givenName = (document.getElementById('ivac-given-name')?.value || '').trim();
+        const password  = document.getElementById('ivac-password')?.value || '';
+
+        // DOB -> ISO. DD.MM.YYYY or YYYY-MM-DD; otherwise sent as typed.
+        let dob = dobRaw;
+        const m = dobRaw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        if (m) { try { dob = new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString(); } catch(e) {} }
+        else if (/^\d{4}-\d{2}-\d{2}/.test(dobRaw)) { try { dob = new Date(dobRaw).toISOString(); } catch(e) {} }
+
+        // NEW system: basic-info signup needs the master signUpRequestId (created at email OTP send).
+        if (!signupState.signUpRequestId) { suMsg('ivac-msg-submit', '❌ No signup session — send Email OTP first', 'r'); logStatus('⚠ Signup needs signUpRequestId — do Email step first', 'y'); flashButton(btn, '✗', 'r'); return; }
+        suMsg('ivac-msg-submit', '⏳ Submitting…', 'y');
+        logStatus(`📝 Account Registration → ${email || phone}`, 'y');
+        // NEW system: basic-info signup does NOT need a captcha token. requestId = signUpRequestId. nid: null if empty.
+        const signupBody = { requestId: signupState.signUpRequestId, phone, email, nid: (nid && nid.trim() !== '') ? nid : null, passport, givenName, surName, dob, password };
+        console.log('[RJ Signup] Request body:', { ...signupBody, password: '***' });
+        const logId = netLogAdd({ method: 'POST', url: API_SIGNUP, tag: 'signup', state: 'pending', note: 'account-registration' });
+        try {
+            const response = await H2.fetchH2(API_SIGNUP, {
+                method: 'POST',
+                headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' },
+                referrer: API_REFERRER,
+                body: JSON.stringify(signupBody)
+            });
+            let body; try { body = await response.json(); } catch(e) { body = { message: 'Invalid response from server' }; }
+            // successFlag is unreliable (true even on failure); trust the 2xx statusCode (signup success = 201 Created).
+            const ok = !!(body && ((body.statusCode >= 200 && body.statusCode < 300) || (response.ok && body.statusCode === undefined)));
+            netLogUpdate(logId, { status: response.status, state: ok ? 'ok' : 'fail', note: body?.message || `HTTP ${response.status}` });
+            if (ok) {
+                logStatus(`✅ Basic info accepted: ${email || phone} — sending consent…`, 'g'); flashButton(btn, '✓', 'g');
+                try { const prof = profiles[activeProfileName]; if (prof) { if (!prof.phone1) prof.phone1 = phone; if (!prof.email) prof.email = email; if (!prof.mobilePass) prof.mobilePass = password; if (!prof.name && (givenName||surName)) prof.name = `${givenName} ${surName}`.trim(); persistProfiles(); } } catch(e) {}
+                // NEW system: STEP_CONSENT — the account is NOT finalized until we accept consent.
+                const cLogId = netLogAdd({ method: 'POST', url: API_SIGNUP_CONSENT, tag: 'signup', state: 'pending', note: 'consent' });
+                try {
+                    const cRes = await H2.fetchH2(API_SIGNUP_CONSENT, {
+                        method: 'POST',
+                        headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' },
+                        referrer: API_REFERRER,
+                        body: JSON.stringify({ signUpRequestId: signupState.signUpRequestId, accepted: true })
+                    });
+                    let cBody; try { cBody = await cRes.json(); } catch(e) { cBody = {}; }
+                    const cOk = !!(cBody && ((cBody.statusCode >= 200 && cBody.statusCode < 300) || (cRes.ok && cBody.statusCode === undefined)));
+                    netLogUpdate(cLogId, { status: cRes.status, state: cOk ? 'ok' : 'fail', note: cBody?.message || `HTTP ${cRes.status}` });
+                    if (cOk) {
+                        suMsg('ivac-msg-submit', `✅ Account created & consent accepted`, 'g');
+                        logStatus(`✅ Account fully created: ${email || phone}`, 'g');
+                        try { showMilestonePopup('Account Created', `Signup complete for ${email || phone}`, '🎉'); } catch(e) {} try { announceSuccess('Account created successfully'); } catch(e) {}
+                    } else {
+                        const cMsg = cBody?.message || `HTTP ${cRes.status}`;
+                        suMsg('ivac-msg-submit', `⚠ Signup OK but consent failed: ${cMsg}`, 'y'); logStatus(`⚠ Consent failed: ${cMsg}`, 'y');
+                    }
+                } catch (ce) { netLogUpdate(cLogId, { state: 'fail', status: 'err', note: ce.message }); suMsg('ivac-msg-submit', `⚠ Signup OK but consent error: ${ce.message}`, 'y'); logStatus(`⚠ Consent error: ${ce.message}`, 'r'); }
+            } else {
+                const msg = body?.message || body?.error || `HTTP ${response.status}`;
+                suMsg('ivac-msg-submit', `❌ ${msg}`, 'r'); logStatus(`❌ Signup failed: ${msg}`, 'r'); flashButton(btn, '✗', 'r');
+            }
+        } catch (err) {
+            netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message });
+            suMsg('ivac-msg-submit', `❌ Error: ${err.message}`, 'r'); logStatus(`❌ Signup error: ${err.message}`, 'r'); flashButton(btn, '✗', 'r');
+        }
+    });
+
+    document.querySelectorAll('#p .t[data-t="s"]').forEach(t => { t.addEventListener('click', () => { setTimeout(() => { const prof = profiles[activeProfileName] || {}; const fields = { 'ivac-mobile': prof.phone1 || '', 'ivac-email': prof.email || '', 'ivac-surname': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(-1)[0] : prof.name || ''; })(), 'ivac-given-name': (() => { const p = (prof.name||'').split(' '); return p.length > 1 ? p.slice(0,-1).join(' ') : ''; })(), 'ivac-password': prof.mobilePass || '' }; Object.entries(fields).forEach(([id, val]) => { const el = document.getElementById(id); if (el && !el.value && val) el.value = val; }); }, 50); }); });
+
+    document.getElementById('pl-button')?.addEventListener('click', () => { window.open('https://appointment.ivacbd.com/appointment/time-slot', '_blank'); });
+
+// ==================== ADVANCE (FORGOT) LOGIN PIPELINE (H2) ====================
+const advanceState = { requestId: null, forgotPhone: null, signinPhone: null, otp: null, bearerToken: null, running: false };
+function resetAdvanceState() { advanceState.requestId = null; advanceState.forgotPhone = null; advanceState.signinPhone = null; advanceState.otp = null; advanceState.bearerToken = null; advanceState.running = false; }
+function getAdvanceProfileData() { const p = profiles[activeProfileName] || {}; return { phone1: (p.phone1||'').trim(), phone2: (p.phone2||'').trim(), email: (p.email||'').trim(), password: p.mobilePass || '' }; }
+function swapLoginPhoneField(value, placeholder, kind) { const inp = document.getElementById('login-phone'); if (!inp) return; inp.type = (kind === 'email') ? 'email' : 'tel'; inp.placeholder = placeholder; inp.value = value; inp.style.transition = 'box-shadow .4s'; inp.style.boxShadow = '0 0 0 2px rgba(167,139,250,.6)'; setTimeout(() => { inp.style.boxShadow = ''; }, 800); }
+
+async function forgotStep1_sendOtp(signal) {
+    const prof = getAdvanceProfileData(); let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
+    if (raceCoord.hasWon('advance')) { if (captchaToken) tokenQueueAddTagged(captchaToken, 'turnstile'); return { win: false, cancelled: true }; }
+    logStatus(`📧 [1/4] Forgot OTP for ${prof.email}…`, 'y');
+    const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+    const logId = netLogAdd({ method: 'POST', url: API_FORGOT, tag: 'advance', state: 'pending' });
+    try {
+        const r = await H2.fetchH2(API_FORGOT, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json', 'content-type': 'application/json', 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: JSON.stringify({ email: prof.email, otpChannel: 'PHONE', c: encTokenForCall(captchaToken, 'signin') }) });
+        const body = await r.json().catch(() => ({}));
+        const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        const ok = r.ok && (body.successFlag === true || body.statusCode === 200);
+        netLogUpdate(logId, { status: r.status, state: ok ? 'ok' : 'fail' });
+        if (!ok || !body.data?.requestId) { logStatus(`❌ [1/4] Forgot failed: ${body.message || `HTTP ${r.status}`}`, 'r'); return { win: false }; }
+        if (raceCoord.hasWon('advance')) return { win: false, cancelled: true };
+        raceCoord.declareWin('advance', { win: true }); advanceState.requestId = body.data.requestId;
+        logStatus(`✅ [1/4] Forgot OTP sent → Phone 2`, 'g'); swapLoginPhoneField(prof.phone2, 'Phone 2', 'tel'); startOtpTimer('advanceOtp'); return { win: true };
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+}
+
+async function forgotStep2_fetchOtp() {
+    const prof = getAdvanceProfileData(); logStatus(`📱 [2/4] Fetching OTP…`, 'y'); const otpInp = document.getElementById('login-otp'); if (otpInp) otpInp.value = '';
+    const otp = await new Promise((resolve) => { startSmsFetcher(prof.phone2, async (fetchedOtp) => { resolve(fetchedOtp); return undefined; }, false, false); setTimeout(() => resolve(null), 150 * 1000); });
+    if (!otp) { logStatus(`❌ [2/4] No OTP received`, 'r'); return { win: false }; }
+    advanceState.otp = otp; logStatus(`✅ [2/4] OTP: ${otp}`, 'g'); try { announceSuccess('OTP received'); } catch(e) {} swapLoginPhoneField(prof.phone1, 'Phone 1', 'tel'); return { win: true };
+}
+
+async function forgotStep3_signin(signal) {
+    const prof = getAdvanceProfileData(); let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`✗ [3/4] Captcha: ${e.message}`, 'r'); return { win: false }; }
+    if (raceCoord.hasWon('signin')) { if (captchaToken) tokenQueueAddTagged(captchaToken, 'turnstile'); return { win: false, cancelled: true }; }
+    const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+    logStatus(`🔑 [3/4] Signin for ${prof.phone1}…`, 'y');
+    try {
+        const { ok, status, body } = await performSignin(prof.phone1, prof.password, captchaToken);
+        const burn = shouldBurnToken(status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        if (!ok || !body?.data?.accessToken) { logStatus(`❌ [3/4] Signin failed: ${body?.message || `HTTP ${status}`}`, 'r'); return { win: false }; }
+        if (raceCoord.hasWon('signin')) return { win: false, cancelled: true };
+        raceCoord.declareWin('signin', { win: true, data: body });
+        advanceState.bearerToken = body.data.accessToken; saveSession(body.data, prof.phone1); sessionState.requestId = advanceState.requestId; persistSession(); logStatus(`✅ [3/4] Signin done`, 'g'); return { win: true };
+    } catch (err) { if (err.name === 'AbortError') return { win: false, cancelled: true }; logStatus(`❌ [3/4] Signin error: ${err.message}`, 'r'); return { win: false }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+}
+
+async function forgotStep4_verify(signal) {
+    logStatus(`🔓 [4/4] Verifying…`, 'y'); const logId = netLogAdd({ method: 'POST', url: API_VERIFY, tag: 'verify', state: 'pending' });
+    try {
+        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${advanceState.bearerToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: advanceState.requestId, phone: advanceState.forgotPhone, code: advanceState.otp, otpChannel: 'PHONE' }) });
+        let body = null; try { body = await r.json(); } catch(e) { body = null; }
+        const verified = r.status === 404 || (r.ok && body && (body.successFlag === true || body.message === 'Success'));
+        netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail' });
+        if (verified) {
+            raceCoord.declareWin('verify', { win: true }); logStatus(`🎉 [4/4] Forgot login complete!`, 'g'); try { stopOtpTimer('advanceOtp'); stopOtpTimer('signinOtp'); } catch(e) {} try { stopSmsFetcher('Forgot login complete'); } catch(e) {}
+            markSessionVerified(); if (sessionState.loggedInAt) { const expiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; if (expiresAt - Date.now() > 0) startTokenTimerWithExpiry(expiresAt); }
+            showMilestonePopup('Verified', 'OTP Verified successfully!', '✅'); return { win: true };
+        } else { logStatus(`❌ [4/4] Verify failed: ${body?.message || `HTTP ${r.status}`}`, 'r'); return { win: false }; }
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
+}
+
+const advBtn = document.getElementById('badv-phone');
+if (advBtn) {
+    advBtn.addEventListener('click', async function() {
+        const advTg = document.getElementById('advance-toggle'); if (!advTg?.classList.contains('on')) { logStatus('⚠ Turn ON Advance toggle', 'y'); return; }
+        if (advanceState.running) return; resetAdvanceState(); advanceState.running = true; stopFlag.value = false;
+        const prof = getAdvanceProfileData(); if (!prof.email || !prof.phone1 || !prof.phone2 || !prof.password) { logStatus('❌ Profile incomplete for Advance', 'r'); advanceState.running = false; return; }
+        advanceState.signinPhone = prof.phone1; advanceState.forgotPhone = prof.phone2;
+        try {
+            const r1 = await runStepSmart('advance', forgotStep1_sendOtp); if (!r1.win) return; if (!isAutoOn()) { logStatus('⏸ Auto OFF — stopped', 'y'); return; }
+            const r2 = await forgotStep2_fetchOtp(); if (!r2.win) return; if (!isAutoOn()) return;
+            const r3 = await runStepSmart('signin', forgotStep3_signin); if (!r3.win) return; if (!isAutoOn()) return;
+            const r4 = await runStepSmart('verify', forgotStep4_verify); if (!r4.win) return;
+            logStatus('🎉 Forgot login done! Continuing → Book → Reserve → Initiate', 'g');
+            if (!stopFlag.value) { advanceState.running = false; await startPipelineFrom('book'); }
+        } catch(e) { logStatus(`❌ Advance error: ${e.message}`, 'r'); } finally { advanceState.running = false; }
+    });
+}
+
+// ==================== SMS OTP AUTO-FETCHER ====================
+const SMS_FIRST_DELAY_MS = 4000; const SMS_POLL_INTERVAL_MS = 2000; const SMS_MAX_ATTEMPTS = 40;
+const smsFetcher = { active: false, intervalId: null, attempts: 0, usedOtps: new Set(), currentPhone: null, onSuccess: null };
+
+function extractOtpFromResponse(rawText) { if (!rawText) return null; try { const d = JSON.parse(rawText); if (d.status === 'success' && d.otp) { const otpStr = String(d.otp).trim(); if (/^\d{4,8}$/.test(otpStr)) return otpStr; } return null; } catch(e) { return null; } }
+
+async function fetchSmsOnce(phone) {
+    if (!phone) return null; const cleanPhone = String(phone).replace(/[^0-9]/g, ''); const url = `${API_SMS_SERVER}?action=get_latest_otp&mobile_no=${cleanPhone}`;
+    const logId = netLogAdd({ method: 'GET', url, tag: 'sms', state: 'pending', note: `SMS poll #${smsFetcher.attempts}` });
+    try {
+        const r = await pageFetch(url, { method: 'GET', credentials: 'omit' });
+        const text = await r.text();
+        const otp = extractOtpFromResponse(text);
+        netLogUpdate(logId, { state: otp ? 'ok' : 'pending', note: otp ? `OTP: ${otp}` : 'no OTP' });
+        return otp;
+    } catch(e) {
+        return new Promise((resolve) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) { netLogUpdate(logId, { state: 'fail' }); resolve(null); return; }
+            gmApi({ method: 'GET', url, timeout: 8000, onload: (response) => { const otp = extractOtpFromResponse(response.responseText || ''); netLogUpdate(logId, { state: otp ? 'ok' : 'pending', note: otp ? `OTP: ${otp}` : 'no OTP' }); resolve(otp); }, onerror: () => { netLogUpdate(logId, { state: 'fail' }); resolve(null); }, ontimeout: () => { netLogUpdate(logId, { state: 'fail', note: 'timeout' }); resolve(null); } });
+        });
+    }
+}
+
+function stopSmsFetcher(reason) { if (smsFetcher.intervalId) { clearInterval(smsFetcher.intervalId); smsFetcher.intervalId = null; } if (smsFetcher.active) { smsFetcher.active = false; logStatus(`📱 SMS stopped: ${reason}`, 'y'); } }
+
+async function smsPollTick() {
+    if (!smsFetcher.active) return; if (smsFetcher.attempts >= SMS_MAX_ATTEMPTS) { stopSmsFetcher('timeout'); return; } smsFetcher.attempts++;
+    const otp = await fetchSmsOnce(smsFetcher.currentPhone); if (!otp) return; if (smsFetcher.usedOtps.has(otp)) return;
+    smsFetcher.usedOtps.add(otp); const otpInput = document.getElementById('login-otp');
+    if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); }
+    logStatus(`📩 OTP received: ${otp}`, 'g'); try { announceSuccess('OTP received'); } catch(e) {}
+    smsFetcher.active = false; if (smsFetcher.intervalId) { clearInterval(smsFetcher.intervalId); smsFetcher.intervalId = null; }
+    if (typeof smsFetcher.onSuccess === 'function') { try { await smsFetcher.onSuccess(otp); } catch(e) {} }
+}
+
+function startSmsFetcher(phone, onSuccessCallback, keepUsed = false, instant = false) {
+    if (smsFetcher.intervalId) { clearInterval(smsFetcher.intervalId); smsFetcher.intervalId = null; } if (!keepUsed) smsFetcher.usedOtps.clear(); smsFetcher.attempts = 0; smsFetcher.active = true; smsFetcher.currentPhone = phone; smsFetcher.onSuccess = onSuccessCallback;
+    const delay = instant ? 0 : (keepUsed ? 1000 : SMS_FIRST_DELAY_MS);
+    if (delay > 0) logStatus(`📱 SMS fetcher in ${delay/1000}s…`, 'y'); else logStatus(`📱 SMS fetcher starting…`, 'y');
+    setTimeout(async () => { if (!smsFetcher.active) return; await smsPollTick(); if (smsFetcher.active) { smsFetcher.intervalId = setInterval(smsPollTick, SMS_POLL_INTERVAL_MS); } }, delay);
+}
+
+document.getElementById('botp')?.addEventListener('click', function() {
+    const phone = sessionState.phone || document.getElementById('login-phone')?.value?.trim();
+    if (!phone) { logStatus('❌ No phone number', 'r'); return; }
+    flashButton(this, '⟳', 'y'); logStatus(`📱 Manual OTP fetch for ${phone}…`, 'y');
+    startSmsFetcher(phone, async (otp) => { const verifyBtn = document.getElementById('bve'); if (verifyBtn) verifyBtn.click(); return undefined; }, false, true);
+});
+
+// ==================== EMAIL OTP AUTO-FETCHER (catch-all inbox via email.php) ====================
+// Same pattern as the SMS fetcher, but polls email.php?address=<account-email>. Independent state so it
+// can run alongside the SMS fetcher. The PHP side already extracts the OTP — we just read d.otp.
+const EMAIL_FIRST_DELAY_MS = 4000; const EMAIL_POLL_INTERVAL_MS = 2000; const EMAIL_MAX_ATTEMPTS = 40;
+const emailFetcher = { active: false, intervalId: null, attempts: 0, usedOtps: new Set(), currentEmail: null, onSuccess: null };
+
+function extractOtpFromEmailResponse(rawText) {
+    if (!rawText) return null;
+    try { const d = JSON.parse(rawText); if (d.status === 'success' && d.otp) { const s = String(d.otp).trim(); if (/^\d{4,8}$/.test(s)) return s; } return null; } catch (e) { return null; }
+}
+
+// If a profile whose email === this address has an App Password saved (in the profile's
+// "Gmail App Password" box) AND the address is a Gmail, fetch that OTP straight from Gmail via IMAP
+// (gmail-otp.php). Otherwise fall through to the catch-all inbox reader (email.php).
+function _gmailAppPassFor(email) {
+    try {
+        if (!email) return '';
+        const lc = String(email).trim().toLowerCase();
+        if (!/@(gmail|googlemail)\.com$/.test(lc)) return '';           // IMAP endpoint is Gmail-only
+        for (const k in profiles) { const p = profiles[k]; if (p && String(p.email || '').trim().toLowerCase() === lc && p.appPass) return String(p.appPass).replace(/\s+/g, ''); }
+        return '';
+    } catch (e) { return ''; }
+}
+
+async function fetchEmailOnce(email) {
+    if (!email) return null;
+
+    // ── Gmail path: POST email + App Password to gmail-otp.php (IMAP read of that account) ──
+    const _appPass = _gmailAppPassFor(email);
+    if (_appPass) {
+        const gurl = API_GMAIL_SERVER;
+        const logId = netLogAdd({ method: 'POST', url: gurl, tag: 'email', state: 'pending', note: `gmail poll #${emailFetcher.attempts}` });
+        return new Promise((resolve) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) { netLogUpdate(logId, { state: 'fail', note: 'no GM api' }); resolve(null); return; }
+            const data = `email=${encodeURIComponent(email)}&apppass=${encodeURIComponent(_appPass)}`;
+            gmApi({
+                method: 'POST', url: gurl, timeout: 12000,
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                data,
+                onload: (response) => { const otp = extractOtpFromEmailResponse(response.responseText || ''); netLogUpdate(logId, { state: otp ? 'ok' : 'pending', note: otp ? `Gmail OTP: ${otp}` : 'no OTP' }); resolve(otp); },
+                onerror: () => { netLogUpdate(logId, { state: 'fail', note: 'gmail err' }); resolve(null); },
+                ontimeout: () => { netLogUpdate(logId, { state: 'fail', note: 'gmail timeout' }); resolve(null); }
+            });
+        });
+    }
+
+    const url = `${API_EMAIL_SERVER}?action=get_latest_otp&address=${encodeURIComponent(email)}`;
+    const logId = netLogAdd({ method: 'GET', url, tag: 'email', state: 'pending', note: `email poll #${emailFetcher.attempts}` });
+    try {
+        const r = await pageFetch(url, { method: 'GET', credentials: 'omit' });
+        const text = await r.text();
+        const otp = extractOtpFromEmailResponse(text);
+        netLogUpdate(logId, { state: otp ? 'ok' : 'pending', note: otp ? `OTP: ${otp}` : 'no OTP' });
+        return otp;
+    } catch (e) {
+        return new Promise((resolve) => {
+            const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!gmApi) { netLogUpdate(logId, { state: 'fail' }); resolve(null); return; }
+            gmApi({ method: 'GET', url, timeout: 8000, onload: (response) => { const otp = extractOtpFromEmailResponse(response.responseText || ''); netLogUpdate(logId, { state: otp ? 'ok' : 'pending', note: otp ? `OTP: ${otp}` : 'no OTP' }); resolve(otp); }, onerror: () => { netLogUpdate(logId, { state: 'fail' }); resolve(null); }, ontimeout: () => { netLogUpdate(logId, { state: 'fail', note: 'timeout' }); resolve(null); } });
+        });
+    }
+}
+
+function stopEmailFetcher(reason) { if (emailFetcher.intervalId) { clearInterval(emailFetcher.intervalId); emailFetcher.intervalId = null; } if (emailFetcher.active) { emailFetcher.active = false; logStatus(`✉️ Email fetch stopped: ${reason}`, 'y'); } }
+
+async function emailPollTick() {
+    if (!emailFetcher.active) return; if (emailFetcher.attempts >= EMAIL_MAX_ATTEMPTS) { stopEmailFetcher('timeout'); return; } emailFetcher.attempts++;
+    const otp = await fetchEmailOnce(emailFetcher.currentEmail); if (!otp) return; if (emailFetcher.usedOtps.has(otp)) return;
+    emailFetcher.usedOtps.add(otp); const otpInput = document.getElementById('ivac-email-otp');
+    if (otpInput) { otpInput.value = otp; otpInput.style.transition = 'background .3s'; otpInput.style.background = 'linear-gradient(180deg,#1a3a1a,#0a2a0a)'; setTimeout(() => { otpInput.style.background = ''; }, 1500); }
+    logStatus(`📩 Email OTP received: ${otp}`, 'g'); try { announceSuccess('Email OTP received'); } catch (e) {}
+    emailFetcher.active = false; if (emailFetcher.intervalId) { clearInterval(emailFetcher.intervalId); emailFetcher.intervalId = null; }
+    if (typeof emailFetcher.onSuccess === 'function') { try { await emailFetcher.onSuccess(otp); } catch (e) {} }
+}
+
+function startEmailFetcher(email, onSuccessCallback, keepUsed = false, instant = false) {
+    if (emailFetcher.intervalId) { clearInterval(emailFetcher.intervalId); emailFetcher.intervalId = null; } if (!keepUsed) emailFetcher.usedOtps.clear(); emailFetcher.attempts = 0; emailFetcher.active = true; emailFetcher.currentEmail = email; emailFetcher.onSuccess = onSuccessCallback;
+    const delay = instant ? 0 : (keepUsed ? 1000 : EMAIL_FIRST_DELAY_MS);
+    if (delay > 0) logStatus(`✉️ Email fetcher in ${delay/1000}s…`, 'y'); else logStatus(`✉️ Email fetcher starting…`, 'y');
+    setTimeout(async () => { if (!emailFetcher.active) return; await emailPollTick(); if (emailFetcher.active) { emailFetcher.intervalId = setInterval(emailPollTick, EMAIL_POLL_INTERVAL_MS); } }, delay);
+}
+
+// ==================== SLOT DUTY WATCHER (H2) ====================
+const SLOT_CHECK_INTERVAL_MS = 10 * 1000;
+const slotDuty = { active: false, intervalId: null, chainRunning: false };
+
+async function checkSlotStatus() {
+    if (!sessionState.accessToken) return null;
+    const logId = netLogAdd({ method: 'GET', url: API_SLOT_STATUS, tag: 'slot', state: 'pending' });
+    try {
+        const r = await H2.fetchH2(API_SLOT_STATUS, { method: 'GET', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}` } });
+        let body = null; try { body = await r.json(); } catch(e) {} const ok = r.ok && body?.statusCode === 200 && body?.successFlag === true;
+        if (!ok) { netLogUpdate(logId, { status: r.status, state: 'fail' }); return null; }
+        netLogUpdate(logId, { status: r.status, state: body.data?.slotOpen ? 'ok' : 'pending', note: body.data?.slotOpen ? '✅ OPEN' : '⏳ closed' }); return body.data;
+    } catch (err) { netLogUpdate(logId, { state: 'fail', note: err.message }); return null; }
+}
+
+async function slotDutyTick() {
+    if (!slotDuty.active || slotDuty.chainRunning || pipelineRunning) return;
+    const data = await checkSlotStatus(); if (!data || !data.slotOpen) return;
+    logStatus(`🎯 SLOT OPENED!`, 'g'); slotDuty.chainRunning = true;
+    try { stopFlag.value = false; resetAllStepStatus(); setStepStatus('book', 'active'); const bRes = await runStepSmart('book', stepBook); if (!bRes.win || stopFlag.value) return; setStepStatus('reserve', 'active'); const rRes = await runStepSmart('reserve', stepReserve); if (!rRes.win || stopFlag.value) return; setStepStatus('initiate', 'active'); const iRes = await runStepSmart('initiate', stepInitiate); if (iRes.win) { logStatus('🎉 Slot duty COMPLETE!', 'g'); stopSlotDuty('complete'); document.getElementById('reserve-toggle')?.classList.remove('on'); } } finally { slotDuty.chainRunning = false; }
+}
+
+function startSlotDuty() { if (slotDuty.intervalId) clearInterval(slotDuty.intervalId); slotDuty.active = true; slotDuty.chainRunning = false; logStatus('🛡 Slot duty ON', 'g'); slotDutyTick(); slotDuty.intervalId = setInterval(slotDutyTick, SLOT_CHECK_INTERVAL_MS); }
+function stopSlotDuty(reason) { if (slotDuty.intervalId) { clearInterval(slotDuty.intervalId); slotDuty.intervalId = null; } if (slotDuty.active) { slotDuty.active = false; logStatus(`🛡 Slot duty OFF${reason ? ' ('+reason+')' : ''}`, 'y'); } }
+
+document.getElementById('reserve-toggle')?.addEventListener('click', () => { setTimeout(() => { const isOn = document.getElementById('reserve-toggle')?.classList.contains('on'); if (isOn) startSlotDuty(); else stopSlotDuty('toggle off'); }, 50); });
+
+// ==================== NETWORK LOG SYSTEM ====================
+const NET_LOG_MAX = 200; const NET_LOG_AUTO_CLEAR_MS = 3 * 60 * 1000; const netLog = []; let netLogAutoStart = Date.now(); let netLogFilter = '';
+function renderNetLog() { const body = document.getElementById('netlog-body'); const stats = document.getElementById('netlog-stats'); if (!body || !stats) return; const list = netLogFilter ? netLog.filter(e => (e.tag||'').toLowerCase() === netLogFilter) : netLog; if (!list.length) { body.innerHTML = '<div class="nl-empty">No network activity yet.</div>'; } else { body.innerHTML = list.slice().reverse().map(e => { const stCls = e.state || 'pending'; const stTxt = e.status || (e.state === 'pending' ? '…' : '?'); const tag = e.tag ? `<span class="nl-tag">${e.tag}</span>` : ''; return `<div class="nl-entry ${stCls}"><span class="nl-time">${e.time}</span><span class="nl-method">${e.method}</span><span class="nl-status ${stCls}">${stTxt}</span><span class="nl-url">${tag}${e.note || e.url || ''}</span></div>`; }).join(''); } const elapsed = Math.max(0, NET_LOG_AUTO_CLEAR_MS - (Date.now() - netLogAutoStart)); const m = Math.floor(elapsed / 60000), s = Math.floor((elapsed % 60000) / 1000); stats.textContent = `${netLog.length} entries • auto-clear in ${m}:${String(s).padStart(2,'0')}`; }
+function netLogAdd(entry) { entry.id = Date.now() + '-' + Math.random().toString(36).slice(2,7); entry.time = new Date().toLocaleTimeString('en-US', { hour12: false }); netLog.push(entry); if (netLog.length > NET_LOG_MAX) netLog.shift(); renderNetLog(); return entry.id; }
+function netLogUpdate(id, patch) { const e = netLog.find(x => x.id === id); if (!e) return; Object.assign(e, patch); renderNetLog(); }
+function netLogClear() { netLog.length = 0; netLogAutoStart = Date.now(); renderNetLog(); }
+setInterval(() => { if (Date.now() - netLogAutoStart >= NET_LOG_AUTO_CLEAR_MS) netLogClear(); }, 1000);
+
+document.getElementById('netlog-filter')?.addEventListener('change', e => { netLogFilter = e.target.value; renderNetLog(); });
+document.getElementById('netlog-clear')?.addEventListener('click', () => { netLogClear(); });
+document.getElementById('netlog-close')?.addEventListener('click', () => { document.getElementById('rj-netlog')?.classList.remove('open'); });
+
+(() => { const np = document.getElementById('rj-netlog'); const handle = document.getElementById('netlog-drag'); if (!np || !handle) return; let dragging = false, sx, sy, ol, ot; handle.addEventListener('mousedown', e => { if (e.target.closest('button') || e.target.closest('select')) return; const r = np.getBoundingClientRect(); dragging = true; sx = e.clientX; sy = e.clientY; ol = r.left; ot = r.top; np.style.left = ol + 'px'; np.style.top = ot + 'px'; np.style.right = 'auto'; np.style.bottom = 'auto'; e.preventDefault(); }); document.addEventListener('mousemove', e => { if (!dragging) return; np.style.left = (ol + e.clientX - sx) + 'px'; np.style.top = (ot + e.clientY - sy) + 'px'; }); document.addEventListener('mouseup', () => { dragging = false; }); })();
+
+(() => { const oldFn = document.getElementById('fn'); if (!oldFn) return; const fresh = oldFn.cloneNode(true); oldFn.parentNode.replaceChild(fresh, oldFn); fresh.addEventListener('click', () => { const p = document.getElementById('rj-netlog'); if (!p) return; p.classList.toggle('open'); renderNetLog(); }); })();
+
+// ==================== TOKEN QUEUE ====================
+const TOKEN_TTL_MS = 1.5 * 60 * 1000; const TOKEN_QUEUE_MAX = 5; const tokenQueue = [];
+const FARM_TTL_MS = 2 * 60 * 1000;   // farm tokens: 2 min lifetime (measured from real solve time)
+function tokenQueueAddTagged(token, source) { if (!token) return; if (tokenQueue.some(t => t.token === token)) return; tokenQueue.push({ token, source: source || 'unknown', createdAt: Date.now() }); if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift(); }
+
+// ---- FARM RELAY receiver: pull solved Turnstile tokens from the token-relay (the Farm browser
+// pushes them there). Only pulls when the queue has room, so single-use tokens are not wasted.
+// Relay URL is localStorage 'rj_relay_url' (default 127.0.0.1:8787; use the farm PC's LAN IP if remote).
+(function rjFarmRelayReceiver() {
+  var GMx = (typeof GM_xmlhttpRequest !== 'undefined') ? GM_xmlhttpRequest : (typeof GM !== 'undefined' && GM.xmlHttpRequest) ? GM.xmlHttpRequest : null;
+  if (!GMx) return;
+  function relayUrl() { try { return (localStorage.getItem('rj_relay_url') || 'http://127.0.0.1:8787').replace(/\/+$/, ''); } catch (e) { return 'http://127.0.0.1:8787'; } }
+  var busy = false, lastClearedAt = 0;
+  function farmWipeLocal(reason) { for (var i = tokenQueue.length - 1; i >= 0; i--) { if (tokenQueue[i].source === 'farm') tokenQueue.splice(i, 1); } try { if (typeof logStatus === 'function') logStatus('🗑 farm tokens cleared' + (reason ? ' (' + reason + ')' : ''), 'y'); } catch (e) {} }
+  function handleClear(clearedAt) { if (clearedAt && clearedAt !== lastClearedAt) { if (lastClearedAt !== 0) farmWipeLocal('relay delete'); lastClearedAt = clearedAt; } }
+  setInterval(function () {
+    try {
+      if (busy) return;
+      const apiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+      // API mode: never pull/consume farm tokens — just poll /count for a clear-signal.
+      if (apiMode) {
+        busy = true;
+        GMx({ method: 'GET', url: relayUrl() + '/count', timeout: 8000,
+          onload: function (r) { busy = false; try { handleClear(JSON.parse(r.responseText || '{}').clearedAt); } catch (e) {} },
+          onerror: function () { busy = false; }, ontimeout: function () { busy = false; } });
+        return;
+      }
+      if (typeof tokenQueue !== 'undefined' && typeof TOKEN_QUEUE_MAX !== 'undefined' && tokenQueue.length >= TOKEN_QUEUE_MAX) return;   // full → don't waste single-use tokens
+      busy = true;
+      GMx({
+        method: 'GET', url: relayUrl() + '/pull', timeout: 8000,
+        onload: function (r) {
+          busy = false;
+          try {
+            var d = JSON.parse(r.responseText || '{}');
+            handleClear(d.clearedAt);
+            if (d && d.token) {
+              var at = d.at || Date.now();                                   // REAL solve time from relay
+              var age = (typeof d.ageMs === 'number') ? d.ageMs : (Date.now() - at);
+              if (age > FARM_TTL_MS) { try { if (typeof logStatus === 'function') logStatus('🌾 farm token dropped (stale ' + Math.round(age/1000) + 's)', 'y'); } catch (e) {} }
+              else if (!tokenQueue.some(function (t) { return t.token === d.token; })) {
+                tokenQueue.push({ token: d.token, source: 'farm', createdAt: at });   // measure age from real solve time
+                if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
+                try { if (typeof logStatus === 'function') logStatus('🌾 farm token → queue ' + tokenQueue.length + '/' + TOKEN_QUEUE_MAX + ' (age ' + Math.round(age/1000) + 's)', 'g'); } catch (e) {}
+              }
+            }
+          } catch (e) {}
+        },
+        onerror: function () { busy = false; }, ontimeout: function () { busy = false; }
+      });
+    } catch (e) { busy = false; }
+  }, 1200);
+})();
+function tokenQueueCleanExpired() { const now = Date.now(); for (let i = tokenQueue.length - 1; i >= 0; i--) { const ttl = (tokenQueue[i].source === 'farm') ? FARM_TTL_MS : TOKEN_TTL_MS; if (now - tokenQueue[i].createdAt > ttl) tokenQueue.splice(i, 1); } }
+function tokenQueueGet() { tokenQueueCleanExpired(); return tokenQueue.length ? tokenQueue[0].token : null; }
+function tokenQueueConsume() { tokenQueueCleanExpired(); return tokenQueue.length ? tokenQueue.shift().token : null; }
+
+const tokenInFlight = new Map();
+function registerTokenInFlight(token, controller) { if (!token || !controller) return; let set = tokenInFlight.get(token); if (!set) { set = new Set(); tokenInFlight.set(token, set); } set.add(controller); }
+function unregisterTokenInFlight(token, controller) { if (!token || !controller) return; const set = tokenInFlight.get(token); if (!set) return; set.delete(controller); if (set.size === 0) tokenInFlight.delete(token); }
+function abortAllUsingToken(token) { const set = tokenInFlight.get(token); if (!set || set.size === 0) return 0; const count = set.size; const controllers = Array.from(set); tokenInFlight.delete(token); controllers.forEach(c => { try { c.abort(); } catch(e) {} }); return count; }
+
+function shouldBurnToken(status, body) { if (!status) return false; if (status >= 500 && status < 600) { return !!(body && (body.message || body.data || body.error || body.successFlag !== undefined)); } if (status === 429) return false; return true; }
+
+function tokenQueueInvalidate(token) {
+    const i = tokenQueue.findIndex(t => t.token === token); if (i === -1) { abortAllUsingToken(token); return; } const removed = tokenQueue.splice(i, 1)[0];
+    abortAllUsingToken(token);
+    const isApiMode = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (!isApiMode && removed.source === 'turnstile') { setTimeout(() => { const turnstileCount = tokenQueue.filter(t => t.source === 'turnstile').length; if (turnstileCount >= TOKEN_QUEUE_MAX) return; if (cfWidgetId === null || typeof turnstile === 'undefined' || cfToken) return; try { turnstile.reset(cfWidgetId); cfToken = null; } catch(e) {} }, 500); }
+}
+
+let captchaSolvingCount = 0; let captchaSolvingSource = null;
+function markSolveStart(source) { captchaSolvingCount++; captchaSolvingSource = source; renderTokenQueue(); }
+function markSolveEnd() { captchaSolvingCount = Math.max(0, captchaSolvingCount - 1); if (captchaSolvingCount === 0) captchaSolvingSource = null; renderTokenQueue(); }
+
+setInterval(() => {
+    try {
+        if (cfToken) {
+            if (Date.now() - cfTokenAt > TOKEN_TTL_MS) {
+                cfToken = null;
+                const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+                if (!useApi && cfWidgetId !== null && typeof turnstile !== 'undefined') { try { turnstile.reset(cfWidgetId); } catch(e) {} }
+            } else {
+                tokenQueueAddTagged(cfToken, 'turnstile');   // still fresh — keep it queued
+            }
+        }
+    } catch(e) {}
+    tokenQueueCleanExpired();
+}, 1000);
+
+const _scriptLoadedAt = Date.now(); let _lastTurnstileReset = 0;
+setInterval(() => {
+    tokenQueueCleanExpired(); const useApi = document.getElementById('captcha-toggle')?.classList.contains('on'); const wantSource = useApi ? (CAPTCHA_PROVIDERS[getSelectedCaptchaProvider()]?.cssClass || 'capmonster') : 'turnstile'; const matchingCount = tokenQueue.filter(t => t.source === wantSource).length;
+    if (useApi) { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; const providerTag = config ? config.cssClass : 'capmonster'; const matchingProviderCount = tokenQueue.filter(t => t.source === providerTag).length; const gap = TOKEN_QUEUE_MAX - matchingProviderCount - captchaSolvingCount; if (gap > 0) { const hasKey = !!getCaptchaApiKey(provider); if (!hasKey) return; for (let i = 0; i < gap; i++) { (async () => { try { markSolveStart(providerTag); const t = await solveCaptchaByProvider(provider); tokenQueueAddTagged(t, providerTag); } catch (e) { console.log(`[RJ Captcha] ${config?.name || provider} solve error:`, e.message); } finally { markSolveEnd(); } })(); } } }
+    else { if (matchingCount >= TOKEN_QUEUE_MAX) return; if (Date.now() - _scriptLoadedAt < 15000) return; if (Date.now() - _lastTurnstileReset < 7000) return; if (typeof turnstile === 'undefined' || cfWidgetId === null || cfToken || _renderInFlight) return; try { resetCaptcha(); _lastTurnstileReset = Date.now(); } catch(e) {} }
+}, 3000);
+
+function renderTokenQueue() {
+    const slotsEl = document.getElementById('tq-slots'); const infoEl = document.getElementById('tq-info'); if (!slotsEl || !infoEl) return; tokenQueueCleanExpired();
+    let html = ''; for (let i = 0; i < TOKEN_QUEUE_MAX; i++) { const tok = tokenQueue[i]; if (tok) { const age = Date.now() - tok.createdAt; const isExpiring = (TOKEN_TTL_MS - age) < 30000; html += `<span class="tq-slot ${tok.source}${isExpiring ? ' expiring' : ''}" title="${tok.source} • ${Math.floor(age/1000)}s"></span>`; } else if (captchaSolvingCount > 0 && i === tokenQueue.length) { html += `<span class="tq-slot solving" title="Solving…"></span>`; } else { html += `<span class="tq-slot empty"></span>`; } } slotsEl.innerHTML = html;
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on'); let info; if (captchaSolvingCount > 0) { info = `${tokenQueue.length}/${TOKEN_QUEUE_MAX} • solving…`; infoEl.classList.add('solving'); } else if (tokenQueue.length === 0) { info = `0/${TOKEN_QUEUE_MAX} • idle (${useApi ? 'API' : 'manual'})`; infoEl.classList.remove('solving'); } else { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; info = `${tokenQueue.length}/${TOKEN_QUEUE_MAX} • ${useApi ? (config?.name || provider) : 'turnstile'}`; infoEl.classList.remove('solving'); } infoEl.textContent = info;
+}
+setInterval(renderTokenQueue, 1000); document.getElementById('captcha-toggle')?.addEventListener('click', () => { setTimeout(renderTokenQueue, 50); }); setTimeout(renderTokenQueue, 200);
+
+// Dedicated UPLOAD token pool indicator (mirrors the main queue widget, in the Upload tab)
+function renderUploadQueue() {
+    const slotsEl = document.getElementById('upq-slots'); const infoEl = document.getElementById('upq-info');
+    if (!slotsEl || !infoEl || typeof uploadTokenQueue === 'undefined') return;
+    try { uploadQueueClean(); } catch(e) {}
+    const MAX = (typeof UPLOAD_Q_MAX === 'number') ? UPLOAD_Q_MAX : 4;
+    const solving = (typeof _uploadFillerBusy === 'number') ? _uploadFillerBusy : 0;
+    let html = '';
+    for (let i = 0; i < MAX; i++) {
+        const tok = uploadTokenQueue[i];
+        if (tok) { const age = Date.now() - tok.createdAt; const isExp = (TOKEN_TTL_MS - age) < 30000; html += `<span class="tq-slot ${tok.source}${isExp ? ' expiring' : ''}" title="${tok.source} • ${Math.floor(age/1000)}s"></span>`; }
+        else if (solving > 0 && i === uploadTokenQueue.length) { html += `<span class="tq-slot solving" title="Solving…"></span>`; }
+        else { html += `<span class="tq-slot empty"></span>`; }
+    }
+    slotsEl.innerHTML = html;
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    const wants = (typeof _uploadWantsTokens === 'function') ? _uploadWantsTokens() : false;
+    let info;
+    if (solving > 0) { info = `${uploadTokenQueue.length}/${MAX} • solving…`; infoEl.classList.add('solving'); }
+    else { const armed = (typeof _uploadArmed !== 'undefined' && _uploadArmed); infoEl.classList.remove('solving'); info = `${uploadTokenQueue.length}/${MAX} • ${!useApi ? 'manual' : ((wants || armed) ? 'ready' : 'idle')}`; }
+    infoEl.textContent = info;
+}
+setInterval(renderUploadQueue, 1000); setTimeout(renderUploadQueue, 300);
+
+// ==================== CAPTCHA PROVIDERS (SILENT) ====================
+const CAPTCHA_PROVIDERS = {
+    capmonster: { name: 'CapMonster', createUrl: 'https://api.capmonster.cloud/createTask', resultUrl: 'https://api.capmonster.cloud/getTaskResult', taskType: 'TurnstileTaskProxyless', keyStorage: 'capmonster_api_key', cssClass: 'capmonster' },
+    capsolver: { name: 'CapSolver', createUrl: 'https://api.capsolver.com/createTask', resultUrl: 'https://api.capsolver.com/getTaskResult', taskType: 'AntiTurnstileTaskProxyLess', keyStorage: 'capsolver_api_key', cssClass: 'capsolver' },
+    '2captcha': { name: '2Captcha', createUrl: 'https://api.2captcha.com/createTask', resultUrl: 'https://api.2captcha.com/getTaskResult', taskType: 'TurnstileTaskProxyless', keyStorage: '2captcha_api_key', cssClass: 'twocaptcha' },
+    yescaptcha: { name: 'YesCaptcha', createUrl: 'https://api.yescaptcha.com/createTask', resultUrl: 'https://api.yescaptcha.com/getTaskResult', taskType: 'TurnstileTaskProxyless', keyStorage: 'yescaptcha_api_key', cssClass: 'yescaptcha' }
+};
+
+function getSelectedCaptchaProvider() { try { return localStorage.getItem('rj_captcha_provider') || 'capmonster'; } catch(e) { return 'capmonster'; } }
+function setSelectedCaptchaProvider(provider) { try { localStorage.setItem('rj_captcha_provider', provider); } catch(e) {} }
+function getCaptchaApiKey(provider) {
+    provider = provider || getSelectedCaptchaProvider();
+    const config = CAPTCHA_PROVIDERS[provider]; if (!config) return '';
+    const stored = localStorage.getItem(config.keyStorage) || '';
+    const live = document.getElementById('ivac-captcha-api-input')?.value || '';
+    return (stored || live).trim();
+}
+
+document.getElementById('ivac-captcha-api-input')?.addEventListener('input', (e) => {
+    const v = (e.target.value || '').trim();
+    if (v) { const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider]; if (config) localStorage.setItem(config.keyStorage, v); }
+});
+document.getElementById('ivac-btn-captcha-save')?.addEventListener('click', () => {
+    const k = (document.getElementById('ivac-captcha-api-input')?.value || '').trim();
+    if (!k) { logStatus('❌ API key empty', 'r'); return; }
+    const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider];
+    if (config) { try { localStorage.setItem(config.keyStorage, k); logStatus(`✓ ${config.name} key saved`, 'g'); } catch(e) { logStatus(`❌ Save error`, 'r'); } }
+});
+document.getElementById('ivac-btn-captcha-reset')?.addEventListener('click', () => {
+    const provider = getSelectedCaptchaProvider(); const config = CAPTCHA_PROVIDERS[provider];
+    if (config) localStorage.removeItem(config.keyStorage);
+    const inp = document.getElementById('ivac-captcha-api-input'); if (inp) inp.value = '';
+    logStatus(`⚠ ${config?.name || 'Captcha'} key cleared`, 'y');
+});
+(() => {
+    const provider = getSelectedCaptchaProvider(); const sel = document.getElementById('ivac-captcha-provider-select');
+    if (sel) sel.value = provider; const config = CAPTCHA_PROVIDERS[provider];
+    if (config) { const savedKey = localStorage.getItem(config.keyStorage) || ''; const inp = document.getElementById('ivac-captcha-api-input'); if (savedKey && inp) inp.value = savedKey; }
+})();
+document.getElementById('ivac-captcha-provider-select')?.addEventListener('change', (e) => {
+    const provider = e.target.value; setSelectedCaptchaProvider(provider);
+    const config = CAPTCHA_PROVIDERS[provider];
+    if (config) { const savedKey = localStorage.getItem(config.keyStorage) || ''; const inp = document.getElementById('ivac-captcha-api-input'); if (inp) inp.value = savedKey; logStatus(`🔄 Captcha provider: ${config.name}`, 'g'); }
+    renderTokenQueue();
+});
+
+function silentGMRequest(url, body, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const gmApi = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+        if (!gmApi) { reject(new Error('No GM_xmlhttpRequest available')); return; }
+        let completed = false;
+        const timeoutId = setTimeout(() => { if (!completed) { completed = true; reject(new Error('Silent captcha request timeout')); } }, timeoutMs || 20000);
+        gmApi({
+            method: 'POST', url: url, headers: { 'Content-Type': 'application/json' }, data: JSON.stringify(body), timeout: timeoutMs || 20000,
+            onload: function(response) { if (completed) return; completed = true; clearTimeout(timeoutId); let parsed; try { parsed = JSON.parse(response.responseText); } catch(e) { reject(new Error('Invalid JSON response')); return; } resolve({ status: response.status, body: parsed }); },
+            onerror: function(err) { if (completed) return; completed = true; clearTimeout(timeoutId); reject(new Error('GM network error: ' + (err.error || 'unknown'))); },
+            ontimeout: function() { if (completed) return; completed = true; clearTimeout(timeoutId); reject(new Error('GM timeout')); }
+        });
+    });
+}
+
+async function solveCaptchaSilent(provider) {
+    provider = provider || getSelectedCaptchaProvider();
+    const config = CAPTCHA_PROVIDERS[provider];
+    if (!config) throw new Error('Unknown captcha provider: ' + provider);
+    const key = getCaptchaApiKey(provider);
+    if (!key) throw new Error(`No ${config.name} API key`);
+    const websiteURL = API_REFERRER || location.origin + '/';
+    let taskId;
+    try {
+        const createBody = { clientKey: key, task: { type: config.taskType, websiteURL: websiteURL, websiteKey: CF_SITEKEY } };
+        const createResponse = await silentGMRequest(config.createUrl, createBody, 15000);
+        if (createResponse.body.errorId && createResponse.body.errorId !== 0) { throw new Error(createResponse.body.errorDescription || createResponse.body.errorCode || `${config.name} create error`); }
+        taskId = createResponse.body.taskId;
+        if (!taskId) throw new Error(`No taskId from ${config.name}`);
+    } catch(e) { throw new Error(`${config.name} create: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 2000));
+    for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+            const resultBody = { clientKey: key, taskId: taskId };
+            const pollResponse = await silentGMRequest(config.resultUrl, resultBody, 10000);
+            if (pollResponse.body.errorId && pollResponse.body.errorId !== 0) { throw new Error(pollResponse.body.errorDescription || pollResponse.body.errorCode || `${config.name} poll error`); }
+            if (pollResponse.body.status === 'ready') {
+                const token = pollResponse.body.solution?.token || pollResponse.body.solution?.gRecaptchaResponse;
+                if (!token) throw new Error(`No token in ${config.name} solution`);
+                console.log(`[RJ Captcha Silent] ${config.name} solved in ${Math.round((Date.now() - (window._captchaStartTime || Date.now()))/1000)}s`);
+                return token;
+            }
+        } catch(e) { if (attempt > 55) throw e; continue; }
+    }
+    throw new Error(`${config.name} timeout (60s)`);
+}
+
+let _captchaSolvingActive = false;
+let _lastSilentSolveTime = 0;
+const SILENT_SOLVE_COOLDOWN = 500;
+
+async function getCaptchaTokenSmart() {
+    tokenQueueCleanExpired();
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    // token pick — toggle ON (API mode): NEVER use farm tokens (API-solved only);
+    //              toggle OFF (manual):  FARM token first, then any queued.
+    const queuedAny = useApi
+        ? tokenQueue.find(t => t.token && t.source !== 'farm')
+        : (tokenQueue.find(t => t.token && t.source === 'farm') || tokenQueue.find(t => t.token));
+    if (queuedAny) { console.log(`[RJ Captcha] Reusing queued token (${queuedAny.source}, ${tokenQueue.length}/${TOKEN_QUEUE_MAX})`); return queuedAny.token; }
+
+    if (!useApi) {
+        showManualCaptcha();
+        for (let i = 0; i < 60; i++) {
+            tokenQueueCleanExpired();
+            const q = tokenQueue.find(t => t.token);
+            if (q) { console.log(`[RJ Captcha] Manual token picked from queue (${q.source})`); return q.token; }
+            if (cfToken) { tokenQueueAddTagged(cfToken, 'turnstile'); return cfToken; }
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        throw new Error('Manual captcha not solved within 60s');
+    }
+    const provider = getSelectedCaptchaProvider();
+    const providerTag = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+    tokenQueueCleanExpired();
+    const reusable = tokenQueue.find(t => t.source === providerTag);
+    if (reusable) { console.log(`[RJ Captcha Silent] Using queued token from ${provider}`); return reusable.token; }
+    const now = Date.now();
+    if (now - _lastSilentSolveTime < SILENT_SOLVE_COOLDOWN) { await new Promise(r => setTimeout(r, SILENT_SOLVE_COOLDOWN - (now - _lastSilentSolveTime))); }
+    if (_captchaSolvingActive) {
+        let waited = 0;
+        while (_captchaSolvingActive && waited < 30000) { await new Promise(r => setTimeout(r, 500)); waited += 500; const queued = tokenQueue.find(t => t.source === providerTag); if (queued) return queued.token; }
+    }
+    _captchaSolvingActive = true; _lastSilentSolveTime = Date.now(); window._captchaStartTime = Date.now();
+    try { markSolveStart(providerTag); const token = await solveCaptchaSilent(provider); tokenQueueAddTagged(token, providerTag); console.log(`[RJ Captcha Silent] Token queued (${tokenQueue.length}/${TOKEN_QUEUE_MAX})`); return token; }
+    finally { markSolveEnd(); _captchaSolvingActive = false; }
+}
+
+async function solveCaptchaByProvider(provider) { return solveCaptchaSilent(provider); }
+
+function _requeueTokenEntry(entry) {
+    if (!entry || !entry.token) return;
+    tokenQueueCleanExpired();
+    if (tokenQueue.some(t => t.token === entry.token)) return;
+    tokenQueue.push(entry);                              // keep original createdAt (true age)
+    if (tokenQueue.length > TOKEN_QUEUE_MAX) tokenQueue.shift();
+}
+
+const _uploadInUse = new Set();
+// Serialise claims so two files can't race into solving/claiming the SAME token.
+let _uploadClaimChain = Promise.resolve();
+
+function releaseUploadToken(entry, requeue) {
+    if (!entry || !entry.token) return;
+    _uploadInUse.delete(entry.token);
+    if (requeue) {
+        _uploadSpent.delete(entry.token);
+        uploadQueueClean();
+        if (!uploadTokenQueue.some(t => t.token === entry.token) && (Date.now() - entry.createdAt) < TOKEN_TTL_MS) {
+            uploadTokenQueue.push(entry);
+            if (uploadTokenQueue.length > UPLOAD_Q_MAX) uploadTokenQueue.shift();
+        }
+    }
+}
+
+function claimFreshUploadToken() {
+    // chain onto the previous claim so claims run one-at-a-time (no shared-token race)
+    const p = _uploadClaimChain.then(() => _doClaimUploadToken());
+    _uploadClaimChain = p.catch(() => {});
+    return p;
+}
+const _uploadSpent = new Set();
+
+const UPLOAD_Q_MAX = 4;
+const uploadTokenQueue = [];                 // [{token, source, createdAt}]
+let _uploadFillerBusy = 0;
+let _uploadArmed = false;                     // set true on "File Upload Checking" click → start pre-solving early
+function uploadQueueClean() { const now = Date.now(); for (let i = uploadTokenQueue.length - 1; i >= 0; i--) { if (now - uploadTokenQueue[i].createdAt > TOKEN_TTL_MS) uploadTokenQueue.splice(i, 1); } }
+function _uploadWantsTokens() { return ['ivac-file-upload', 'ivac-file-upload-2', 'ivac-file-upload-3', 'ivac-file-upload-4'].some(id => (document.getElementById(id)?.files?.length || 0) > 0); }
+function uploadQueueFill() {
+    try {
+        if (!document.getElementById('captcha-toggle')?.classList.contains('on')) return;   // API mode only
+        if (!_uploadArmed && !_uploadWantsTokens()) return;   // armed by File-Upload-Checking click OR a selected file
+        uploadQueueClean();
+        const provider = getSelectedCaptchaProvider();
+        if (!getCaptchaApiKey(provider)) return;
+        const src = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+        const gap = UPLOAD_Q_MAX - uploadTokenQueue.length - _uploadFillerBusy;
+        for (let i = 0; i < gap; i++) {
+            _uploadFillerBusy++;
+            (async () => {
+                try { const t = await solveCaptchaByProvider(provider); if (t && !_uploadSpent.has(t) && !uploadTokenQueue.some(x => x.token === t)) uploadTokenQueue.push({ token: t, source: src, createdAt: Date.now() }); }
+                catch (e) {}
+                finally { _uploadFillerBusy--; }
+            })();
+        }
+    } catch (e) {}
+}
+setInterval(uploadQueueFill, 3000);
+
+async function _doClaimUploadToken() {
+    uploadQueueClean();
+    // 0) FARM FIRST — only in manual mode (toggle OFF). When toggle ON (API mode) farm tokens are
+    // never used; the flow goes straight to the API solve below. Farm token is single-use.
+    try {
+        if (typeof tokenQueue !== 'undefined' && !document.getElementById('captcha-toggle')?.classList.contains('on')) {
+            if (typeof tokenQueueCleanExpired === 'function') tokenQueueCleanExpired();
+            for (let i = 0; i < tokenQueue.length; i++) {
+                const t = tokenQueue[i];
+                if (t && t.token && t.source === 'farm' && !_uploadSpent.has(t.token) && !_uploadInUse.has(t.token)) {
+                    tokenQueue.splice(i, 1);                       // remove from main queue → single-use
+                    _uploadInUse.add(t.token); _uploadSpent.add(t.token);
+                    console.log('[RJ Upload] Farm token used (main queue)');
+                    return { token: t.token, source: 'farm', createdAt: t.createdAt || Date.now() };
+                }
+            }
+        }
+    } catch (e) {}
+    // 1) take a pre-solved, never-used token from the dedicated upload pool (instant)
+    for (let i = 0; i < uploadTokenQueue.length; i++) {
+        const e = uploadTokenQueue[i];
+        if (_uploadSpent.has(e.token) || _uploadInUse.has(e.token)) continue;
+        uploadTokenQueue.splice(i, 1);
+        _uploadInUse.add(e.token); _uploadSpent.add(e.token);
+        console.log(`[RJ Upload] Dedicated token from pool (${e.source}, ${uploadTokenQueue.length} left)`);
+        uploadQueueFill();                                   // top the pool back up
+        return e;
+    }
+    // 2) pool empty → solve a dedicated fresh one right now
+    const useApi = document.getElementById('captcha-toggle')?.classList.contains('on');
+    if (useApi) {
+        const provider = getSelectedCaptchaProvider();
+        const src = CAPTCHA_PROVIDERS[provider]?.cssClass || 'capmonster';
+        for (let tries = 0; tries < 3; tries++) {
+            markSolveStart(src);
+            let token;
+            try { token = await solveCaptchaByProvider(provider); }   // fresh solve, NOT the shared queue
+            finally { markSolveEnd(); }
+            if (token && !_uploadSpent.has(token) && !_uploadInUse.has(token)) {
+                _uploadInUse.add(token); _uploadSpent.add(token);
+                console.log(`[RJ Upload] Solved dedicated fresh token (${src})`);
+                return { token, source: src, createdAt: Date.now() };
+            }
+        }
+        throw new Error('could not solve a fresh upload token');
+    }
+    // Manual (Turnstile) mode: force the widget to mint a NEW token, then take one we've never used.
+    const before = new Set([...tokenQueue.map(t => t.token), ..._uploadSpent]);
+    try { resetCaptcha(); } catch(e) {}
+    if (typeof showManualCaptcha === 'function') showManualCaptcha();
+    for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const candidate = (cfToken && !before.has(cfToken) && !_uploadSpent.has(cfToken) && !_uploadInUse.has(cfToken))
+            ? cfToken
+            : (tokenQueue.find(t => t.source === 'turnstile' && !before.has(t.token) && !_uploadSpent.has(t.token) && !_uploadInUse.has(t.token))?.token || null);
+        if (candidate) {
+            const idx = tokenQueue.findIndex(t => t.token === candidate);
+            if (idx !== -1) tokenQueue.splice(idx, 1);            // claim out so no other call reuses it
+            _uploadInUse.add(candidate); _uploadSpent.add(candidate);
+            console.log('[RJ Upload] Got fresh manual token');
+            return { token: candidate, source: 'turnstile', createdAt: Date.now() };
+        }
+    }
+    throw new Error('no fresh manual captcha within 90s');
+}
+
+// ==================== RACE COORDINATOR ====================
+const raceCoord = {
+    _winners: new Map(), _controllers: new Map(),
+    reset(stepName) { this._winners.delete(stepName); const set = this._controllers.get(stepName); if (set) { for (const ac of set) { try { ac.abort(); } catch(e) {} } set.clear(); } this._controllers.delete(stepName); },
+    resetAll() { for (const k of [...this._winners.keys()]) this.reset(k); },
+    track(stepName, ac) { if (this._winners.has(stepName)) { try { ac.abort(); } catch(e) {} return false; } if (!this._controllers.has(stepName)) this._controllers.set(stepName, new Set()); this._controllers.get(stepName).add(ac); return true; },
+    untrack(stepName, ac) { this._controllers.get(stepName)?.delete(ac); },
+    declareWin(stepName, result) { if (this._winners.has(stepName)) return false; this._winners.set(stepName, result); const set = this._controllers.get(stepName); if (set) { for (const ac of set) { try { ac.abort(); } catch(e) {} } set.clear(); } console.log(`[RJ Race] ★ ${stepName} WON`); return true; },
+    hasWon(stepName) { return this._winners.has(stepName); },
+    getWinner(stepName) { return this._winners.get(stepName); }
+};
+
+// ==================== STOP FLAG + STEP RUNNER ====================
+const stopFlag = { value: false };
+let _forceStep = false;
+let _autoReserveKicked = false;   // date load hole ekbar-i auto-reserve fire korte
+const STEP_ORDER = ['signin', 'verify', 'book', 'reserve', 'initiate'];
+function isSingleOn()   { return document.getElementById('btn-single')?.classList.contains('b5'); }
+function isAutoOn()     { return document.getElementById('btn-auto')?.classList.contains('b5'); }
+function isParallelOn() { return document.getElementById('parallel-toggle')?.classList.contains('on'); }
+function getStepDelaySec(stepName) { const map = { signin:'rt-signin', verify:'rt-verify', reserve:'rt-reserve', book:'rt-book', initiate:'rt-initiate' }; return Math.max(0, +document.getElementById(map[stepName])?.value || 1); }
+// File-upload retry delay (seconds) — set in the Single/Auto row (#rt-upload). Auto-upload retries
+// each file with this gap, until success. Default 5s.
+function getUploadDelaySec() { const raw = document.getElementById('rt-upload')?.value; if (raw === undefined || raw === null || raw === '') return 5; const v = +raw; return isNaN(v) ? 5 : Math.max(0, v); }
+function getParallelStep(stepName) { const map = { advance: ['ivac-parallel-advance-hits', 'ivac-parallel-advance-ms'], signin: ['ivac-parallel-signin-hits', 'ivac-parallel-signin-ms'], verify: ['ivac-parallel-loginotp-hits', 'ivac-parallel-loginotp-ms'], book: ['ivac-parallel-book-hits', 'ivac-parallel-book-ms'], reserve: ['ivac-parallel-reserveslot-hits', 'ivac-parallel-reserveslot-ms'], initiate: ['ivac-parallel-initiate-hits', 'ivac-parallel-initiate-ms'] }; const [hId, mId] = map[stepName] || []; return { hits: +document.getElementById(hId)?.value || 1, ms: +document.getElementById(mId)?.value || 0 }; }
+function setStepStatus(stepName, state) { document.querySelectorAll('#netlog-steps .nl-step').forEach(el => { if (el.dataset.step === stepName) { el.classList.remove('active', 'success', 'fail'); if (state) el.classList.add(state); } }); }
+function resetAllStepStatus() { document.querySelectorAll('#netlog-steps .nl-step').forEach(el => { el.classList.remove('active', 'success', 'fail'); }); }
+
+function isSessionValid() { if (!sessionState.accessToken || !sessionState.loggedInAt) return false; if (Date.now() - sessionState.loggedInAt >= 15 * 60 * 1000) { try { clearAllSession(); } catch(e) {} return false; } return true; }
+function isStepAlreadyDone(step) { const now = Date.now(); switch (step) { case 'signin': return isSessionValid(); case 'verify': return isSessionValid() && !!sessionState.isVerified; case 'reserve': if (!isSessionValid()) return false; if (!sessionState.reservationId || !sessionState.reservedAt) return false; return (now - sessionState.reservedAt) < ((sessionState.reserveTtlSec || 600) * 1000); case 'book': if (!isSessionValid()) return false; return !!sessionState.appointmentId && sessionState.bookedAt && (now - sessionState.bookedAt) < (5 * 60 * 1000); case 'initiate': return false; default: return false; } }
+
+async function runStepOnce(stepName, fnFactory) {
+    if (stopFlag.value) return { win: false, cancelled: true };
+    const parallel = isParallelOn();
+    const initialConfig = parallel ? getParallelStep(stepName) : { hits: 1, ms: 0 };
+    const N = parallel && initialConfig.hits > 1 ? initialConfig.hits : 1;
+
+    if (N === 1) {
+        const ac = new AbortController();
+        if (!raceCoord.track(stepName, ac)) return { win: false, cancelled: true };
+        try { const res = await fnFactory(ac.signal, 1); raceCoord.untrack(stepName, ac); if (res?.win) raceCoord.declareWin(stepName, res); return res || { win: false }; }
+        catch (err) { raceCoord.untrack(stepName, ac); if (err.name === 'AbortError') return { win: false, cancelled: true }; return { win: false }; }
+    }
+
+    const controllers = new Set(); const inFlight = new Map(); let winResult = null; let cancelled = false; let fireCounter = 0; let initialBurstDone = false; const fireQueue = { burstRemaining: N, refillsNeeded: 0 };
+    function fireOne() {
+        if (stopFlag.value || winResult || cancelled || raceCoord.hasWon(stepName)) return null;
+        const id = ++fireCounter; const ac = new AbortController(); if (!raceCoord.track(stepName, ac)) return null;
+        controllers.add(ac);
+        const p = (async () => { try { const res = await fnFactory(ac.signal, id); if (res?.win) raceCoord.declareWin(stepName, res); return { id, ok: !!res?.win, res }; } catch (err) { if (err.name === 'AbortError') return { id, ok: false, cancelled: true }; return { id, ok: false, error: err }; } finally { controllers.delete(ac); raceCoord.untrack(stepName, ac); } })();
+        inFlight.set(id, p); return p;
+    }
+    (async () => {
+        if (fireQueue.burstRemaining > 0) { fireOne(); fireQueue.burstRemaining--; }
+        while (!stopFlag.value && !winResult && !cancelled && !raceCoord.hasWon(stepName)) {
+            const currentMs = getParallelStep(stepName).ms || 0; if (currentMs > 0) await new Promise(r => setTimeout(r, currentMs));
+            if (stopFlag.value || winResult || cancelled || raceCoord.hasWon(stepName)) break;
+            const currentHits = getParallelStep(stepName).hits || 1; const firedSoFar = fireCounter - fireQueue.refillsNeeded;
+            if (currentHits > firedSoFar && fireQueue.burstRemaining < (currentHits - firedSoFar)) fireQueue.burstRemaining = currentHits - firedSoFar;
+            if (fireQueue.burstRemaining > 0) { fireOne(); fireQueue.burstRemaining--; if (fireQueue.burstRemaining === 0) initialBurstDone = true; }
+            else if (fireQueue.refillsNeeded > 0) { fireOne(); fireQueue.refillsNeeded--; }
+        }
+    })();
+    while (!winResult && !stopFlag.value) {
+        if (raceCoord.hasWon(stepName)) { winResult = raceCoord.getWinner(stepName); break; }
+        if (inFlight.size === 0) { if (!initialBurstDone && fireQueue.burstRemaining > 0) { await new Promise(r => setTimeout(r, 50)); continue; } if (fireQueue.refillsNeeded > 0) { await new Promise(r => setTimeout(r, 50)); continue; } break; }
+        const promises = Array.from(inFlight.values()); const settled = await Promise.race(promises); inFlight.delete(settled.id);
+        if (settled.cancelled) continue;
+        if (settled.ok) { winResult = settled.res; cancelled = true; raceCoord.declareWin(stepName, settled.res); break; }
+        fireQueue.refillsNeeded++;
+    }
+    return winResult || { win: false };
+}
+
+async function runStepSmart(stepName, fnFactory) {
+    raceCoord.reset(stepName); setStepStatus(stepName, 'active');
+    while (!stopFlag.value) {
+        const result = await runStepOnce(stepName, fnFactory);
+        if (result.win) { setStepStatus(stepName, 'success'); return result; }
+        if (stopFlag.value) { setStepStatus(stepName, ''); return result; }
+        if (!isSingleOn()) { setStepStatus(stepName, 'fail'); logStatus(`✗ ${stepName} failed — retry OFF`, 'r'); return result; }
+        const delay = getStepDelaySec(stepName); logStatus(`↻ ${stepName} retry in ${delay}s`, 'y'); raceCoord.reset(stepName);
+        for (let s = 0; s < delay && !stopFlag.value; s++) { await new Promise(r => setTimeout(r, 1000)); }
+    }
+    return { win: false, cancelled: true };
+}
+
+// ==================== STEP FACTORIES — H2 ONLY ====================
+async function stepSignin(signal) {
+    if (!_forceStep && isStepAlreadyDone('signin')) { logStatus(`⏭ Signin already done`, 'g'); return { win: true, skipped: true }; }
+    const phone = document.getElementById('login-phone')?.value.trim(); const password = document.getElementById('login-password')?.value.trim();
+    if (!phone || !password) { logStatus('❌ phone/password empty', 'r'); return { win: false }; }
+    let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ captcha: ${e.message}`, 'r'); return { win: false }; }
+    if (raceCoord.hasWon('signin')) { logStatus(`⏭ Signin race already won — bailing`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'turnstile'); return { win: false, cancelled: true }; }
+    const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+    const signinTimeoutOn = document.getElementById('signin-timeout-toggle')?.classList.contains('on');
+    let signinTimeoutId = null;
+    if (signinTimeoutOn) { signinTimeoutId = setTimeout(() => { logStatus('⏱ Signin timeout (20s) — forcing retry', 'y'); localAc.abort(); }, 20000); }
+    const logId = netLogAdd({ method: 'POST', url: API_SIGNIN_V2, tag: 'signin', state: 'pending' });
+    try {
+        const encryptedCaptcha = encTokenForCall(captchaToken, 'signin');
+        const r = await H2.fetchH2(API_SIGNIN_V2, { method: 'POST', signal: localAc.signal, headers: { 'accept':'application/json, text/plain, */*','cache-control':'no-cache, no-store, must-revalidate','content-type':'application/json','pragma':'no-cache','x-sec-navigation-state': _navState() }, referrer: API_REFERRER, body: JSON.stringify({ phone, password, c: encryptedCaptcha }) });
+        if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; }
+        const body = await r.json(); netLogUpdate(logId, { status: r.status, state: r.ok && body.successFlag ? 'ok' : 'fail' });
+        const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        if (r.ok && body.successFlag && body.data?.accessToken) {
+            raceCoord.declareWin('signin', { win: true, data: body });
+            saveSession(body.data, phone); try { startOtpTimer('signinOtp'); } catch(e) {}
+            showMilestonePopup('OTP Sent', 'OTP sent to ' + phone, '📩'); try { announceSuccess('OTP sent successfully'); } catch(e) {}
+            if (isAutoOn()) startSmsFetcher(phone, async (otp) => { return undefined; }, false);
+            return { win: true, data: body };
+        } return { win: false };
+    } catch (err) { if (signinTimeoutId) { clearTimeout(signinTimeoutId); signinTimeoutId = null; } if (err.name === 'AbortError') { netLogUpdate(logId, { state: 'cancel', status: '⊘' }); return { win: false, cancelled: false }; } netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: false }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+}
+
+async function stepVerify(signal) {
+    if (!_forceStep && isStepAlreadyDone('verify')) { logStatus(`⏭ Verify already done`, 'g'); return { win: true, skipped: true }; }
+    let otp = document.getElementById('login-otp')?.value.trim();
+    if (!otp) {
+        if (_forceStep) { logStatus('❌ OTP empty', 'r'); return { win: false }; }
+        logStatus('⏳ Waiting for OTP…', 'y');
+        const waitStart = Date.now();
+        while (!otp && Date.now() - waitStart < 90000 && !signal?.aborted && !stopFlag.value) {
+            if (raceCoord.hasWon('verify')) return { win: false, cancelled: true };
+            await new Promise(r => setTimeout(r, 500)); otp = document.getElementById('login-otp')?.value.trim();
+        }
+        if (!otp) { logStatus('❌ OTP not received', 'r'); return { win: false }; }
+    }
+    if (!sessionState.accessToken || !sessionState.requestId) { if (_forceStep) logStatus('⚠ No session — attempting anyway', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
+    if (raceCoord.hasWon('verify')) { logStatus(`⏭ Verify race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
+    const logId = netLogAdd({ method: 'POST', url: API_VERIFY, tag: 'verify', state: 'pending', note: `verify ${otp}` });
+    try {
+        const r = await H2.fetchH2(API_VERIFY, { method: 'POST', signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ requestId: sessionState.requestId, phone: sessionState.phone, code: otp, otpChannel: 'PHONE' }) });
+        let body = null; try { body = await r.json(); } catch(e) {} const verified = isVerifiedResponse(r.status, body);
+        netLogUpdate(logId, { status: r.status, state: verified ? 'ok' : 'fail', note: verified ? 'verified' : (body?.message || `HTTP ${r.status}`) });
+        if (verified) {
+            raceCoord.declareWin('verify', { win: true, data: body });
+            try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
+            try { stopSmsFetcher('OTP verified'); } catch(e) {}
+            document.getElementById('login-otp').value = '';
+            markSessionVerified(); showMilestonePopup('Verified', 'OTP Verified successfully!', '✅');
+            if (sessionState.loggedInAt) { const sessionExpiresAt = sessionState.loggedInAt + TIMER_TOKEN_MS; const remainingMs = sessionExpiresAt - Date.now(); if (remainingMs > 0) { startTokenTimerWithExpiry(sessionExpiresAt); const min = Math.floor(remainingMs / 60000); const sec = Math.floor((remainingMs % 60000) / 1000); logStatus(`✅ Verified • session ${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')} left`, 'g'); } }
+        } else { if (!_forceStep && isAutoOn() && sessionState.phone) { document.getElementById('login-otp').value = ''; logStatus('⚠ Verify failed — restarting SMS fetcher', 'y'); startSmsFetcher(sessionState.phone, async () => { return undefined; }, true); } }
+        return { win: verified, data: body };
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; }
+}
+
+function getReserveAppointmentId() {
+    let id = sessionState.appointmentId;
+    if (!id) { try { const p = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (p && p.length >= 10) id = p; } catch(e) {} }
+    return id || '';
+}
+
+const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
+const RESERVE_SLOT_ID_FIXED = '54ea9f13-f1e2-4cea-9e18-f525e8242ccf';   // fixed reserve slot id
+function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
+function getReserveSlotId() {
+    const inp = document.getElementById('ivac-reserve-slot-id');
+    const v = _cleanUuid(inp?.value);
+    return v || RESERVE_SLOT_ID_FIXED;
+}
+function saveReserveSlotId(v) {
+    v = _cleanUuid(v); if (!v) return;
+    try { localStorage.setItem(RESERVE_SLOT_ID_KEY, v); } catch(e) {}   // persistence only; not tied to profile
+}
+// dg-epay payment-method-id: editable manual field (paste) + auto-capture from real traffic.
+// Priority: manual input > auto-captured (RJ_DYN.payId) > fixed fallback.
+function getPaymentMethodId() {
+    const inp = document.getElementById('ivac-payment-method-id');
+    const v = _cleanUuid(inp?.value);
+    return v || RJ_DYN.payId || PAYMENT_METHOD_ID;
+}
+function savePaymentMethodId(v) {
+    v = _cleanUuid(v); if (!v) return;
+    try { localStorage.setItem(PAYMENT_METHOD_ID_KEY, v); } catch(e) {}
+}
+function getInitiateUrl() { return `https://api.ivacbd.com/iams/api/v1/payment/${getPaymentMethodId()}/dg-epay/initiate`; }
+
+// dd-mm-yyyy display, YYYY-MM-DD value (API format)
+function _fmtDateDisplay(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : iso; }
+// normalize any date-ish value to a single YYYY-MM-DD string (never an array)
+function _normDate(v) {
+    if (Array.isArray(v)) return _normDate(v[0]);
+    let s = String(v == null ? '' : v).trim();
+    let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s); if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s); if (m) return `${m[3]}-${m[2]}-${m[1]}`;   // DD-MM-YYYY (page format)
+    m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s); if (m) return `${m[3]}-${m[2]}-${m[1]}`;   // DD/MM/YYYY
+    return '';
+}
+
+function scrapePageDates() {
+    const set = new Set();
+    const onlyDash = (t) => {
+        const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(t) || null;
+        if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+        const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t) || null;
+        return m2 ? `${m2[1]}-${m2[2]}-${m2[3]}` : '';
+    };
+    try {
+        document.querySelectorAll('button, span, li, div, option, p').forEach(el => {
+            if (el.children && el.children.length) return;               // leaf nodes only
+            if (el.closest('#p, #rj-netlog, [id^="ivac-"], [id^="rj-"]')) return;   // skip our own UI
+            const iso = onlyDash((el.textContent || '').trim());
+            if (iso) set.add(iso);
+        });
+    } catch (e) {}
+    return [...set].sort();   // YYYY-MM-DD sorts chronologically
+}
+
+function populateReserveDates(dates) {
+    const sel = document.getElementById('ivac-reserve-date');
+    const arr = (Array.isArray(dates) ? dates : []).map(_normDate).filter(Boolean);
+    const uniq = [...new Set(arr)].sort();
+    if (!sel || !uniq.length) return null;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">📅 Reserve date…</option>' + uniq.map(d => `<option value="${d}">${_fmtDateDisplay(d)}</option>`).join('');
+    if (prev && uniq.includes(prev)) sel.value = prev;
+    else { const latest = document.getElementById('date-target-toggle')?.classList.contains('on'); sel.value = latest ? uniq[uniq.length - 1] : uniq[0]; }
+    sessionState.abcDate = sel.value || uniq[0];
+    return sel.value;
+}
+
+// Sync dropdown: prefer the dates the page is already showing; fall back to get-booking-config API.
+async function loadReserveDates() {
+    const pageDates = scrapePageDates();
+    if (pageDates.length) { const first = populateReserveDates(pageDates); logStatus(`📅 ${pageDates.length} date(s) synced from page • first: ${_fmtDateDisplay(first)}`, 'g'); return pageDates; }
+    if (!sessionState.accessToken) { logStatus('❌ No dates on page & no session — signin first', 'r'); return null; }
+    const logId = netLogAdd({ method: 'GET', url: API_BOOK, tag: 'book', state: 'pending', note: 'load dates' });
+    try {
+        const r = await H2.fetchH2(API_BOOK, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: null });
+        let body = null; try { body = await r.json(); } catch(e) {}
+        try {
+            const apptId = body?.data?.appointmentId;
+            if (apptId && apptId !== sessionState.appointmentId) {
+                sessionState.appointmentId = apptId; sessionState.bookedAt = Date.now(); persistSession();
+                if (profiles[activeProfileName]) { profiles[activeProfileName].appointmentId = apptId; persistProfiles(); if (pmAppointmentId) pmAppointmentId.value = apptId; }
+                logStatus(`📋 Appointment ID saved: ${apptId}`, 'g');
+                showMilestonePopup('Booked', 'Appointment ID: ' + apptId, '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
+            }
+        } catch(e) {}
+        const dates = body?.data?.appointmentDate;
+        const arr = Array.isArray(dates) ? dates : (dates ? [dates] : []);
+        netLogUpdate(logId, { status: r.status, state: arr.length ? 'ok' : 'fail', note: arr.length ? `${arr.length} dates` : (body?.message || `HTTP ${r.status}`) });
+        if (arr.length) { const first = populateReserveDates(arr); logStatus(`📅 ${arr.length} date(s) from booking config • first: ${_fmtDateDisplay(first)}`, 'g'); }
+        else logStatus('⚠ No dates found (page or booking config)', 'y');
+        return arr;
+    } catch (err) { netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); logStatus(`✗ Load dates: ${err.message}`, 'r'); return null; }
+}
+
+(function initReserveDateAutoSync() {
+    let last = '';
+    let lastApiTry = 0;
+    const maybeAutoReserve = () => {
+        try {
+            const sel = document.getElementById('ivac-reserve-date');
+            if (!sel || !sel.value) return;                          // date load + select hoyeche?
+            if (!isAutoOn()) return;                                 // Auto OFF hole kichu na
+            if (!sessionState.accessToken || !sessionState.isVerified) return;
+            if (!sessionState.appointmentId) return;                 // book (appointmentId) chai
+            if (sessionState.reservationId) return;                  // already reserved
+            if (pipelineRunning || slotDuty.chainRunning) return;    // pipeline already cholche
+            if (_autoReserveKicked || raceCoord.hasWon('reserve')) return;
+            _autoReserveKicked = true;
+            logStatus('▶ Auto reserve — date loaded, chain shuru', 'g');
+            manualStepClick('reserve');                             // manual click er hubohu behavior
+        } catch (e) {}
+    };
+    const tick = async () => {
+        try {
+            const sel = document.getElementById('ivac-reserve-date'); if (!sel) return;
+            const dates = scrapePageDates();
+            if (dates.length) {                              // on the time-slot page → mirror live
+                const sig = dates.join(',');
+                if (sig !== last) { last = sig; populateReserveDates(dates); }
+                maybeAutoReserve();
+                return;
+            }
+            const hasDates = sel.options.length > 1;         // >1 means more than the placeholder
+            let haveId = !!sessionState.appointmentId;
+            if (!haveId) {
+                try { const pid = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (pid && pid.length >= 10) { sessionState.appointmentId = pid; haveId = true; } } catch (e) {}
+            }
+            if (!hasDates && !haveId && sessionState.accessToken && sessionState.isVerified && (Date.now() - lastApiTry > 20000)) {
+                lastApiTry = Date.now();
+                try { await loadReserveDates(); } catch (e) {}
+            }
+            maybeAutoReserve();   // date load hoye thakle Auto ON e reserve chain shuru
+        } catch (e) {}
+    };
+    try { const start = () => { setInterval(tick, 1500); tick(); }; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start(); } catch (e) {}
+})();
+
+let _reserveLastAt = 0;   // gate: last time a reserve API call was launched (Auto/Single only)
+async function stepReserve(signal) {
+    if (!_forceStep && isStepAlreadyDone('reserve')) { logStatus(`⏭ Reserve already done`, 'g'); return { win: true, skipped: true }; }
+    if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
+    // ---- RESERVE GATE (Auto/Single only): never fire two reserve calls at the same time, and don't
+    // fire again until the reserve retry delay has elapsed. Two orchestrators (slot-duty chain + auto
+    // step-advance) could otherwise hit reserve concurrently → the 2nd gets 429. Manual (Auto & Single
+    // both OFF) is exempt — click whenever. Set synchronously BEFORE the captcha await so a near-
+    // simultaneous duplicate is blocked before it starts (no token wasted). ----
+    // NOTE: skip the gate in Parallel mode — there the many concurrent hits are intentional
+    // (leaky-bucket); the gate is only for accidental double-fire in plain Auto/Single.
+    if ((isAutoOn() || isSingleOn()) && !isParallelOn()) {
+        const _gap = Math.max((getStepDelaySec('reserve') || 0) * 1000, 1500);
+        if (_reserveLastAt && (Date.now() - _reserveLastAt) < _gap) {
+            logStatus(`⏭ Reserve blocked — within ${Math.round(_gap/1000)}s retry delay (duplicate)`, 'y');
+            return { win: false, cancelled: true };
+        }
+        _reserveLastAt = Date.now();
+    }
+    let captchaToken; try { captchaToken = await getCaptchaTokenSmart(); } catch (e) { logStatus(`✗ Captcha: ${e.message}`, 'r'); return { win: false }; }
+    if (raceCoord.hasWon('reserve')) { logStatus(`⏭ Reserve race already won — returning token`, 'y'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false, cancelled: true }; }
+    const encryptedCaptchaToken = encTokenForCall(captchaToken, 'reserve');
+    // slot id = center-fixed Slot ID box (falls back to appointmentId); date = picker → session → booking-config
+    const slotId = getReserveSlotId();
+    if (!slotId) { logStatus('❌ No Slot ID — paste the reserve Slot ID (54ea9f13-…)', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
+    if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
+    if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
+    const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
+    const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
+    const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
+    try {
+        const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache', 'x-v-request-meta': 'windos.s' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
+        let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body, r.status);
+        const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||body?.data?.status||'?'} • ${body?.appointmentDate||body?.data?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
+        if (reserved) {
+            raceCoord.declareWin('reserve', { win: true, data: body });
+            const rd = (body && body.data && (body.data.reservationId || body.data.status)) ? body.data : body;   // success payload may nest under .data
+            // reservation id may arrive under several names — pick whichever is present
+            const _rid = rd.reservationId || rd.reserveId || rd.reservation_id || rd.tranId || rd.trxId || rd.transactionId || rd.bookingId || rd.id || (body && (body.reservationId || (body.data && body.data.reservationId)))
+                // DEEP-SCAN fallback: if the id field was renamed, find any value at any depth whose key looks like a reservation/tran id
+                || (function (o) { let f = null; (function w(x) { if (f || !x || typeof x !== 'object') return; for (const k in x) { const v = x[k]; if (f) return; if (v && typeof v === 'object') w(v); else if ((typeof v === 'string' || typeof v === 'number') && String(v).length >= 6 && /reserv|tran|trx|transaction|booking/i.test(k)) f = String(v); } })(o); return f; })(body)
+                || null;
+            sessionState.reservationId = _rid; sessionState.reserveTtlSec = rd.reserveTtlSeconds || null; sessionState.reserveStatus = rd.status || null; sessionState.abcDate = rd.appointmentDate || appointmentDate || null; sessionState.reservedAt = Date.now(); persistSession();
+                        // Auto-extract: fill reserve ID in Upload tran ID placeholder
+        try { const trxInp = document.getElementById('ivac-invoice-trxid'); if (trxInp && _rid) { trxInp.value = _rid; logStatus(`✅ Reserve ID auto-filled in tran ID field`, 'g'); } else if (trxInp && !_rid) { logStatus(`⚠ Reserved but no reservation-id in response — check field name`, 'y'); } } catch(e) {}
+            logStatus(`✅ Reserved (${rd.status||'OK'}) • ${rd.appointmentDate||appointmentDate||''} • TTL ${rd.reserveTtlSeconds||'?'}s`, 'g');
+            showMilestonePopup('Reserve Booked', 'Slot reserved!', '🎯'); try { announceSuccess('Slot reserved successfully'); } catch(e) {}
+        } return { win: reserved, data: body };
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message }); return { win: false, cancelled: err.name === 'AbortError' }; } finally { try { signal?.removeEventListener('abort', onParentAbort); } catch(e) {} try { unregisterTokenInFlight(captchaToken, localAc); } catch(e) {} }
+}
+
+// ==================== ✅ FIXED BOOK STEP WITH SMART SKIP ====================
+async function stepBook(signal) {
+    // 🚧 GATE: If the auto-upload chain is running (Auto+Single), get-booking-config must NOT fire until
+    // the whole upload flow (Patient → Attendants → Overview match → Confirm Center) is complete.
+    // We WAIT here (not return-and-retry) so we don't spam the endpoint. Bounded ~180s safety cap.
+    try {
+        if (typeof autoUploadPending !== 'undefined' && autoUploadPending) {
+            logStatus('⏳ Book waiting — file upload not finished yet…', 'y');
+            const _deadline = Date.now() + 180000;
+            while (autoUploadPending && !sessionState.appointmentId && Date.now() < _deadline) {
+                if (stopFlag && stopFlag.value) return { win: false, cancelled: true };
+                await new Promise(res => setTimeout(res, 500));
+            }
+            if (autoUploadConfirmed) logStatus('✅ Upload complete → running get-booking-config once', 'g');
+        }
+    } catch (e) {}
+
+    // 🔍 STEP 1: Check Profile Manager for saved appointmentId
+    try {
+        const savedApptId = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, '');
+        if (savedApptId && savedApptId.length >= 10) {
+            sessionState.appointmentId = savedApptId;
+            sessionState.bookedAt = Date.now();
+            persistSession();
+            logStatus(`⏭ Book skipped — saved appointmentId: ${savedApptId}`, 'g');
+            try { announceSuccess('Booking ready'); } catch(e) {}
+            return { win: true, skipped: true, fromProfile: true };
+        }
+    } catch(e) {}
+
+    // 🔍 STEP 2: Check Session State for appointmentId (within 5 min)
+    if (!_forceStep) {
+        if (isStepAlreadyDone('book')) {
+            logStatus(`⏭ Book already done — using session appointmentId`, 'g');
+            return { win: true, skipped: true };
+        }
+    }
+
+    // ❌ STEP 3: No appointmentId found - API Call
+    if (!sessionState.accessToken) {
+        if (_forceStep) logStatus('⚠ No session', 'y');
+        else { logStatus('❌ No session', 'r'); return { win: false }; }
+    }
+
+    if (raceCoord.hasWon('book')) {
+        logStatus(`⏭ Book race already won — bailing`, 'y');
+        return { win: false, cancelled: true };
+    }
+
+    const logId = netLogAdd({ method: 'GET', url: API_BOOK, tag: 'book', state: 'pending' });
+    try {
+        const r = await H2.fetchH2(API_BOOK, {
+            method: 'GET', signal,
+            headers: {
+                'accept': 'application/json, text/plain, */*',
+                'authorization': `Bearer ${sessionState.accessToken}`,
+                'cache-control': 'no-cache, no-store, must-revalidate',
+                'pragma': 'no-cache'
+            },
+            referrer: API_REFERRER,
+            body: null
+        });
+
+        let body = null;
+        try { body = await r.json(); } catch(e) { body = null; }
+
+        const ok = r.ok && body && (body.successFlag === true || body.message === 'Success' || body.statusCode === 200);
+        netLogUpdate(logId, {
+            status: r.status,
+            state: ok ? 'ok' : 'fail',
+            note: ok ? `appointmentId ${body.data?.appointmentId?.slice(0,8)||'?'}` : (body?.message || `HTTP ${r.status}`)
+        });
+
+        if (ok && body.data) {
+            raceCoord.declareWin('book', { win: true, data: body });
+
+            // ✅ Save to Session State
+            sessionState.appointmentId = body.data.appointmentId || sessionState.appointmentId;
+            // appointmentDate is now an array of available dates → fill the reserve date picker (auto-first)
+            { const ad = body.data.appointmentDate; if (Array.isArray(ad) && ad.length) { populateReserveDates(ad); } else if (ad) { sessionState.abcDate = ad; } }
+            sessionState.abcSlot = body.data.appointmentSlot || null;
+            sessionState.ivacCenter = body.data.ivacCenter || null;
+            sessionState.mission = body.data.mission || null;
+            sessionState.numberOfApplicants = body.data.numberOfApplicants || null;
+            sessionState.totalAmount = body.data.totalAmount || null;
+            sessionState.fileUploadStatus = body.data.fileUploadStatus || null;
+            sessionState.visaCodes = body.data.visaCodes || null;
+            sessionState.bookedAt = Date.now();
+            persistSession();
+
+            // ✅ Save to Profile Manager
+            try {
+                if (body.data.appointmentId && profiles[activeProfileName]) {
+                    profiles[activeProfileName].appointmentId = body.data.appointmentId;
+                    persistProfiles();
+                    if (pmAppointmentId) pmAppointmentId.value = body.data.appointmentId;
+                }
+            } catch(e) {}
+
+            logStatus(`✅ Booked: ${body.data.ivacCenter||''} ${body.data.appointmentSlot||''} • ৳${body.data.totalAmount||'?'}`, 'g');
+            showMilestonePopup('Booked', 'Appointment ID: ' + (body.data.appointmentId || ''), '📋'); try { announceSuccess('Booking successful'); } catch(e) {}
+            return { win: true, data: body };
+        }
+        return { win: false, data: body };
+    } catch (err) {
+        if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' });
+        else netLogUpdate(logId, { state: 'fail', status: 'err', note: err.message });
+        return { win: false, cancelled: err.name === 'AbortError' };
+    }
+}
+
+async function stepInitiate(signal) {
+    if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
+    let appointmentId = sessionState.appointmentId; let source = 'sessionState';
+    if (!appointmentId) { try { const profApptId = profiles[activeProfileName]?.appointmentId?.trim().replace(/^["']|["']$/g, ''); if (profApptId && profApptId.length >= 10) { appointmentId = profApptId; sessionState.appointmentId = profApptId; source = `profile`; } } catch(e) {} }
+    if (!appointmentId) { logStatus('❌ No appointmentId', 'r'); return { win: false }; }
+    if (raceCoord.hasWon('initiate')) { logStatus(`⏭ Initiate race already won — bailing`, 'y'); return { win: false, cancelled: true }; }
+    logStatus(`💳 Initiate: ${appointmentId.slice(0,8)}…`, 'y');
+    let initiateToken; try { initiateToken = await getCaptchaTokenSmart(); } catch(e) { logStatus(`❌ Initiate captcha: ${e.message}`, 'r'); return { win: false }; }
+    const initiateUrl = getInitiateUrl();
+    const logId = netLogAdd({ method: 'POST', url: initiateUrl, tag: 'initiate', state: 'pending' });
+    try {
+        const initiateXToken = initiateToken;
+        const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
+        const initHeaders = useNative
+            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateXToken }
+            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateXToken };
+        const r = await H2.fetchH2Critical(initiateUrl, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
+        const ct = r.headers.get('content-type') || '';
+        const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
+        const isSuccess = r.ok || body?.statusCode === 201 || body?.successFlag === true;
+        netLogUpdate(logId, { status: r.status, state: isSuccess ? 'ok' : 'fail' });
+        if (isSuccess) {
+            raceCoord.declareWin('initiate', { win: true, data: body });
+            const url = extractPaymentUrl(body) || body?.data?.webview_url || body?.data?.url || body?.data?.paymentUrl || body?.data?.redirectUrl;
+            if (url) { logStatus('✅ Payment URL received!', 'g'); try { beepInitiateAndSpeak(); } catch(e) {} showPaymentPopup(url, sessionState.phone || appointmentId.slice(0, 8)); stopFlag.value = true; return { win: true, data: body }; }
+            logStatus(`⚠ Initiate succeeded but no payment URL`, 'y'); return { win: false, data: body };
+        }
+        return { win: false };
+    } catch (err) { if (err.name === 'AbortError') netLogUpdate(logId, { state: 'cancel', status: '⊘' }); else netLogUpdate(logId, { state: 'fail', status: 'err' }); return { win: false, cancelled: err.name === 'AbortError' }; }
+}
+
+const STEP_FACTORY = { signin: stepSignin, verify: stepVerify, reserve: stepReserve, book: stepBook, initiate: stepInitiate };
+
+async function manualStepClick(stepName) {
+    const stepFn = STEP_FACTORY[stepName]; if (!stepFn) return;
+    if (pipelineRunning) { stopFlag.value = true; pipelineRunning = false; pipelineConcurrentCount = 0; raceCoord.resetAll(); logStatus('⏸ Auto pipeline paused — manual override', 'y'); await new Promise(r => setTimeout(r, 150)); }
+    _forceStep = true; stopFlag.value = false;
+    try {
+        const result = await runStepSmart(stepName, stepFn);
+        if (result.win && isAutoOn()) { const nextIdx = STEP_ORDER.indexOf(stepName) + 1; if (nextIdx < STEP_ORDER.length) { logStatus(`▶ Auto → ${STEP_ORDER[nextIdx]}`, 'g'); await manualStepClick(STEP_ORDER[nextIdx]); } }
+    } catch(e) { logStatus(`❌ ${stepName} error: ${e.message}`, 'r'); } finally { _forceStep = false; }
+}
+
+document.getElementById('bsi')?.addEventListener('click', () => manualStepClick('signin'));
+document.getElementById('bve')?.addEventListener('click', () => manualStepClick('verify'));
+document.getElementById('brs')?.addEventListener('click', () => manualStepClick('reserve'));
+document.getElementById('bbk')?.addEventListener('click', () => manualStepClick('book'));
+document.getElementById('bin')?.addEventListener('click', () => manualStepClick('initiate'));
+document.getElementById('ivac-btn-load-dates')?.addEventListener('click', () => loadReserveDates());
+(function initReserveSlotIdBox() {
+    const inp = document.getElementById('ivac-reserve-slot-id'); if (!inp) return;
+    try { inp.value = _cleanUuid(localStorage.getItem(RESERVE_SLOT_ID_KEY) || '') || RESERVE_SLOT_ID_FIXED; } catch(e) { inp.value = RESERVE_SLOT_ID_FIXED; }
+    inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { saveReserveSlotId(v); logStatus(`🆔 Reserve Slot ID saved: ${v.slice(0,8)}…`, 'g'); } });
+})();
+(function initPaymentMethodIdBox() {
+    const inp = document.getElementById('ivac-payment-method-id'); if (!inp) return;
+    try { inp.value = _cleanUuid(localStorage.getItem(PAYMENT_METHOD_ID_KEY) || '') || RJ_DYN.payId || PAYMENT_METHOD_ID; } catch(e) { inp.value = PAYMENT_METHOD_ID; }
+    inp.addEventListener('change', () => { const v = _cleanUuid(inp.value); inp.value = v; if (v) { savePaymentMethodId(v); logStatus(`🆔 dg-epay Payment ID saved: ${v.slice(0,8)}…`, 'g'); } });
+})();
+document.getElementById('ivac-reserve-date')?.addEventListener('change', (e) => { if (e.target.value) { sessionState.abcDate = e.target.value; logStatus(`📅 Reserve date: ${_fmtDateDisplay(e.target.value)}`, 'g'); } });
+
+// ==================== PIPELINE STARTER + SCHEDULER ====================
+const schedules = { advance: { timerId: null, targetMs: null, countdownId: null }, signin: { timerId: null, targetMs: null, countdownId: null } };
+function parseScheduleTime(str) { if (!str) return null; const m = String(str).trim().match(/^(\d{1,2}):(\d{2}):(\d{2}):(\d{3})\s*(AM|PM)$/i); if (!m) return null; let h = parseInt(m[1], 10); const mi = parseInt(m[2], 10); const s = parseInt(m[3], 10); const ms = parseInt(m[4], 10); const ap = m[5].toUpperCase(); if (ap === 'PM' && h !== 12) h += 12; if (ap === 'AM' && h === 12) h = 0; const target = new Date(); target.setHours(h, mi, s, ms); if (target.getTime() < Date.now()) target.setDate(target.getDate() + 1); return target; }
+function fmtCountdown(ms) { if (ms <= 0) return '00:00:00.000'; const totalSec = Math.floor(ms / 1000); const h = Math.floor(totalSec / 3600); const m = Math.floor((totalSec % 3600) / 60); const s = totalSec % 60; const milli = ms % 1000; return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(milli).padStart(3,'0')}`; }
+function cancelSchedule(key) { const s = schedules[key]; if (!s) return; if (s.timerId) { clearTimeout(s.timerId); s.timerId = null; } if (s.countdownId) { clearInterval(s.countdownId); s.countdownId = null; } s.targetMs = null; }
+function cancelAllSchedules() { cancelSchedule('advance'); cancelSchedule('signin'); }
+function scheduleButton(key, label, fireAction) { const inputId = key === 'advance' ? 'sched-advance' : 'sched-signin'; const inp = document.getElementById(inputId); const timeStr = inp?.value?.trim(); const target = parseScheduleTime(timeStr); if (!target) { logStatus(`❌ Invalid ${label} time`, 'r'); return false; } cancelSchedule(key); const s = schedules[key]; s.targetMs = target.getTime(); const delayMs = s.targetMs - Date.now(); logStatus(`⏰ ${label} scheduled for ${timeStr}`, 'y'); s.countdownId = setInterval(() => { const remain = s.targetMs - Date.now(); if (remain <= 0) { clearInterval(s.countdownId); s.countdownId = null; return; } logStatus(`⏰ ${label} in ${fmtCountdown(remain)}`, 'y'); }, 100); s.timerId = setTimeout(() => { s.timerId = null; if (s.countdownId) { clearInterval(s.countdownId); s.countdownId = null; } s.targetMs = null; logStatus(`🚀 ${label} FIRING NOW!`, 'g'); try { fireAction(); } catch(e) {} }, delayMs); return true; }
+
+let pipelineRunning = false; let pipelineConcurrentCount = 0;
+async function startPipelineFrom(startStep) {
+    if (!STEP_FACTORY[startStep]) { logStatus(`❌ Unknown step: ${startStep}`, 'r'); return; }
+    pipelineConcurrentCount++; pipelineRunning = true;
+    if (pipelineConcurrentCount === 1) { stopFlag.value = false; raceCoord.resetAll(); resetAllStepStatus(); }
+    try {
+        const startIdx = STEP_ORDER.indexOf(startStep); const auto = isAutoOn(); const endIdx = auto ? STEP_ORDER.length - 1 : startIdx;
+        for (let i = startIdx; i <= endIdx && !stopFlag.value; i++) { const step = STEP_ORDER[i]; logStatus(`▶ Step ${i+1}/${endIdx+1}: ${step}`, 'y'); const result = await runStepSmart(step, STEP_FACTORY[step]); if (!result.win) { if (!stopFlag.value) logStatus(`⏹ Stopped at ${step}`, 'r'); break; } }
+    } finally { pipelineConcurrentCount = Math.max(0, pipelineConcurrentCount - 1); if (pipelineConcurrentCount === 0) { pipelineRunning = false; _forceStep = false; } }
+}
+
+(() => {
+    const bsgn = document.getElementById('bsgn');
+    if (bsgn) { const fresh = bsgn.cloneNode(true); bsgn.parentNode.replaceChild(fresh, bsgn);
+        fresh.addEventListener('click', () => {
+            if (schedules.signin.timerId) { cancelSchedule('signin'); logStatus('⏰ Signin schedule cancelled', 'y'); return; }
+            const timeStr = document.getElementById('sched-signin')?.value?.trim();
+            if (timeStr && timeStr.length > 0) { scheduleButton('signin', 'Signin', () => { if (pipelineRunning) return; startPipelineFrom('signin'); }); }
+            else { if (pipelineRunning) { logStatus('⚠ Pipeline already running', 'y'); return; } logStatus('🚀 Signin pipeline starting…', 'g'); startPipelineFrom('signin'); }
+        });
+    }
+    const badv = document.getElementById('badv');
+    if (badv) { const fresh = badv.cloneNode(true); badv.parentNode.replaceChild(fresh, badv);
+        fresh.addEventListener('click', () => {
+            if (schedules.advance.timerId) { cancelSchedule('advance'); logStatus('⏰ Advance schedule cancelled', 'y'); return; }
+            const timeStr = document.getElementById('sched-advance')?.value?.trim();
+            if (timeStr && timeStr.length > 0) { scheduleButton('advance', 'Advance', () => { document.getElementById('badv-phone')?.click(); }); }
+            else { document.getElementById('badv-phone')?.click(); }
+        });
+    }
+})();
+
+(() => { const old = document.getElementById('bst'); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', () => { stopFlag.value = true; FA.stop = true; pipelineRunning = false; pipelineConcurrentCount = 0; _autoReserveKicked = false; raceCoord.resetAll(); try { cancelAllSchedules(); } catch(e) {} try { stopSmsFetcher('Stop All'); } catch(e) {} invoiceRetryActive = false; try { stopSlotDuty('Stop All'); } catch(e) {} try { if (typeof stopAutoEncScan === 'function') stopAutoEncScan(true); } catch(e) {} try { if (typeof window.__rjManualStopAll === 'function') window.__rjManualStopAll(); } catch(e) {} logStatus('🛑 ALL halted', 'r'); }); })();
+
+// ==================== FULL AUTO PIPELINE (A_E → signin → otp/verify → captcha → upload flow → confirm → book → reserve → initiate) ====================
+const FA = { running: false, stop: false };
+function faLog(m, c) { try { logStatus('🤖 ' + m, c || 'y'); } catch (e) {} }
+function faSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function faHalted() { return FA.stop || stopFlag.value; }
+function faClick(id) { try { const el = document.getElementById(id); if (el) { el.click(); return true; } } catch (e) {} return false; }
+function faTab(t) { try { const el = document.querySelector('.tb .t[data-t="' + t + '"]'); if (el) { el.click(); return true; } } catch (e) {} return false; }
+function faCaptchaOn() { try { const t = document.getElementById('captcha-toggle'); if (t && !t.classList.contains('on')) t.click(); return !!(t && t.classList.contains('on')); } catch (e) { return false; } }
+// poll a condition until true or timeout
+async function faWaitFor(cond, timeoutMs, pollMs) { const t0 = Date.now(); while (Date.now() - t0 < timeoutMs) { if (faHalted()) return false; try { if (cond()) return true; } catch (e) {} await faSleep(pollMs || 400); } return false; }
+// watch the status log for a success pattern (logStatus overwrites #ll/#ls/#lu/#lf)
+function faWaitLog(re, timeoutMs) {
+    return new Promise(res => {
+        const ids = ['ll', 'ls', 'lu', 'lf']; let done = false; const obs = [];
+        const finish = v => { if (done) return; done = true; obs.forEach(o => { try { o.disconnect(); } catch (e) {} }); clearTimeout(tm); clearInterval(iv); res(v); };
+        const check = () => { if (faHalted()) return finish(false); for (const id of ids) { const el = document.getElementById(id); if (el && re.test(el.textContent || '')) return finish(true); } };
+        ids.forEach(id => { const el = document.getElementById(id); if (!el) return; const o = new MutationObserver(check); try { o.observe(el, { childList: true, subtree: true, characterData: true }); } catch (e) {} obs.push(o); });
+        const tm = setTimeout(() => finish(false), timeoutMs); const iv = setInterval(check, 600); check();
+    });
+}
+// generic step: run `action`, then wait until `success()` (or success-log) — retry until ok or stopped
+async function faStep(name, action, success, opts) {
+    opts = opts || {}; const timeout = opts.timeout || 90000, retries = opts.retries || 9999, delay = opts.delay || 2500, optional = !!opts.optional;
+    for (let a = 1; a <= retries && !faHalted(); a++) {
+        faLog(name + (a > 1 ? ' (try ' + a + ')' : '') + '…');
+        try { await action(); } catch (e) {}
+        let ok = false; try { ok = await success(); } catch (e) {}   // success() may return a bool or a Promise<bool>
+        if (ok) { faLog('✓ ' + name, 'g'); return true; }
+        if (faHalted()) return false;
+        if (optional) { faLog('⤼ ' + name + ' skipped (optional)', 'y'); return true; }
+        faLog('✗ ' + name + ' — retry in ' + (delay / 1000) + 's', 'r');
+        await faSleep(delay);
+    }
+    return false;
+}
+async function runFullAuto() {
+    if (FA.running) { faLog('Full Auto already running', 'y'); return; }
+    FA.running = true; FA.stop = false; stopFlag.value = false;
+    try {
+        faLog('🚀 FULL AUTO started — encryption must be ready (press A_E first)', 'g');
+        // 2) Signin (reuse existing retry-engine)
+        if (!await faStep('Signin', () => runStepSmart('signin', stepSignin), () => !!sessionState.accessToken, { timeout: 150000 })) return faLog('⏹ stopped at Signin', 'r');
+        // 3) OTP send + Verify (stepVerify waits for the OTP itself; SMS fetcher auto-fills it)
+        if (!await faStep('OTP + Verify', async () => { if (!sessionState.isVerified) { faClick('botp'); await faSleep(1500); await runStepSmart('verify', stepVerify); } }, () => !!sessionState.isVerified, { timeout: 150000 })) return faLog('⏹ stopped at Verify', 'r');
+        // 4) Captcha toggle ON
+        await faStep('Captcha ON', () => faCaptchaOn(), () => { const t = document.getElementById('captcha-toggle'); return !!(t && t.classList.contains('on')); }, { timeout: 4000, retries: 3, optional: true });
+        // 5) Upload tab → File Upload Checking → Appointment
+        faTab('u'); await faSleep(600);
+        await faStep('File Upload Checking', () => faClick('ivac-btn-file-upload-checking'), () => faWaitLog(/checking|slot|status|available|✅/i, 12000), { timeout: 15000, retries: 4, optional: true });
+        // click once, then POLL for the async POST result (don't re-click every retry → no duplicate appointments)
+        if (!await faStep('Appointment', () => faClick('ivac-btn-appointment'), () => faWaitFor(() => !!(sessionState.appointmentId || ((profiles[activeProfileName] && profiles[activeProfileName].appointmentId || '').trim())), 25000), { timeout: 30000, retries: 3 })) return faLog('⏹ stopped at Appointment', 'r');
+        // 6) Uploads IN ORDER: Patient (mandatory, first) → Attendant 1 → 2 → 3.
+        //    A slot "has a file" if it's selected in the input OR saved (rjSavedUploads — survives reload).
+        //    We only upload the user's OWN saved/selected files, and count how many succeed.
+        const uploads = [
+            ['ivac-btn-file-upload',   'ivac-file-upload',   'Patient File', true],
+            ['ivac-btn-file-upload-2', 'ivac-file-upload-2', 'Attendant 1',  false],
+            ['ivac-btn-file-upload-3', 'ivac-file-upload-3', 'Attendant 2',  false],
+            ['ivac-btn-file-upload-4', 'ivac-file-upload-4', 'Attendant 3',  false]
+        ];
+        const hasSavedFile = (inp) => { try { if (document.getElementById(inp)?.files?.length > 0) return true; } catch (e) {} try { return !!(typeof rjSavedUploads !== 'undefined' && rjSavedUploads[inp]); } catch (e) { return false; } };
+        let savedCount = 0, uploadedOk = 0;
+        for (const [btn, inp, label, isPatient] of uploads) {
+            if (faHalted()) return;
+            if (!hasSavedFile(inp)) { faLog('⤼ ' + label + ' — no saved file, skipped', 'y'); continue; }
+            savedCount++;
+            // Patient is mandatory & must go first → keep retrying until it succeeds (only Stop All breaks it).
+            // Attendants → a bounded number of tries, then warn and continue.
+            const ok = await faStep('Upload ' + label, () => faClick(btn), () => faWaitLog(new RegExp(label.replace(/[^\w ]/g, '') + '.*uploaded|✅.*uploaded', 'i'), 60000), { timeout: 65000, retries: isPatient ? 100000 : 6 });
+            if (ok) uploadedOk++;
+            else if (isPatient) { if (faHalted()) return; faLog('⚠ Patient upload not confirmed — continuing', 'y'); }   // reached only via Stop All
+            else faLog('⚠ ' + label + ' upload failed — continuing', 'y');
+        }
+        // 7) VERIFY before confirming: run File Checking / overview, then require that ALL of the
+        //    user's saved files uploaded (uploadedOk === savedCount). Only then confirm center.
+        await faStep('File Check (verify uploads)', () => faClick('ivac-btn-file-checking'), () => faWaitLog(/file check|over-?view|fileuploadstatus|status|✅/i, 12000), { timeout: 14000, retries: 3, optional: true });
+        if (savedCount === 0) return faLog('⏹ No saved files to upload — Confirm Center skipped', 'r');
+        if (uploadedOk !== savedCount) return faLog('⏹ Only ' + uploadedOk + '/' + savedCount + ' saved files uploaded — Confirm Center SKIPPED (verify failed)', 'r');
+        faLog('✅ All ' + uploadedOk + '/' + savedCount + ' saved files uploaded & checked → confirming center', 'g');
+        // 8) Confirm Mission & Center — ONLY reached when every saved file uploaded
+        if (!await faStep('Confirm Center', () => faClick('ivac-btn-appointment-booking'), () => faWaitLog(/confirm|booking|✅|appointment/i, 15000), { timeout: 18000, retries: 4 })) return faLog('⏹ stopped at Confirm Center', 'r');
+        // 9) Login tab
+        faTab('l'); await faSleep(600);
+        // 10) Book
+        if (!await faStep('Book', () => runStepSmart('book', stepBook), () => !!sessionState.appointmentId, { timeout: 90000 })) return faLog('⏹ stopped at Book', 'r');
+        // 11) Reserve
+        if (!await faStep('Reserve', () => runStepSmart('reserve', stepReserve), () => !!sessionState.reservationId, { timeout: 120000 })) return faLog('⏹ stopped at Reserve', 'r');
+        // 12) Initiate
+        await faStep('Initiate', () => runStepSmart('initiate', stepInitiate), () => faWaitLog(/initiat|payment|webview|✅/i, 30000), { timeout: 90000, retries: 6 });
+        faLog('🎉 FULL AUTO finished', 'g');
+    } catch (e) { faLog('Full Auto error: ' + e.message, 'r'); }
+    finally { FA.running = false; }
+}
+// inject the FULL AUTO button into the SAME footer row (short label so all fit on one line)
+(function injectFullAutoBtn() {
+    try {
+        const footer = document.getElementById('dyn-sync-import')?.parentNode;
+        if (!footer || document.getElementById('rj-full-auto')) return;
+        const b = document.createElement('button');
+        b.id = 'rj-full-auto'; b.textContent = '⚡AUTO';
+        b.title = 'FULL AUTO — run the whole flow. Press A_E first (encryption). Stop All to halt.';
+        b.style.cssText = 'flex:1;padding:3px 0!important;font-size:.58rem!important;border-radius:4px!important;background:linear-gradient(135deg,#7c3aed,#4f46e5);border:1px solid #a78bfa;color:#fff;font-weight:800;cursor:pointer';
+        b.addEventListener('click', () => { if (FA.running) { faLog('already running — use Stop All to halt', 'y'); return; } runFullAuto(); });
+        footer.appendChild(b);
+    } catch (e) {}
+})();
+
+(() => { ['btn-single', 'btn-auto'].forEach(id => { const old = document.getElementById(id); if (!old) return; const fresh = old.cloneNode(true); old.parentNode.replaceChild(fresh, old); fresh.addEventListener('click', function() { if (this.classList.contains('b8')) { this.classList.remove('b8'); this.classList.add('b5'); } else { this.classList.remove('b5'); this.classList.add('b8'); } }); }); })();
+
+// ==================== PAYMENT POPUP ====================
+function showPaymentPopup(paymentUrl, identifier) {
+    const existing = document.getElementById('rj-payment-overlay'); if (existing) existing.remove();
+    const overlay = document.createElement('div'); overlay.id = 'rj-payment-overlay'; overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:999999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);font-family:'Segoe UI',system-ui,sans-serif;`;
+    const card = document.createElement('div'); card.style.cssText = `width:380px;background:#1a1a2e;border-radius:14px;box-shadow:0 25px 60px rgba(0,0,0,.85),0 0 0 1px rgba(124,58,237,.3);overflow:hidden;`;
+    card.innerHTML = `<div style="padding:12px 18px 8px;display:flex;justify-content:space-between;align-items:center"><div style="color:#fff;font-size:17px;font-weight:800">Proceed to SecurePay</div><button id="rj-pay-x" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer">×</button></div><div style="padding:6px 22px 14px"><div style="color:#d0d0e6;font-size:12px;margin-bottom:12px">Payment link opened in new tab.<a href="${paymentUrl}" target="_blank" style="color:#4ade80;text-decoration:none;font-family:Consolas,monospace;font-size:11px;word-break:break-all;display:block;margin-top:6px">${paymentUrl}</a></div></div><div style="padding:0 22px 18px;display:flex;gap:8px"><button id="rj-pay-visa" style="flex:1;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;padding:11px 0;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">VISA CARD</button><button id="rj-pay-copy" style="flex:1;background:linear-gradient(135deg,#facc15,#eab308);border:none;color:#000;padding:11px 0;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Copy Link</button><button id="rj-pay-close" style="flex:1;background:linear-gradient(135deg,#9ca3af,#6b7280);border:none;color:#fff;padding:11px 0;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Close</button></div>`;
+    overlay.appendChild(card); document.body.appendChild(overlay); try { window.open(paymentUrl, '_blank'); } catch(e) {}
+    document.getElementById('rj-pay-x').onclick = () => overlay.remove(); document.getElementById('rj-pay-close').onclick = () => overlay.remove();
+    document.getElementById('rj-pay-visa').onclick = () => { try { window.open(paymentUrl, '_blank'); } catch(e) {} };
+    document.getElementById('rj-pay-copy').onclick = function() { navigator.clipboard.writeText(paymentUrl).then(() => { this.textContent = '✓ Copied!'; setTimeout(() => { this.textContent = 'Copy Link'; }, 1500); }).catch(() => { const ta = document.createElement('textarea'); ta.value = paymentUrl; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); this.textContent = '✓ Copied!'; setTimeout(() => { this.textContent = 'Copy Link'; }, 1500); }); };
+}
+
+// ==================== LOGOUT ====================
+document.getElementById('blo')?.addEventListener('click', () => {
+    raceCoord.resetAll();
+    try { if (typeof smsFetcher !== 'undefined') { smsFetcher.usedOtps.clear(); stopSmsFetcher('logout'); } } catch(e) {}
+    clearAllSession();
+    try { stopOtpTimer('signinOtp'); stopOtpTimer('advanceOtp'); } catch(e) {}
+    try { if (timers.token.intervalId) clearInterval(timers.token.intervalId); timers.token.intervalId = null; timers.token.expiresAt = null; timers.token.beeped = false; refreshTokenCdUI(); } catch(e) {}
+    document.getElementById('login-otp').value = '';
+    logStatus('🔓 Logged out', 'y');
+});
+
+function parseFetchInput(raw) {
+    raw = (raw || '').trim();
+    if (/^fetch\s*\(/.test(raw)) {
+        const urlM = raw.match(/fetch\s*\(\s*(["'`])([\s\S]*?)\1/);
+        const url = urlM ? urlM[2] : null;
+        let opts = {};
+        const braceStart = raw.indexOf('{', urlM ? urlM.index + urlM[0].length : 0);
+        if (braceStart !== -1) {
+            let depth = 0, end = -1, q = null;
+            for (let i = braceStart; i < raw.length; i++) {
+                const ch = raw[i];
+                if (q) { if (ch === '\\') { i++; continue; } if (ch === q) q = null; continue; }
+                if (ch === '"' || ch === "'" || ch === '`') q = ch;
+                else if (ch === '{') depth++;
+                else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
+            }
+            if (end !== -1) { try { opts = JSON.parse(raw.slice(braceStart, end + 1)); } catch(e) { opts = {}; } }
+        }
+        return { url, method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body ?? null };
+    }
+    const c = JSON.parse(raw);
+    return { url: c.url, method: c.method || 'GET', headers: c.headers || {}, body: c.body ?? null };
+}
+
+const _fetchLoop = { running: false, timer: null, config: null, count: 0 };
+function _setFetchLoopBtn(running) {
+    const btn = document.getElementById('ivac-btn-fetch-send');
+    if (!btn) return;
+    btn.textContent = running ? '⏹ Stop' : '▶ Start';
+    btn.classList.toggle('b8', running);   // red while running
+    btn.classList.toggle('b5', !running);  // green while idle
+}
+function stopFetchLoop(reason) {
+    if (_fetchLoop.timer) { clearInterval(_fetchLoop.timer); _fetchLoop.timer = null; }
+    _fetchLoop.running = false;
+    _setFetchLoopBtn(false);
+    if (reason) logStatus(`⏹ Fetch loop stopped (${reason})`, 'y');
+}
+function _fetchLoopFire() {
+    if (!_fetchLoop.running) return;
+    const c = _fetchLoop.config;
+    const n = ++_fetchLoop.count;
+    let body = c.body; if (body && typeof body === 'object') body = JSON.stringify(body);
+    const useGM = document.getElementById('ivac-fetch-gm-toggle')?.classList.contains('on') !== false;
+    H2.fetchH2(c.url, { method: c.method, headers: c.headers, body, forceGM: useGM })
+        .then(async r => {
+            const text = await r.text();
+            let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
+            console.log(`%c[RJ Fetch Loop #${n}] ${c.method} ${r.status}`, 'color:#4ade80;font-weight:700', pretty.slice(0, 1500));
+            logStatus(`📡 #${n} ${c.method} ${r.status} ${r.statusText}`, r.ok ? 'g' : 'y');
+        })
+        .catch(err => {
+            console.log(`%c[RJ Fetch Loop #${n}] error: ${err.message}`, 'color:#fca5a5;font-weight:700');
+            logStatus(`❌ #${n} Fetch error: ${err.message}`, 'r');
+        });
+}
+document.getElementById('ivac-btn-fetch-send')?.addEventListener('click', () => {
+    if (_fetchLoop.running) { stopFetchLoop('manual'); return; }
+    let config;
+    try { config = parseFetchInput(document.getElementById('ivac-fetch-input')?.value || ''); }
+    catch(e) { logStatus('❌ Invalid input — paste a fetch(...) snippet or {url,method,headers,body} JSON', 'r'); return; }
+    if (!config.url) { logStatus('❌ Missing url in request', 'r'); return; }
+    _fetchLoop.config = config;
+    _fetchLoop.count = 0;
+    _fetchLoop.running = true;
+    _setFetchLoopBtn(true);
+    const delay = Math.max(0, +document.getElementById('ivac-fetch-delay')?.value || 1000);
+    logStatus(`▶ Fetch loop started — ${config.method} every ${delay}ms (fire-and-forget)`, 'g');
+    _fetchLoopFire();                                        // prothom ta sathe sathe
+    _fetchLoop.timer = setInterval(_fetchLoopFire, delay);   // response er opekkha na kore
+});
+
+// ==================== FIX UI POSITION ====================
+setTimeout(() => { if (panel) { panel.style.transform = 'translateY(-50%)'; panel.style.top = '50%'; panel.style.right = '20px'; } }, 100);
+
+// ==================== SESSION RESTORE ====================
+setTimeout(() => { try { const restored = restoreSession(); if (restored) { const ageMin = Math.floor((Date.now() - sessionState.loggedInAt) / 60000); const ageSec = Math.floor(((Date.now() - sessionState.loggedInAt) % 60000) / 1000); const status = sessionState.isVerified ? 'verified' : 'unverified (need OTP)'; const h2Status = H2.getStats().h2Confirmed ? 'H/2 ✅' : 'H/2 ⏳'; logStatus(`🔓 Session restored • ${status} • ${ageMin}m ${ageSec}s old • ${h2Status}`, 'g'); if (sessionState.phone) { const phoneInp = document.getElementById('login-phone'); if (phoneInp && !phoneInp.value) phoneInp.value = sessionState.phone; } } } catch(e) {} }, 600);
+
+(function manualPanelModule() {
+    const mpStop = { value: false };
+    function manualStopAllImpl() { mpStop.value = true; }
+    window.__rjManualStopAll = manualStopAllImpl;
+
+    const mpCss = `
+    #ivac-manual-dom-modal{position:fixed;top:148.5px;left:131px;width:265px;background:rgb(26,26,26);border:1px solid rgb(51,51,51);border-radius:10px;box-shadow:rgba(0,0,0,0.4) 0px 20px 40px;z-index:2147483646;font-family:Inter,-apple-system,sans-serif;display:flex;flex-direction:column}
+    #ivac-manual-dom-modal.mp-hidden{display:none !important}
+    #ivac-manual-fab{position:fixed;bottom:22px;left:86px;width:54px;height:54px;background:linear-gradient(135deg,#667eea,#5a67d8);border-radius:50%;color:#fff;font-size:1.1rem;font-weight:900;z-index:2147483647;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(102,126,234,.55),inset 0 2px 0 rgba(255,255,255,.25);cursor:pointer;border:2px solid rgba(255,255,255,.15);font-family:'Segoe UI',sans-serif}
+    #ivac-manual-fab.mp-hidden{display:none !important}
+    .ivac-manual-fetch-checkbox{display:none}
+    .ivac-manual-fetch-slider{position:relative;display:inline-block;width:30px;height:16px;background-color:#555;border-radius:16px;transition:.4s;cursor:pointer;vertical-align:middle}
+    .ivac-manual-fetch-slider:before{position:absolute;content:"";height:12px;width:12px;left:2px;bottom:2px;background-color:white;border-radius:50%;transition:.4s}
+    .ivac-manual-fetch-checkbox:checked + .ivac-manual-fetch-slider{background-color:#0891b2}
+    .ivac-manual-fetch-checkbox:checked + .ivac-manual-fetch-slider:before{transform:translateX(14px)}
+    #ivac-manual-dom-modal .mp-on{background:#059669 !important;box-shadow:0 0 8px rgba(16,185,129,.6) !important}
+    `;
+    const mpStyle = document.createElement('style'); mpStyle.textContent = mpCss; document.head.appendChild(mpStyle);
+
+    const mpHtml = `
+    <div id="ivac-manual-fab">M</div>
+    <div id="ivac-manual-dom-modal" class="mp-hidden" data-ivac-manual-modal="true">
+        <div id="mp-header" style="padding:8px 10px;cursor:move;background:rgb(102,126,234);color:white;border-radius:10px 10px 0 0;display:flex;justify-content:space-between;align-items:center;user-select:none;">
+            <div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:800;"><span style="font-size:15px;">🖐</span><span>Manual</span></div>
+            <div style="display:flex;gap:4px;">
+              <button type="button" id="mp-min" style="width:24px;height:24px;border:none;border-radius:6px;background:rgba(255,255,255,0.15);color:#fff;cursor:pointer;font-size:14px;line-height:1;">−</button>
+              <button type="button" id="mp-close" style="width:24px;height:24px;border:none;border-radius:6px;background:rgba(255,255,255,0.15);color:#fff;cursor:pointer;font-size:12px;line-height:1;">✖</button>
+            </div>
+        </div>
+        <div style="padding:8px;background:rgb(26,26,26);">
+            <div style="background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:6px;">
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <select id="mp-profile-select" title="Select profile" style="flex:1;min-width:0;padding:7px 8px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;min-height:28px;"><option value="">Profile</option></select>
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <button type="button" id="mp-btn-number-password" title="Fill phone+password from selected profile" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#7f1d1d;">Number Password</button>
+                    <button type="button" id="mp-signin-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#0891b2;">Signin</button>
+                    <label title="ON: API fetch. OFF: DOM click Sign In Now." style="display:flex;align-items:center;flex-shrink:0;"><span class="ivac-manual-fetch-toggle"><input type="checkbox" id="mp-signin-fetch-toggle" class="ivac-manual-fetch-checkbox"><span class="ivac-manual-fetch-slider"></span></span></label>
+                    <input type="number" id="mp-signin-sec" min="0.1" max="60" step="0.1" value="1" placeholder="Sec" title="Signin retry delay (sec)" style="width:36px;min-width:36px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <button type="button" id="mp-get-otp-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#c026d3;">Get Signin OTP</button>
+                    <button type="button" id="mp-verify-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#d97706;">Verify</button>
+                    <label title="ON: API fetch. OFF: DOM click Verify OTP." style="display:flex;align-items:center;flex-shrink:0;"><span class="ivac-manual-fetch-toggle"><input type="checkbox" id="mp-verify-fetch-toggle" class="ivac-manual-fetch-checkbox"><span class="ivac-manual-fetch-slider"></span></span></label>
+                    <input type="number" id="mp-verify-sec" min="0.1" max="60" step="0.1" value="1" placeholder="Sec" title="Verify retry delay (sec)" style="width:36px;min-width:36px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <input type="text" id="mp-otp-input" maxlength="6" inputmode="numeric" placeholder="OTP" title="Manual OTP input (6 digits)" style="flex:1;min-width:0;padding:7px 8px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;min-height:28px;">
+                    <button type="button" id="mp-date-page-btn" style="min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;flex:0 0 84px;background:#2563eb;">Date Page</button>
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <button type="button" id="mp-reserve-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#0d9488;">Reserveslot</button>
+                    <label title="ON: API fetch. OFF: DOM click Continue Booking." style="display:flex;align-items:center;flex-shrink:0;"><span class="ivac-manual-fetch-toggle"><input type="checkbox" id="mp-reserve-fetch-toggle" class="ivac-manual-fetch-checkbox"><span class="ivac-manual-fetch-slider"></span></span></label>
+                    <input type="number" id="mp-reserve-sec" min="0.1" max="60" step="0.1" value="1" placeholder="Sec" title="Reserve retry delay (sec)" style="width:36px;min-width:36px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <button type="button" id="mp-book-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#059669;">Book</button>
+                    <input type="number" id="mp-book-sec" min="0.1" max="60" step="0.1" value="1" placeholder="Sec" title="Book retry delay (sec)" style="width:36px;min-width:36px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:5px;align-items:center;">
+                    <button type="button" id="mp-initiate-btn" style="flex:1;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#7c3aed;">Initiate</button>
+                    <input type="number" id="mp-initiate-sec" min="0.1" max="60" step="0.1" value="1" placeholder="Sec" title="Initiate retry delay (sec)" style="width:36px;min-width:36px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                </div>
+                <div style="display:flex;gap:4px;margin-bottom:0;align-items:center;">
+                    <button type="button" id="mp-btn-single" title="Single: retry on failure (mirrors main Single)" style="flex:1 1 0%;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#b91c1c;">Single</button>
+                    <input type="number" id="mp-auto-delay-sec" min="1" max="999" value="1" placeholder="Sec" title="Auto delay between steps" style="width:42px;min-width:42px;padding:6px 3px;border:1px solid #555;border-radius:4px;font-size:10px;background:#333;color:#fff;box-sizing:border-box;text-align:center;">
+                    <button type="button" id="mp-btn-auto" title="Auto: chain to next step after success (mirrors main Auto)" style="flex:1 1 0%;min-width:0;padding:7px 8px;font-size:10px;border-radius:4px;border:none;cursor:pointer;color:#fff;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px;background:#b91c1c;">Auto</button>
+                </div>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', mpHtml);
+
+    const modal = document.getElementById('ivac-manual-dom-modal');
+    const mpFab = document.getElementById('ivac-manual-fab');
+
+    function mpMinimize() { modal.classList.add('mp-hidden'); mpFab.classList.remove('mp-hidden'); }
+    function mpMaximize() { modal.classList.remove('mp-hidden'); mpFab.classList.add('mp-hidden'); }
+    document.getElementById('mp-min')?.addEventListener('click', mpMinimize);
+    document.getElementById('mp-close')?.addEventListener('click', () => { modal.classList.add('mp-hidden'); mpFab.classList.remove('mp-hidden'); });
+    mpFab.addEventListener('click', mpMaximize);
+
+    try { makeDraggable(document.getElementById('mp-header'), modal); } catch(e) {}
+
+    function refreshManualProfileSelectImpl() {
+        const sel = document.getElementById('mp-profile-select'); if (!sel) return;
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">Profile</option>';
+        Object.keys(profiles).forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+        sel.value = (profiles[activeProfileName] ? activeProfileName : (profiles[cur] ? cur : ''));
+    }
+    function syncManualProfileSelectImpl(name) { const sel = document.getElementById('mp-profile-select'); if (sel && profiles[name]) sel.value = name; }
+    window.__rjRefreshManualProfileSelect = refreshManualProfileSelectImpl;
+    window.__rjSyncManualProfileSelect = syncManualProfileSelectImpl;
+    refreshManualProfileSelectImpl();
+
+    document.getElementById('mp-profile-select')?.addEventListener('change', (e) => {
+        if (!e.target.value) return;
+        try { saveFormToProfile(); } catch(err) {}
+        loadProfileToForm(e.target.value);
+        try { refreshProfileSelects(); } catch(err) {}
+        logStatus(`✓ Manual profile: ${e.target.value}`, 'g');
+    });
+
+    function syncSingleAutoVisual() {
+        const s = document.getElementById('mp-btn-single'); const a = document.getElementById('mp-btn-auto');
+        if (s) s.style.background = isSingleOn() ? '#059669' : '#b91c1c';
+        if (a) a.style.background = isAutoOn() ? '#059669' : '#b91c1c';
+    }
+    function toggleRjButton(id) { const b = document.getElementById(id); if (!b) return; if (b.classList.contains('b8')) { b.classList.remove('b8'); b.classList.add('b5'); } else { b.classList.remove('b5'); b.classList.add('b8'); } }
+    document.getElementById('mp-btn-single')?.addEventListener('click', () => { toggleRjButton('btn-single'); syncSingleAutoVisual(); });
+    document.getElementById('mp-btn-auto')?.addEventListener('click', () => { toggleRjButton('btn-auto'); syncSingleAutoVisual(); });
+    setInterval(syncSingleAutoVisual, 800); syncSingleAutoVisual();
+
+    function mpSetNativeValue(el, value) {
+        try { const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; setter.call(el, value); } catch(e) { el.value = value; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function mpEnableBtn(btn) { if (!btn) return; try { btn.removeAttribute('disabled'); btn.disabled = false; btn.classList.remove('disabled', 'opacity-50', 'cursor-not-allowed', 'pointer-events-none'); btn.style.opacity = '1'; btn.style.cursor = 'pointer'; btn.style.pointerEvents = 'auto'; } catch(e) {} }
+    function mpVisibleButtons() { return Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null && !b.closest('#ivac-manual-dom-modal') && !b.closest('#p') && !b.closest('#profile-manager') && !b.closest('#rj-netlog')); }
+    function mpFindButtonByText(matchers) {
+        for (const b of mpVisibleButtons()) {
+            const txt = (b.textContent || b.innerText || '').trim().toLowerCase();
+            if (matchers.some(m => txt === m || txt.includes(m))) return b;
+        }
+        return null;
+    }
+    function mpFindSigninNow() { const b = mpFindButtonByText(['sign in now', 'signin now']); return b; }
+    function mpFindContinueBooking() { return mpFindButtonByText(['continue booking']); }
+    function mpFindVerifyBtn() { return mpFindButtonByText(['verify otp', 'verify now', 'verify']); }
+
+    function mpGetPhone() {
+        const fromSession = sessionState.phone;
+        const fromProfile = (profiles[activeProfileName]?.phone1 || '').trim();
+        const pageInp = document.querySelector('input[name="phone"], input[type="tel"], input[placeholder*="01"]');
+        const fromPage = pageInp && pageInp.value ? pageInp.value.trim() : '';
+        return fromSession || fromProfile || fromPage || (document.getElementById('login-phone')?.value || '').trim();
+    }
+
+    function mpFillOtpToPage(otp) {
+        if (!otp || otp.length !== 6) return false;
+        const allInputs = Array.from(document.querySelectorAll('input'));
+        const boxes = allInputs.filter(i => i.getAttribute('maxlength') === '1' && i.offsetParent !== null);
+        if (boxes.length >= 6) {
+            for (let i = 0; i < 6; i++) { mpSetNativeValue(boxes[i], otp[i]); if (i < 5 && boxes[i+1]) setTimeout(() => boxes[i+1].focus(), 25 * i); }
+            setTimeout(() => { try { boxes[5].blur(); boxes[5].dispatchEvent(new Event('blur', { bubbles: true })); } catch(e) {} }, 250);
+            setTimeout(() => { const vb = mpFindVerifyBtn(); mpEnableBtn(vb); }, 300);
+            return true;
+        }
+        const single = document.querySelector('input[maxlength="6"], input[placeholder*="OTP"], #login-otp');
+        if (single) { mpSetNativeValue(single, otp); single.dispatchEvent(new Event('blur', { bubbles: true })); setTimeout(() => mpEnableBtn(mpFindVerifyBtn()), 200); return true; }
+        return false;
+    }
+
+    async function mpDomClickLoop(label, finder, secInputId, postEnable) {
+        mpStop.value = false;
+        const sec = Math.max(0.1, +document.getElementById(secInputId)?.value || 1);
+        while (!mpStop.value) {
+            const btn = finder();
+            if (btn) { if (postEnable) mpEnableBtn(btn); btn.click(); logStatus(`🖐 Manual ${label}: clicked page button`, 'g'); }
+            else { logStatus(`⚠ Manual ${label}: page button not found`, 'y'); }
+            if (!isSingleOn()) break;
+            await new Promise(r => setTimeout(r, sec * 1000));
+        }
+    }
+
+    function mpSyncSec(step, secInputId, rtId) { const v = document.getElementById(secInputId)?.value; if (v != null && document.getElementById(rtId)) document.getElementById(rtId).value = v; }
+
+    document.getElementById('mp-btn-number-password')?.addEventListener('click', () => {
+        const sel = document.getElementById('mp-profile-select');
+        if (sel && sel.value && profiles[sel.value]) { try { saveFormToProfile(); } catch(e) {} loadProfileToForm(sel.value); try { refreshProfileSelects(); } catch(e) {} }
+        const prof = profiles[activeProfileName] || {};
+        const phone = (prof.phone1 || '').trim();
+        const pass = prof.mobilePass || '';
+        const lp = document.getElementById('login-phone'); const lpass = document.getElementById('login-password');
+        if (lp) lp.value = phone; if (lpass) lpass.value = pass;
+        const pagePhone = document.querySelector('input[name="phone"], input[type="tel"], input[placeholder*="01"]');
+        const pagePass = document.querySelector('input[name="password"], input[type="password"]');
+        if (pagePhone) mpSetNativeValue(pagePhone, phone);
+        if (pagePass) mpSetNativeValue(pagePass, pass);
+        setTimeout(() => mpEnableBtn(mpFindSigninNow()), 100);
+        setTimeout(() => mpEnableBtn(mpFindSigninNow()), 500);
+        setTimeout(() => mpEnableBtn(mpFindSigninNow()), 1000);
+        logStatus(`📋 Manual: filled phone+password for ${activeProfileName}`, 'g');
+    });
+
+    document.getElementById('mp-signin-btn')?.addEventListener('click', async () => {
+        const apiMode = document.getElementById('mp-signin-fetch-toggle')?.checked;
+        if (apiMode) { mpSyncSec('signin', 'mp-signin-sec', 'rt-signin'); logStatus('🔑 Manual Signin (API via queue)…', 'y'); await manualStepClick('signin'); }
+        else { logStatus('🖐 Manual Signin (DOM: Sign In Now)…', 'y'); await mpDomClickLoop('Signin', mpFindSigninNow, 'mp-signin-sec', true); }
+    });
+
+    document.getElementById('mp-get-otp-btn')?.addEventListener('click', () => {
+        const phone = mpGetPhone();
+        if (!phone) { logStatus('❌ Manual: no phone for OTP', 'r'); return; }
+        logStatus(`📱 Manual OTP fetch for ${phone}…`, 'y');
+        startSmsFetcher(phone, async (otp) => {
+            const mi = document.getElementById('mp-otp-input'); if (mi) { mi.value = otp; mi.style.background = '#1a3a1a'; setTimeout(() => mi.style.background = '#333', 1200); }
+            const li = document.getElementById('login-otp'); if (li) li.value = otp;
+            mpFillOtpToPage(otp);
+            logStatus(`📩 Manual OTP: ${otp}`, 'g');
+            return undefined;
+        }, false, true);
+    });
+
+    document.getElementById('mp-verify-btn')?.addEventListener('click', async () => {
+        const mi = (document.getElementById('mp-otp-input')?.value || '').trim();
+        if (mi) { const li = document.getElementById('login-otp'); if (li) li.value = mi; mpFillOtpToPage(mi); }
+        const apiMode = document.getElementById('mp-verify-fetch-toggle')?.checked;
+        if (apiMode) { mpSyncSec('verify', 'mp-verify-sec', 'rt-verify'); logStatus('🔓 Manual Verify (API)…', 'y'); await manualStepClick('verify'); }
+        else { logStatus('🖐 Manual Verify (DOM: Verify OTP)…', 'y'); await mpDomClickLoop('Verify', mpFindVerifyBtn, 'mp-verify-sec', true); }
+    });
+
+    document.getElementById('mp-date-page-btn')?.addEventListener('click', () => { window.open('https://appointment.ivacbd.com/appointment/time-slot', '_blank'); logStatus('🗓 Manual: opened Date (time-slot) page', 'g'); });
+
+    document.getElementById('mp-reserve-btn')?.addEventListener('click', async () => {
+        const apiMode = document.getElementById('mp-reserve-fetch-toggle')?.checked;
+        if (apiMode) { mpSyncSec('reserve', 'mp-reserve-sec', 'rt-reserve'); logStatus('🎯 Manual Reserve (API)…', 'y'); await manualStepClick('reserve'); }
+        else { logStatus('🖐 Manual Reserve (DOM: Continue Booking)…', 'y'); await mpDomClickLoop('Reserve', mpFindContinueBooking, 'mp-reserve-sec', false); }
+    });
+
+    document.getElementById('mp-book-btn')?.addEventListener('click', async () => { mpSyncSec('book', 'mp-book-sec', 'rt-book'); logStatus('📋 Manual Book (API)…', 'y'); await manualStepClick('book'); });
+
+    document.getElementById('mp-initiate-btn')?.addEventListener('click', async () => { mpSyncSec('initiate', 'mp-initiate-sec', 'rt-initiate'); logStatus('💳 Manual Initiate (API)…', 'y'); await manualStepClick('initiate'); });
+
+    function mpAutoCloseNotices() {
+        try {
+            document.querySelectorAll('button[aria-label="Close notice"], button[aria-label="Close popup"]').forEach(b => { if (b.offsetParent !== null) { b.click(); } });
+        } catch(e) {}
+    }
+    try {
+        const mo = new MutationObserver(() => mpAutoCloseNotices());
+        mo.observe(document.body, { childList: true, subtree: true });
+        setInterval(mpAutoCloseNotices, 1500);
+        mpAutoCloseNotices();
+    } catch(e) {}
+
+    logStatus('🖐 Manual Panel ready (minimized)', 'g');
+})();
+
+})();
