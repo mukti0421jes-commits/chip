@@ -1,0 +1,15 @@
+# runtime state & secrets — never commit
+**/ivacflow_token.txt
+**/portal_users.json
+**/portal_entries.json
+**/instances.json
+**/proxies.json
+**/ivacflow_config.json
+**/manual_ids.json
+**/singlehit.json
+**/cipher_mode.json
+**/config.json
+**/main.go-
+**/entry_files/
+**/invoices/
+*.exe
