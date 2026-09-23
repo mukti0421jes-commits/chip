@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.4
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.4: DYNAMIC Turnstile sitekey (IVAC uses sitekey as cipher key) — fixes signin 400 when sitekey changes; verified MODSQ v9 cipher; universal dg-epay/slot scanner
+// @version      10.5.5
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.5: FIX signin 400 — cipher-secret resolver no longer corrupts concat keys (string-literal substitution bug); real key AC6N… now resolved; Turnstile sitekey auto-captured separately
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -3805,25 +3805,38 @@ function resolveBundleConfigs(text) {
                 }
             }
         } catch (e2) {}
-        // inline local string vars used as bare args, e.g. r(1538,n) where const ...,n="Y$pG"
-        try {
-            const region = text.slice(Math.max(0, objStart - 6000), objStart);
-            const ids = [...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g) || []))];
-            for (const id of ids) {
-                const esc = id.replace(/[$]/g, '\\$');
-                if (new RegExp('\\b' + esc + '\\s*\\(').test(secretExpr)) continue; // decoder call → skip
-                const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
-                let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
-                if (best !== null) secretExpr = secretExpr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
-            }
-        } catch (e2) {}
-        let secret = R.resolveExpr(secretExpr, objStart);
+        // FIRST resolve the raw secret expression as-is. The old code eagerly substituted "local
+        // vars" but its \b-word match also hit identifiers INSIDE string-literal args (e.g. the `e`
+        // in "e[!*"), corrupting concat secrets like the real signin key and making them fail —
+        // which is why a wrong sitekey field was picked instead. Raw-first avoids that entirely.
+        const _rawSecretExpr = secretExpr;
+        let secret = R.resolveExpr(_rawSecretExpr, objStart);
+        if (!secret) {
+            // raw failed → NOW try the bare-local-var substitution (e.g. r(1538,n) where const n="Y$pG")
+            let subbed = _rawSecretExpr;
+            try {
+                const region = text.slice(Math.max(0, objStart - 6000), objStart);
+                const ids = [...new Set((subbed.match(/[A-Za-z_$][\w$]*/g) || []))];
+                for (const id of ids) {
+                    const esc = id.replace(/[$]/g, '\\$');
+                    if (new RegExp('\\b' + esc + '\\s*\\(').test(subbed)) continue; // decoder call → skip
+                    const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
+                    let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
+                    if (best !== null) subbed = subbed.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+                }
+            } catch (e2) {}
+            if (subbed !== _rawSecretExpr) secret = R.resolveExpr(subbed, objStart);
+        }
         if (!secret) {
             // static resolver failed → try execution-based decode (heavy-obfuscation bundles)
-            secret = _encDecodeSecretExec(text, secretExpr, objStart);
+            secret = _encDecodeSecretExec(text, _rawSecretExpr, objStart);
             if (secret) console.log('%c[RJ EncAuto] v' + version + ' secret decoded via EXECUTION fallback @ ' + objStart, 'color:#4ade80;font-weight:800');
         }
         if (!secret) { console.warn('[RJ EncAuto] config v' + version + ' secret decode FAILED @', objStart); continue; }
+        // Some bundles ship a decoy secret: object that actually holds the Cloudflare Turnstile
+        // SITEKEY (always starts 0x4AAAAA…), not a cipher key. Never use it as the cipher secret —
+        // it captures the widget sitekey separately (getDynSiteKey / CF_SITEKEY).
+        if (/^0x4AAAAA/i.test(secret)) { try { _rjDynSiteKey = secret; } catch (e) {} console.log('[RJ EncAuto] skipped sitekey-shaped secret @ ' + objStart + ' (captured as sitekey)'); continue; }
         const sc = encRoleScores(text, objStart);
         found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res, ini: sc.ini });
     }
