@@ -1,6 +1,18 @@
 package flow
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
+
+// envOn reports whether an env var is set to an enabling value (1/true/yes/on).
+func envOn(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 // Config is the live, scan-driven configuration the flow runs against. Everything
 // the site changes (endpoint versions, slot id, dg-epay id, encryption secrets,
@@ -47,6 +59,26 @@ type Config struct {
 	Signin   *PurposeCipher
 	Reserve  *PurposeCipher
 	Initiate *PurposeCipher
+
+	// Future-proof toggles: today upload + initiate send a RAW captcha x-token.
+	// If IVAC later requires those tokens ENCRYPTED (like signin/reserve), flip the
+	// matching flag ON and the step encrypts with the scanned cipher instead. Both
+	// default false, so current behavior is unchanged until explicitly enabled
+	// (env IVAC_ENCRYPT_UPLOAD / IVAC_ENCRYPT_INITIATE = 1).
+	EncryptUpload   bool
+	EncryptInitiate bool
+}
+
+// anyCipher returns the first available scanned cipher (all purposes share one key
+// on current IVAC bundles). Used when a step needs to encrypt but has no cipher of
+// its own (e.g. upload). Returns nil if none is set → EncryptForPurpose sends raw.
+func (c *Config) anyCipher() *PurposeCipher {
+	for _, p := range []*PurposeCipher{c.Initiate, c.Signin, c.Reserve} {
+		if p != nil && p.Key != "" {
+			return p
+		}
+	}
+	return nil
 }
 
 // PurposeCipher is one resolved cipher config (key/skip/length/version).
@@ -85,6 +117,10 @@ func NewConfig() *Config {
 		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
 		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
 		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
+		// OFF by default (current RAW behavior). Turn ON only if a future bundle
+		// requires encrypted upload/initiate tokens — no rebuild needed, just env.
+		EncryptUpload:   envOn("IVAC_ENCRYPT_UPLOAD"),
+		EncryptInitiate: envOn("IVAC_ENCRYPT_INITIATE"),
 	}
 }
 

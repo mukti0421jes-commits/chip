@@ -23,13 +23,21 @@ func StepInitiate(r *Runner) StepResult {
 	if err != nil {
 		return StepResult{}
 	}
+	// Default: RAW captcha token (initiate does NOT encrypt today). If a future
+	// bundle requires it encrypted, flip Config.EncryptInitiate ON and it is
+	// encrypted with the scanned Initiate cipher instead.
+	xtoken := token
+	if r.Config.EncryptInitiate {
+		xtoken = r.Config.EncryptForPurpose(token, r.Config.Initiate)
+		r.log("🔐 initiate token encrypted (EncryptInitiate ON)")
+	}
 	req := Request{
 		Method: "POST", URL: r.Config.InitiateURLFor(), Referrer: APIReferrer, Body: body,
 		Headers: map[string]string{
 			"accept":        "application/json, text/plain, */*",
 			"authorization": "Bearer " + r.AccessToken,
 			"content-type":  "application/json",
-			"x-token":       token, // RAW captcha token (initiate does NOT encrypt)
+			"x-token":       xtoken,
 		},
 	}
 	resp, err := r.Do(req)

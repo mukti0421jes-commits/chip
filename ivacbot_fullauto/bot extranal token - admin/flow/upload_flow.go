@@ -326,9 +326,16 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 			r.log("❌ upload captcha: " + err.Error())
 			return false, false
 		}
+		// Default: RAW captcha token → x-token. If a future bundle requires it
+		// encrypted, flip Config.EncryptUpload ON and it is encrypted with the
+		// scanned cipher (all purposes share one key) instead.
+		xtoken := token
+		if r.Config.EncryptUpload {
+			xtoken = r.Config.EncryptForPurpose(token, r.Config.anyCipher())
+		}
 		req := r.Config.BuildUpload(UploadParams{
 			AccessToken:  r.AccessToken,
-			CaptchaToken: token, // raw token → x-token
+			CaptchaToken: xtoken, // raw by default; encrypted when EncryptUpload ON
 			RuntimeState: r.Config.RuntimeState,
 			FileName:     f.Name,
 			FileType:     f.Type,
