@@ -320,16 +320,27 @@ const found=[];
       }
     }
    }
-   {const region=src.slice(Math.max(0,objStart-6000),objStart);
-    const ids=[...new Set((secretExpr.match(/[A-Za-z_$][\w$]*/g)||[]))];
-    for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
-      if(new RegExp("\\b"+esc+"\\s*\\(").test(secretExpr))continue;
-      const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
-      let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
-      if(best!==null)secretExpr=secretExpr.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}}
-   let secret=resolveExpr(secretExpr,objStart);
-   if(!secret){ secret=decodeSecretExec(secretExpr,objStart); if(secret)console.log("[info] version",version,"secret decoded via EXECUTION fallback @",objStart); }
+   // Resolve the RAW secret expression FIRST. The old code eagerly substituted "local vars", but its
+   // \b-word match also hit letters INSIDE string-literal args (e.g. the `e` in "e[!*"), corrupting
+   // concat-built keys like AC6N`}ULIz…6Q<-o… so they failed to decode and a decoy sitekey object was
+   // picked instead. Raw-first avoids that; substitution is only a fallback.
+   const _rawExpr=secretExpr;
+   let secret=resolveExpr(_rawExpr,objStart);
+   if(!secret){
+     let subbed=_rawExpr;
+     const region=src.slice(Math.max(0,objStart-6000),objStart);
+     const ids=[...new Set((subbed.match(/[A-Za-z_$][\w$]*/g)||[]))];
+     for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
+       if(new RegExp("\\b"+esc+"\\s*\\(").test(subbed))continue;
+       const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
+       let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
+       if(best!==null)subbed=subbed.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}
+     if(subbed!==_rawExpr)secret=resolveExpr(subbed,objStart);
+   }
+   if(!secret){ secret=decodeSecretExec(_rawExpr,objStart); if(secret)console.log("[info] version",version,"secret decoded via EXECUTION fallback @",objStart); }
    if(!secret){console.log("[warn] config version",version,"secret decode FAILED @",objStart,"| secret:",map.secret.slice(0,60));continue;}
+   // A sitekey-shaped value (Cloudflare Turnstile keys start 0x4AAAAA…) is a decoy, never the cipher key.
+   if(/^0x4AAAAA/i.test(secret)){console.log("[info] skipped sitekey-shaped decoy secret @",objStart,"(not a cipher key)");continue;}
    const sc=roleScores(objStart);
    found.push({secret,skip,len,version,sig:sc.sig,res:sc.res,sigEv:sc.sigEv,resEv:sc.resEv});
  }
