@@ -652,10 +652,31 @@ const responsesMap = {};
 function writeResponses() { try { fs.writeFileSync(RESPONSES_OUT, JSON.stringify(responsesMap, null, 2)); } catch (_) {} }
 
 function extractFromCaptured(entries, final) {
-  const extracted = { dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {} };
+  const extracted = { dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {}, tokenMap: [] };
   // Use runtime-captured IDs first, then from entries, then from static extraction
   if (flowState.capturedSlotId) extracted.slotId = flowState.capturedSlotId;
   if (flowState.capturedDgepayUuid) extracted.dgepayUuid = flowState.capturedDgepayUuid;
+  // Dynamic token map: for every captured request, note whether it carries a
+  // captcha token and in what form — encrypted body "c" vs raw "x-token"
+  // header. This is read from the live walk, so if the bundle ever moves
+  // upload/initiate to an encrypted token it shows up here automatically
+  // (no hard-coded assumption about which step is raw vs encrypted).
+  {
+    const stepOf = (p) => /sign-?in/i.test(p) ? 'signin' : /otp\/verif/i.test(p) ? 'otp'
+      : /upload/i.test(p) ? 'upload' : /reserve-slot/i.test(p) ? 'reserve'
+      : /payment\/.*initiate|\/initiate/i.test(p) ? 'initiate' : '';
+    const seenTok = {};
+    for (const e of entries) {
+      const p = e.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(p)) continue;
+      const step = stepOf(p); if (!step || seenTok[step]) continue;
+      let bodyC = false; try { const j = JSON.parse(e.body || '{}'); if (j.c) bodyC = true; } catch (_) {}
+      const xtok = !!(e.headers && e.headers['x-token']);
+      if (!bodyC && !xtok) continue;
+      seenTok[step] = true;
+      extracted.tokenMap.push({ step, field: bodyC ? 'c' : 'x-token', encrypted: bodyC, path: p });
+    }
+  }
   for (const e of entries) {
     const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
     // Skip the direct-fallback's fabricated URLs (mock-uuid / mock-slot-id /

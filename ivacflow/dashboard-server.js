@@ -221,6 +221,9 @@ function readCaptured(dir) {
         if (!snapshot.config.endpoints[k]) snapshot.config.endpoints[k] = v;
       }
     }
+    if (Array.isArray(flow.extracted.tokenMap) && flow.extracted.tokenMap.length) {
+      snapshot.config.tokenMap = flow.extracted.tokenMap;   // dynamic per-step encrypted/raw
+    }
     snapshot.template = buildTemplate(snapshot.config);
   }
   return (flow.calls || []).map((c) => {
@@ -368,6 +371,12 @@ const HTML = `<!doctype html><html lang="bn"><head><meta charset="utf-8">
      </div>
      <button id="a-run" class="ghost" style="margin-top:8px;font-size:12px;padding:6px 12px" disabled>দুইটাই আবার বের করো <span class="dim">(function পরে)</span></button>
    </div>
+ </div>
+
+ <div class="card"><h2>Token usage <span class="dim" style="text-transform:none;font-size:12px">— কোন step-এ token encrypted (c) না raw (x-token), walk থেকে dynamic</span></h2>
+   <table id="token-table"><thead><tr><th>step</th><th>field</th><th>form</th></tr></thead>
+     <tbody id="token-body"><tr><td colspan="3" class="dim">bundle চালালে প্রতিটা step-এ token কীভাবে যায় (encrypted / raw) এখানে দেখা যাবে।</td></tr></tbody>
+   </table>
  </div>
 
  <div class="card"><h2>Endpoint <span class="dim" style="text-transform:none;font-size:12px">— walk + bundle থেকে</span></h2>
@@ -575,6 +584,7 @@ function render(j){
   $('c-uuid').innerHTML=val(c.dgepayUuid); $('c-init').innerHTML=val(c.initiatePath);
   renderTpl(j.template||[]);
   if(c.ciphers)renderCipherExtract(c.ciphers);
+  renderTokenMap(c.tokenMap);
   renderEndpoints(c);
   renderDynamic(c);
   const eps=j.allEndpoints||[];
@@ -608,6 +618,12 @@ function renderCipherExtract(cx){
     }
   });
   const runBtn=$('a-run'); if(runBtn)runBtn.disabled=false;
+}
+function renderTokenMap(tm){
+  if(!Array.isArray(tm)||!tm.length){$('token-body').innerHTML='<tr><td colspan="3" class="dim">token-বাহী কোনো request ধরা পড়েনি।</td></tr>';return;}
+  const rows=tm.map(t=>'<tr><td>'+esc(t.step)+'</td><td class="mono">'+esc(t.field)+'</td><td>'+
+    (t.encrypted?'<span class="badge ok">encrypted (cipher)</span>':'<span class="badge">raw</span>')+'</td></tr>');
+  $('token-body').innerHTML=rows.join('');
 }
 function epRow(key,value,badge){
   const b=badge==='ok'?'<span class="badge ok">যাচাই ✓</span>':badge==='text'?'<span class="badge">লেখা থেকে</span>':badge==='miss'?'<span class="badge bad">পাওয়া যায়নি</span>':'';
