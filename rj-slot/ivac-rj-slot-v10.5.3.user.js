@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.2
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.2: universal dg-epay UUID + slot-id scanner (extract_fetch v13 port, Strategy A–K, handles non-hex/typo UUIDs); file-upload retry-until-success; dynamic mission/center
+// @version      10.5.3
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.3: auto-replace stale cipher config when bundle changes (no manual E_encrpt); universal dg-epay UUID + slot-id scanner; verified MODSQ v9 cipher
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -3905,12 +3905,18 @@ async function encConfigAutoFetch(forceReload) {
             return { signin: false, reserve: false };
         }
 
-        // manual-lock: never overwrite a config the user entered by hand (marked manual) that is active+keyed
+        // manual-lock: keep a hand-entered config ONLY while it still MATCHES what the live bundle
+        // resolves. If the bundle now resolves a DIFFERENT cipher (dev redeployed a new version/
+        // skip/length/key), the stale manual config is wrong → auto-replace it so signin never
+        // gets stuck on an old cipher (no manual E_encrpt needed).
         const isLocked = (p) => encConfig[p] && encConfig[p].manual && encConfig[p].active && encConfig[p].key;
+        const _cfgDiffers = (cur, res) => !cur || cur.version !== res.version || +cur.skip !== +res.skip || +cur.length !== +res.length || cur.key !== res.key;
         if (signin) {
-            if (isLocked('signin')) { logStatus('🔒 Signin: manual config kept (A_E did not overwrite)', 'g'); }
+            const staleLock = isLocked('signin') && !_cfgDiffers(encConfig.signin, signin);
+            if (staleLock) { logStatus('🔒 Signin: manual config kept (matches bundle)', 'g'); }
             else {
-                encConfig.signin = { active: true, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
+                if (isLocked('signin')) logStatus('🔄 Signin: bundle cipher changed — replacing stale config', 'y');
+                encConfig.signin = { active: true, manual: false, key: signin.key, skip: signin.skip, length: signin.length, version: signin.version };
                 encConfigSave('signin');
                 logStatus('✅ Signin: v' + signin.version + ' skip=' + signin.skip + ' len=' + signin.length + ' key[' + signin.key.length + ']', 'g');
             }
@@ -3918,9 +3924,11 @@ async function encConfigAutoFetch(forceReload) {
             logStatus('⚠ Signin not resolved — keeping current config', 'y');
         }
         if (reserve) {
-            if (isLocked('reserve')) { logStatus('🔒 Reserve: manual config kept (A_E did not overwrite)', 'g'); }
+            const staleLockR = isLocked('reserve') && !_cfgDiffers(encConfig.reserve, reserve);
+            if (staleLockR) { logStatus('🔒 Reserve: manual config kept (matches bundle)', 'g'); }
             else {
-                encConfig.reserve = { active: true, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
+                if (isLocked('reserve')) logStatus('🔄 Reserve: bundle cipher changed — replacing stale config', 'y');
+                encConfig.reserve = { active: true, manual: false, key: reserve.key, skip: reserve.skip, length: reserve.length, version: reserve.version };
                 encConfigSave('reserve');
                 logStatus('✅ Reserve: v' + reserve.version + ' skip=' + reserve.skip + ' len=' + reserve.length + ' key[' + reserve.key.length + ']', 'g');
             }
@@ -3932,9 +3940,11 @@ async function encConfigAutoFetch(forceReload) {
         const initOwn  = !!initiate;
         const initCfg  = initiate || signin || reserve;
         if (initCfg) {
-            if (isLocked('initiate')) { logStatus('🔒 Initiate: manual config kept (A_E did not overwrite)', 'g'); }
+            const staleLockI = isLocked('initiate') && !_cfgDiffers(encConfig.initiate, initCfg);
+            if (staleLockI) { logStatus('🔒 Initiate: manual config kept (matches bundle)', 'g'); }
             else {
-                encConfig.initiate = { active: true, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
+                if (isLocked('initiate')) logStatus('🔄 Initiate: bundle cipher changed — replacing stale config', 'y');
+                encConfig.initiate = { active: true, manual: false, key: initCfg.key, skip: initCfg.skip, length: initCfg.length, version: initCfg.version };
                 encConfigSave('initiate');
                 logStatus('✅ Initiate' + (initOwn ? '' : ' (mirrored)') + ': v' + initCfg.version + ' skip=' + initCfg.skip + ' len=' + initCfg.length + ' key[' + initCfg.key.length + ']', 'g');
             }
