@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.3
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.3: auto-replace stale cipher config when bundle changes (no manual E_encrpt); universal dg-epay UUID + slot-id scanner; verified MODSQ v9 cipher
+// @version      10.5.4
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.4: DYNAMIC Turnstile sitekey (IVAC uses sitekey as cipher key) — fixes signin 400 when sitekey changes; verified MODSQ v9 cipher; universal dg-epay/slot scanner
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -4507,7 +4507,16 @@ function showMilestonePopup(title, message, emoji) {
 }
 
 // ==================== CLOUDFLARE TURNSTILE CAPTCHA ====================
-const CF_SITEKEY = '0x4AAAAAACghKkJHL1t7UkuZ';
+const CF_SITEKEY = '0x4AAAAAACleJqVBVEM5hsPz';   // fallback (current bundle). IVAC uses the Turnstile sitekey AS the captcha cipher key.
+// DYNAMIC sitekey: IVAC's captcha cipher key IS the Turnstile sitekey (both 0x4AAAAAAC…). After A_E
+// resolves the cipher, encConfig.signin.key holds the live sitekey → use it so the widget always
+// solves against the CURRENT sitekey (no hardcode). Also captured from the page's own turnstile.render.
+let _rjDynSiteKey = null;
+function getDynSiteKey() {
+    try { if (_rjDynSiteKey && /^0x[A-Za-z0-9_]{15,}$/.test(_rjDynSiteKey)) return _rjDynSiteKey; } catch (e) {}
+    try { const k = (typeof encConfig !== 'undefined' && encConfig.signin && encConfig.signin.key) || null; if (k && /^0x[A-Za-z0-9_]{15,}$/.test(k)) return k; } catch (e) {}
+    return CF_SITEKEY;
+}
 let cfWidgetId = null;
 let cfToken    = null;
 let cfTokenAt  = 0;     // when the current cfToken was solved (to drop a stale one after TTL)
@@ -4551,7 +4560,7 @@ function renderCaptcha() {
 
     try {
         cfWidgetId = turnstile.render(container, {
-            sitekey: CF_SITEKEY,
+            sitekey: getDynSiteKey(),
             size: 'normal',
             theme: 'dark',
             appearance: 'always',
@@ -6821,7 +6830,7 @@ async function solveCaptchaSilent(provider) {
     const websiteURL = API_REFERRER || location.origin + '/';
     let taskId;
     try {
-        const createBody = { clientKey: key, task: { type: config.taskType, websiteURL: websiteURL, websiteKey: CF_SITEKEY } };
+        const createBody = { clientKey: key, task: { type: config.taskType, websiteURL: websiteURL, websiteKey: getDynSiteKey() } };
         const createResponse = await silentGMRequest(config.createUrl, createBody, 15000);
         if (createResponse.body.errorId && createResponse.body.errorId !== 0) { throw new Error(createResponse.body.errorDescription || createResponse.body.errorCode || `${config.name} create error`); }
         taskId = createResponse.body.taskId;
