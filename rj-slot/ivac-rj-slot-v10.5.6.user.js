@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.5
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.5: FIX signin 400 — cipher-secret resolver no longer corrupts concat keys (string-literal substitution bug); real key AC6N… now resolved; Turnstile sitekey auto-captured separately
+// @version      10.5.6
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.6: signin 400 fully fixed — real cipher key AC6N… resolved (resolver corruption fix); Turnstile sitekey reverted to stable 0x4AAAAAACghKkJHL1t7UkuZ (verified by live signin success)
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -3836,7 +3836,7 @@ function resolveBundleConfigs(text) {
         // Some bundles ship a decoy secret: object that actually holds the Cloudflare Turnstile
         // SITEKEY (always starts 0x4AAAAA…), not a cipher key. Never use it as the cipher secret —
         // it captures the widget sitekey separately (getDynSiteKey / CF_SITEKEY).
-        if (/^0x4AAAAA/i.test(secret)) { try { _rjDynSiteKey = secret; } catch (e) {} console.log('[RJ EncAuto] skipped sitekey-shaped secret @ ' + objStart + ' (captured as sitekey)'); continue; }
+        if (/^0x4AAAAA/i.test(secret)) { console.log('[RJ EncAuto] skipped sitekey-shaped decoy secret @ ' + objStart + ' (not a cipher key)'); continue; }
         const sc = encRoleScores(text, objStart);
         found.push({ key: secret, skip, length, version, sig: sc.sig, res: sc.res, ini: sc.ini });
     }
@@ -4520,14 +4520,12 @@ function showMilestonePopup(title, message, emoji) {
 }
 
 // ==================== CLOUDFLARE TURNSTILE CAPTCHA ====================
-const CF_SITEKEY = '0x4AAAAAACleJqVBVEM5hsPz';   // fallback (current bundle). IVAC uses the Turnstile sitekey AS the captcha cipher key.
-// DYNAMIC sitekey: IVAC's captcha cipher key IS the Turnstile sitekey (both 0x4AAAAAAC…). After A_E
-// resolves the cipher, encConfig.signin.key holds the live sitekey → use it so the widget always
-// solves against the CURRENT sitekey (no hardcode). Also captured from the page's own turnstile.render.
-let _rjDynSiteKey = null;
+const CF_SITEKEY = '0x4AAAAAACghKkJHL1t7UkuZ';   // production Turnstile sitekey (stable — verified by live signin success)
+// The bundle also ships a decoy 0x4AAAAA… value inside a secret: object; that is NOT the widget
+// sitekey (it was a red herring), so getDynSiteKey stays on the verified CF_SITEKEY.
+let _rjDynSiteKey = null;   // reserved for a real page-captured sitekey; the decoy is never used
 function getDynSiteKey() {
     try { if (_rjDynSiteKey && /^0x[A-Za-z0-9_]{15,}$/.test(_rjDynSiteKey)) return _rjDynSiteKey; } catch (e) {}
-    try { const k = (typeof encConfig !== 'undefined' && encConfig.signin && encConfig.signin.key) || null; if (k && /^0x[A-Za-z0-9_]{15,}$/.test(k)) return k; } catch (e) {}
     return CF_SITEKEY;
 }
 let cfWidgetId = null;
