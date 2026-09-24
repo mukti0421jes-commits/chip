@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.6
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.6: signin 400 fully fixed — real cipher key AC6N… resolved (resolver corruption fix); Turnstile sitekey reverted to stable 0x4AAAAAACghKkJHL1t7UkuZ (verified by live signin success)
+// @version      10.5.7
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.7: full-auto for muf1m85x bundle — separator-agnostic endpoint families (handles scrambled -/_ renames), cipher v5 LFSR key byte-verified, slot-id + all 10 endpoints resolve dynamically; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -340,7 +340,7 @@ const H2 = {
 
 function getTagFromUrl(url) {
     if (!url) return 'network';
-    if (url.includes('sign-in') || url.includes('signin')) return 'signin';
+    if (/sign[-_]?in|signin/i.test(url)) return 'signin';
     if (url.includes('verifyOtp') || url.includes('verify')) return 'verify';
     if (url.includes('reserveSlot')) return 'reserve';
     if (url.includes('appointment-booking-config') || url.includes('appointment')) return 'book';
@@ -429,17 +429,20 @@ function rjApplyDynHeaders(url, init) {
 // literal (any version/suffix), stopping at the next '/' or quote. So a server rename like
 // over-view → over-view-v3 → over-view-v4, or upload_file_v2 → _v3, is caught automatically
 // by BOTH the bundle scan (fam) and the live-traffic capture (epMap) — no hardcode/regex edit.
+// Separator-agnostic: IVAC scrambles '-' vs '_' between deploys (e.g. v3-sign-in → v4-sign_in,
+// verify-otp-v3 → verify_otp_v5, upload_file_v321 → upload-file-v453). Every internal separator is
+// matched as [-_]? so the family still resolves whatever the current bundle uses.
 const RJ_EP_FAMILIES = [
-    { code: '/auth/v2-sign-in',                         re: /\/auth\/[a-z0-9-]*sign-?in[a-z0-9-]*/i },
-    { code: '/file/upload_file_v2',                     re: /\/file\/upload_file[a-z0-9_-]*/i },
-    { code: '/otp/verify-otp',                          re: /\/otp\/verify-otp[a-z0-9_-]*/i },
-    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verifySigninOtp[a-z0-9_-]*/i },
-    { code: '/otp/signupOtp',                           re: /\/otp\/signupOtp[a-z0-9_-]*/i },
-    { code: '/appointment/get-booking-config',          re: /\/appointment\/get-booking-config[a-z0-9_-]*/i },
-    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment-booking-config[a-z0-9_-]*/i },
-    { code: '/file/over-view-v3',                       re: /\/file\/over-view[a-z0-9_-]*/i },
-    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file-confirmation[a-z0-9_-]*/i },
-    { code: '/file/payment-amount',                     re: /\/file\/payment-amount[a-z0-9_-]*/i }
+    { code: '/auth/v2-sign-in',                         re: /\/auth\/[a-z0-9_-]*sign[-_]?in[a-z0-9_-]*/i },
+    { code: '/file/upload_file_v2',                     re: /\/file\/upload[-_]?file[a-z0-9_-]*/i },
+    { code: '/otp/verify-otp',                          re: /\/otp\/verify[-_]?otp[a-z0-9_-]*/i },
+    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verify[-_]?signin[-_]?otp[a-z0-9_-]*/i },
+    { code: '/otp/signupOtp',                           re: /\/otp\/signup[-_]?otp[a-z0-9_-]*/i },
+    { code: '/appointment/get-booking-config',          re: /\/appointment\/get[-_]?booking[-_]?config[a-z0-9_-]*/i },
+    { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment[-_]?booking[-_]?config[a-z0-9_-]*/i },
+    { code: '/file/over-view-v3',                       re: /\/file\/over[-_]?view[a-z0-9_-]*/i },
+    { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file[-_]?confirmation[a-z0-9_-]*/i },
+    { code: '/file/payment-amount',                     re: /\/file\/payment[-_]?amount[a-z0-9_-]*/i }
 ];
 
 const RJ_REC_KEY = 'rj_req_records';
@@ -3092,7 +3095,7 @@ async function rjResolveEndpointsLive() {
         let text = '';
         const chunkTexts = [];
         for (const u of urls) { if (chunkTexts.length >= 60) break; const t = await grab(u); if (t) chunkTexts.push(t); }   // fetch enough chunks that the payment lazy-chunk is always included
-        for (const t of chunkTexts) { text += '\n' + t; if (/sign-in|reserve-slot|upload_file/.test(t)) break; }   // endpoint-scan text = up to first core chunk
+        for (const t of chunkTexts) { text += '\n' + t; if (/sign[-_]?in|reserve[-_]?slot|upload[-_]?file/.test(t)) break; }   // endpoint-scan text = up to first core chunk
         if (!text) { try { logStatus('⚠ Endpoint scan: bundle fetch empty', 'y'); } catch (e) {} return; }
         // endpoint families → store the bundle's CURRENT literal per family (used to rewrite any version)
         RJ_DYN.fam = RJ_DYN.fam || {};
@@ -3683,7 +3686,7 @@ function buildBundleResolver(src) {
 function encRoleScores(src, pos) {
     const w = src.slice(Math.max(0, pos - 1400), pos + 1400);
     const rM = w.match(/reserve|slot|booking|appointment|schedul/gi) || [];
-    const sM = w.match(/sign-?in|signin|log-?in|login|\botp\b|verify|password|phone|forgot|forget|resend|signup/gi) || [];
+    const sM = w.match(/sign[-_]?in|signin|log[-_]?in|login|\botp\b|verify|password|phone|forgot|forget|resend|signup/gi) || [];
     const iM = w.match(/initiate|payment|dg-?epay|dg_epay|epay|checkout|gateway|invoice/gi) || [];
     return { sig: sM.length, res: rM.length, ini: iM.length };
 }
