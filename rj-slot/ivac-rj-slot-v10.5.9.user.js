@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.8
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.8: reserve now handles status=FULL (all slots temporarily held by other users) — recognised as transient, fast-retry ~1.5s until a hold drops, clear FULL message. v10.5.7: full-auto for muf1m85x bundle (separator-agnostic endpoints, cipher v5 LFSR byte-verified, dynamic slot-id); sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.5.9
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -378,11 +378,16 @@ const API_GMAIL_SERVER = "https://duttauzzal.shop/gmail-otp.php";   // per-profi
 const RJ_DYN_KEY = 'rj_dyn_captured';
 const RJ_DYN = (function () {
     // restore learned values (Method 2: captured from the site's real traffic) so they survive reload
-    const base = { epMap: {}, headers: {}, fam: {}, slotId: null, resolvedAt: 0, payId: null };
-    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.fam = s.fam || {}; base.slotId = s.slotId || null; base.payId = s.payId || null; } } catch (e) {}
+    const base = { epMap: {}, headers: {}, fam: {}, slotId: null, resolvedAt: 0, payId: null, reserveSeg: null };
+    try { const s = JSON.parse(localStorage.getItem(RJ_DYN_KEY) || 'null'); if (s && typeof s === 'object') { base.epMap = s.epMap || {}; base.headers = s.headers || {}; base.fam = s.fam || {}; base.slotId = s.slotId || null; base.payId = s.payId || null; base.reserveSeg = s.reserveSeg || null; } } catch (e) {}
     return base;
 })();
-function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, fam: RJ_DYN.fam, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId })); } catch (e) {} }
+function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify({ epMap: RJ_DYN.epMap, headers: RJ_DYN.headers, fam: RJ_DYN.fam, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId, reserveSeg: RJ_DYN.reserveSeg })); } catch (e) {} }
+// Reserve action segment: the last path part of /slots/<uuid>/<here>. IVAC ships it as reserve_slot
+// or reserve-slot and can scramble the separator on redeploy. Resolve it dynamically (captured from
+// the bundle / real traffic) and default to the current literal so a mismatch never causes a 403/CORS.
+function getReserveSeg() { try { return RJ_DYN.reserveSeg || 'reserve_slot'; } catch (e) { return 'reserve_slot'; } }
+const RJ_RESERVE_SEG_RE = /\/slots\/([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})\/(reserve[_-]?slot)/i;
 
 function rjRewriteUrl(url) {
     try {
@@ -392,8 +397,17 @@ function rjRewriteUrl(url) {
         // 2) bundle-current family rewrite: URL's version → bundle's current version (fixes v22→v23 etc.)
         const F = RJ_DYN.fam || {};
         for (const f of RJ_EP_FAMILIES) { const cur = F[f.code]; if (!cur) continue; const mm = url.match(f.re); if (mm && mm[0] !== cur) url = url.replace(mm[0], cur); }
-        // 3) reserve slot-id: ANY /slots/<uuid>/reserve-slot → bundle's current slot-id
-        if (RJ_DYN.slotId) url = url.replace(/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/, '/slots/' + RJ_DYN.slotId + '/reserve-slot');
+        // 3) reserve slot-id + action segment: ANY /slots/<uuid>/reserve[_-]slot → bundle's current
+        //    slot-id AND current separator (reserve_slot vs reserve-slot). Wrong separator = 403/CORS.
+        {
+            const rm = url.match(RJ_RESERVE_SEG_RE);
+            if (rm) {
+                const newSlot = RJ_DYN.slotId || rm[1];
+                const newSeg  = getReserveSeg();
+                const rebuilt = '/slots/' + newSlot + '/' + newSeg;
+                if (rm[0] !== rebuilt) url = url.replace(rm[0], rebuilt);
+            }
+        }
         // 4) dg-epay payment-method-id: ANY /payment/<uuid>/dg-epay/initiate → captured current id
         if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-fA-F-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');
         if (url !== orig) console.log('%c[RJ Dyn] URL rewritten: ' + orig + ' → ' + url, 'color:#4ade80;font-weight:700');
@@ -454,7 +468,7 @@ function rjEndpointFamily(url) {
     try { const u = '' + url;
         for (const f of RJ_EP_FAMILIES) { if (f.re.test(u)) return f.code; }
         if (/\/dg-epay\/initiate/.test(u)) return '/payment/dg-epay/initiate';
-        if (/\/slots\/[0-9a-fA-F-]{36}\/reserve-slot/.test(u)) return '/slots/reserve-slot';
+        if (/\/slots\/[0-9a-zA-Z-]{36}\/reserve[_-]?slot/.test(u)) return '/slots/reserve-slot';
         if (/\/auth\/signup\b/.test(u)) return '/auth/signup';
     } catch (e) {}
     return null;
@@ -3105,7 +3119,9 @@ async function rjResolveEndpointsLive() {
         try { _v13 = rjExtractFetchV13(chunkTexts.join('\n')); } catch (e) {}
         const _LENIENT_UUID = /^[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}$/i;
         let _slotVal = (_v13 && _v13.slotUuid && _LENIENT_UUID.test(_v13.slotUuid)) ? _v13.slotUuid : null;
-        if (!_slotVal) { const _smm = text.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i); if (_smm) _slotVal = _smm[1]; }
+        if (!_slotVal) { const _smm = text.match(RJ_RESERVE_SEG_RE); if (_smm) _slotVal = _smm[1]; }
+        // capture the CURRENT reserve action segment (reserve_slot vs reserve-slot) from the bundle
+        try { const _segm = text.match(RJ_RESERVE_SEG_RE); if (_segm && _segm[2]) { RJ_DYN.reserveSeg = _segm[2]; } } catch (e) {}
         const sm = _slotVal ? [null, _slotVal] : null;
         if (sm && sm[1]) {
             RJ_DYN.slotId = sm[1];
@@ -3182,7 +3198,8 @@ async function rjResolveEndpointsLive() {
                 if (u) {
                     const pm = u.match(/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i);
                     if (pm && pm[1]) { RJ_DYN.payId = pm[1]; try { if (typeof PAYMENT_METHOD_ID !== 'undefined' && pm[1].toLowerCase() !== PAYMENT_METHOD_ID.toLowerCase() && setMap(PAYMENT_METHOD_ID, pm[1])) changed = true; } catch (e) {} }
-                    const sm = u.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i);
+                    const sm = u.match(RJ_RESERVE_SEG_RE);
+                    if (sm && sm[2] && sm[2] !== RJ_DYN.reserveSeg) { RJ_DYN.reserveSeg = sm[2]; changed = true; }   // learn separator from real traffic
                     if (sm && sm[1]) {
                         RJ_DYN.slotId = sm[1];
                         try { if (typeof RESERVE_SLOT_ID_FIXED !== 'undefined' && sm[1].toLowerCase() !== RESERVE_SLOT_ID_FIXED.toLowerCase() && setMap(RESERVE_SLOT_ID_FIXED, sm[1])) changed = true; } catch (e) {}
@@ -7363,7 +7380,7 @@ async function stepReserve(signal) {
     let appointmentDate = _normDate(document.getElementById('ivac-reserve-date')?.value) || _normDate(sessionState.abcDate);
     if (!appointmentDate) { try { const arr = await loadReserveDates(); appointmentDate = _normDate(arr && arr[0]); } catch(e) {} }
     if (!appointmentDate) { logStatus('❌ No appointment date — press ↻', 'r'); if (captchaToken) tokenQueueAddTagged(captchaToken, 'capmonster'); return { win: false }; }
-    const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/reserve-slot`;
+    const RESERVE_URL = `https://api.ivacbd.com/iams/api/v1/slots/${slotId}/${getReserveSeg()}`;   // reserve_slot / reserve-slot — dynamic separator (wrong one = 403/CORS)
     const localAc = new AbortController(); const onParentAbort = () => { try { localAc.abort(); } catch(e) {} }; signal?.addEventListener('abort', onParentAbort); registerTokenInFlight(captchaToken, localAc);
     const logId = netLogAdd({ method: 'POST', url: RESERVE_URL, tag: 'reserve', state: 'pending', note: `reserve-slot ${_fmtDateDisplay(appointmentDate)} (H/2)` });
     try {
