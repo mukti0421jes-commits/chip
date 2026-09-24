@@ -383,9 +383,19 @@ function buildBundleResolver(src) {
     function b64(e){let t="",n="";for(let r,o,i=0,a=0;o=e.charAt(a++);~o&&(r=i%4?64*r+o:o,i++%4)?t+=String.fromCharCode(255&r>>(-2*i&6)):0)o="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=".indexOf(o);for(let r=0,o=t.length;r<o;r++)n+="%"+("00"+t.charCodeAt(r).toString(16)).slice(-2);try{return decodeURIComponent(n)}catch(_){return null}}
     function rc4(e,key){let n,r,o=[],i=0,a="";e=b64(e);if(e===null)return null;for(r=0;r<256;r++)o[r]=r;for(r=0;r<256;r++){i=(i+o[r]+key.charCodeAt(r%key.length))%256;n=o[r];o[r]=o[i];o[i]=n;}r=0;i=0;for(let c=0;c<e.length;c++){r=(r+1)%256;i=(i+o[r])%256;n=o[r];o[r]=o[i];o[i]=n;a+=String.fromCharCode(e.charCodeAt(c)^o[(o[r]+o[i])%256]);}return a;}
     const arrCache={};function getArr(fn){if(fn in arrCache)return arrCache[fn];let st=src.indexOf("function "+fn+"(){const e=[");if(st<0)st=src.indexOf("function "+fn+"(){var e=[");if(st<0)return arrCache[fn]=null;const lb=src.indexOf("[",st);try{return arrCache[fn]=eval(src.slice(lb,mB(src,lb,"[","]")+1));}catch(_){return arrCache[fn]=null;}}
+    // JS reserved words / built-in names must never be treated as a decoder wrap
+    // "base" — e.g. function f(e,t){return function(e,t=!1)} was parsed as
+    // wrapDef{base:"function"}, producing invalid JS in decl → new Function() throws
+    // → resolveExpr returns null for the whole secret. (ported from extract_ciphers.js)
+    const JS_KEYWORDS=new Set(["function","return","const","let","var","if","else","for","while","do","switch","case","break","continue","default","try","catch","finally","throw","new","this","class","typeof","instanceof","void","delete","in","of","yield","async","await","static","import","export","super","extends","null","undefined","true","false","Number","String","Boolean","Object","Array","Math","Promise","Symbol","Map","Set","WeakMap","WeakSet","Proxy","Reflect","JSON","Date","RegExp","Error"]);
+    // Replace bare occurrences of `word` in `s` ONLY outside string literals (so the
+    // letters inside a concat-built key literal are never corrupted). (ported)
+    function replaceIdOutsideStrings(s,word,replacement){let out="",q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){out+=c+(s[++i]||"");continue;}if(c===q)q=null;out+=c;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;out+=c;i++;continue;}const prevW=/\w/.test(i>0?s[i-1]:" ");const nextW=/\w/.test(s[i+word.length]||" ");if(!prevW&&s.slice(i,i+word.length)===word&&!nextW){out+=replacement;i+=word.length;continue;}out+=c;i++;}return out;}
+    // Collect identifiers appearing at least once OUTSIDE string literals. (ported)
+    function idsOutsideStrings(s){const out=new Set();let q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){i+=2;continue;}if(c===q)q=null;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;i++;continue;}const m=/^([A-Za-z_$][\w$]*)/.exec(s.slice(i));if(m){out.add(m[1]);i+=m[1].length;}else i++;}return out;}
     const baseDefs={},wrapDefs={};
     {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{e-=(\d+)/g;while(m=re.exec(src)){const bs=src.indexOf("{",m.index);const body=src.slice(bs,mB(src,bs,"{","}")+1);const am=/=\s*([\w$]+)\(\)/.exec(body);(baseDefs[m[1]]=baseDefs[m[1]]||[]).push({idx:m.index,offset:+m[2],arrfn:am?am[1]:null,rc4:/o\[r\]\+t\.charCodeAt/.test(body)||/charCodeAt\(\w%\w\.length\)/.test(body)});}}
-    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
+    {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;if(JS_KEYWORDS.has(m[2]))continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
     function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
     function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
     function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
@@ -394,8 +404,9 @@ function buildBundleResolver(src) {
         const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
         const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
         while(stack.length){const n=stack.pop();if(need.base[n]||need.wrap[n])continue;
+            if(JS_KEYWORDS.has(n))continue; // skip reserved-word "functions" during traversal (ported)
             const w=nearest(wrapDefs,n,pos),b=nearest(baseDefs,n,pos);
-            if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner))stack.push(x);stack.push(w.base);}
+            if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner)){if(!JS_KEYWORDS.has(x))stack.push(x);}if(!JS_KEYWORDS.has(w.base))stack.push(w.base);}
             else if(b){need.base[n]=b;if(b.arrfn)arrset.add(b.arrfn);}}
         const arr=[...arrset];
         if(arr.length===0)return null;
@@ -404,7 +415,7 @@ function buildBundleResolver(src) {
         const ok=v=>typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3;
         let decl="";
         for(const[n,d]of Object.entries(need.base))decl+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
-        for(const[n,w]of Object.entries(need.wrap))decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
+        for(const[n,w]of Object.entries(need.wrap)){if(JS_KEYWORDS.has(w.base))continue;decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;}
         let fnFull;try{fnFull=new Function("__arrs","__rc4","__b64",decl+"return ("+expr+")");}catch(e){return null;}
         // METHOD A: independent per-array rotation (scales to any N)
         try{
@@ -472,6 +483,11 @@ function _splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;
 function _cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
 // brace-match an object literal starting at `{` (respect quotes)
 function _braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
+// string-literal-safe identifier substitution (ported from extract_ciphers.js): only
+// touches bare identifiers OUTSIDE quotes, so letters inside a concat-built key
+// literal are never corrupted.
+function _replaceIdOutsideStrings(s,word,replacement){let out="",q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){out+=c+(s[++i]||"");continue;}if(c===q)q=null;out+=c;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;out+=c;i++;continue;}const prevW=/\w/.test(i>0?s[i-1]:" ");const nextW=/\w/.test(s[i+word.length]||" ");if(!prevW&&s.slice(i,i+word.length)===word&&!nextW){out+=replacement;i+=word.length;continue;}out+=c;i++;}return out;}
+function _idsOutsideStrings(s){const out=new Set();let q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){i+=2;continue;}if(c===q)q=null;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;i++;continue;}const m=/^([A-Za-z_$][\w$]*)/.exec(s.slice(i));if(m){out.add(m[1]);i+=m[1].length;}else i++;}return out;}
 
 // ===== EXECUTION-BASED cipher fallback (for heavy-obfuscation bundles the static resolver can't map) =====
 // Runs the bundle's OWN decoder cluster around the secret so every string-array shuffles into place
@@ -532,13 +548,13 @@ function resolveBundleConfigs(text) {
     const R = buildBundleResolver(text);
     const subLocalStr = (expr, objStart) => {
         const region = text.slice(Math.max(0, objStart - 6000), objStart);
-        const ids = [...new Set((expr.match(/[A-Za-z_$][\w$]*/g) || []))];
+        const ids = [..._idsOutsideStrings(expr)];
         for (const id of ids) {
             const esc = id.replace(/[$]/g, '\\$');
             if (new RegExp('\\b' + esc + '\\s*\\(').test(expr)) continue;
             const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
             let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
-            if (best !== null) expr = expr.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+            if (best !== null) expr = _replaceIdOutsideStrings(expr, id, JSON.stringify(best));
         }
         return expr;
     };
@@ -595,13 +611,13 @@ function resolveBundleConfigs(text) {
             let subbed = _rawExpr;
             try {
                 const region = text.slice(Math.max(0, objStart - 6000), objStart);
-                const ids = [...new Set((subbed.match(/[A-Za-z_$][\w$]*/g) || []))];
+                const ids = [..._idsOutsideStrings(subbed)];
                 for (const id of ids) {
                     const esc = id.replace(/[$]/g, '\\$');
                     if (new RegExp('\\b' + esc + '\\s*\\(').test(subbed)) continue; // decoder call → skip
                     const defRe = new RegExp('\\b' + esc + '\\s*=\\s*(["\'`])((?:\\\\.|(?!\\1).)*)\\1', 'g');
                     let best = null, mm; while ((mm = defRe.exec(region))) best = mm[2];
-                    if (best !== null) subbed = subbed.replace(new RegExp('\\b' + esc + '\\b', 'g'), JSON.stringify(best));
+                    if (best !== null) subbed = _replaceIdOutsideStrings(subbed, id, JSON.stringify(best));
                 }
             } catch (e2) {}
             if (subbed !== _rawExpr) secret = R.resolveExpr(subbed, objStart);

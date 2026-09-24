@@ -67,6 +67,11 @@ type Config struct {
 	// (env IVAC_ENCRYPT_UPLOAD / IVAC_ENCRYPT_INITIATE = 1).
 	EncryptUpload   bool
 	EncryptInitiate bool
+
+	// EndpointCacheJSON is the latest `.endpoint-cache.json` pushed from the
+	// autocheck folder (extract_fetch.js v15 output). Applied during Scan, but only
+	// when its bundleName matches the live bundle. Empty = not pushed / not used.
+	EndpointCacheJSON []byte
 }
 
 // anyCipher returns the first available scanned cipher (all purposes share one key

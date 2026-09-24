@@ -8631,6 +8631,8 @@ func main() {
 	// plus the shared token in ivacflow_token.txt (see authorizeIvacflowPush), so
 	// it is not behind the dashboard session ivacflow has no way to hold.
 	http.HandleFunc("/api/encryptToggle", adminOnly(handleEncryptToggle))
+	http.HandleFunc("/api/endpointCachePush", handleEndpointCachePush)
+	http.HandleFunc("/api/endpointCacheStatus", adminOnly(handleEndpointCacheStatus))
 	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)
 	http.HandleFunc("/api/ivacflowStatus", adminOnly(handleIvacflowStatus))
 	http.HandleFunc("/api/clearIvacflow", adminOnly(handleClearIvacflow))
@@ -8684,6 +8686,7 @@ func main() {
 	LoadOrCreateIvacflowToken() // shared secret ivacflow authenticates its push with
 	LoadCapturedConfig()      // restore a previously imported RJ SLOT capture (safety net)
 	LoadIvacflowConfig()      // restore the last snapshot ivacflow pushed
+	LoadEndpointCacheStore()  // restore the last .endpoint-cache.json pushed from autocheck
 	StartInvoiceDoneWatcher() // auto-confirm payments (every 20s) → payment hub ✓ Done
 
 	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()

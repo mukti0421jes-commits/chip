@@ -147,6 +147,10 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	cfg.EncryptInitiate = cfg.EncryptInitiate || globalConfig.EncryptInitiate
 	configMu.RUnlock()
 
+	// Hand the latest pushed endpoint-cache to this run; Scan applies it only when
+	// its bundleName matches the live bundle.
+	cfg.EndpointCacheJSON = currentEndpointCache()
+
 	mode := flow.Mode{Single: in.Single, Auto: in.Auto, Delay: time.Duration(in.DelaySec) * time.Second}
 	// wire the dashboard's per-step retry delays into the flow so the UI controller
 	// actually drives each step's retry gap (signin/verify/book/reserve/initiate).

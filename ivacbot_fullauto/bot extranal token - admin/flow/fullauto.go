@@ -28,6 +28,11 @@ func (r *Runner) Scan() {
 	}
 	combined := sc.combined
 	r.Config.ApplyEndpointScan(sc.ep)
+	// Overlay the pushed endpoint-cache (extract_fetch.js v15 output from the
+	// autocheck folder) when it was built for THIS exact live bundle — its
+	// deobfuscated endpoints/slot/dg-epay override the fast regex scan. On a bundle
+	// mismatch (or no push) it is skipped and the regex scan stands.
+	r.Config.ApplyEndpointCache(r.Config.EndpointCacheJSON, sc.bundle, r.log)
 	if sc.cipherOK {
 		r.Config.ApplyCipherScan(sc.cipher)
 	}
