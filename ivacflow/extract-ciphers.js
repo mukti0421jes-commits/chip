@@ -126,8 +126,13 @@ function b64(e){let t="",n="";for(let r,o,i=0,a=0;o=e.charAt(a++);~o&&(r=i%4?64*
 function rc4(e,key){let n,r,o=[],i=0,a="";e=b64(e);if(e===null)return null;for(r=0;r<256;r++)o[r]=r;for(r=0;r<256;r++){i=(i+o[r]+key.charCodeAt(r%key.length))%256;n=o[r];o[r]=o[i];o[i]=n;}r=0;i=0;for(let c=0;c<e.length;c++){r=(r+1)%256;i=(i+o[r])%256;n=o[r];o[r]=o[i];o[i]=n;a+=String.fromCharCode(e.charCodeAt(c)^o[(o[r]+o[i])%256]);}return a;}
 const arrCache={};function getArr(fn){if(fn in arrCache)return arrCache[fn];let st=src.indexOf("function "+fn+"(){const e=[");if(st<0)st=src.indexOf("function "+fn+"(){var e=[");if(st<0)return arrCache[fn]=null;const lb=src.indexOf("[",st);return arrCache[fn]=eval(src.slice(lb,mB(src,lb,"[","]")+1));}
 const baseDefs={},wrapDefs={};
+// FIX (keyword-base filter): JS reserved words / built-in names must never appear as the
+// "base" of a wrap-def — e.g. `function f(e,t){return function(e,t=!1)}` was previously
+// parsed as wrapDef{base:"function",inner:"e,t=!1"}, producing invalid JS in decl and
+// causing new Function() to throw, which made resolveExpr return null for the whole secret.
+const JS_KEYWORDS=new Set(["function","return","const","let","var","if","else","for","while","do","switch","case","break","continue","default","try","catch","finally","throw","new","this","class","typeof","instanceof","void","delete","in","of","yield","async","await","static","import","export","super","extends","null","undefined","true","false","Number","String","Boolean","Object","Array","Math","Promise","Symbol","Map","Set","WeakMap","WeakSet","Proxy","Reflect","JSON","Date","RegExp","Error"]);
 {let m,re=/function ([\w$]+)\((?:e,t|e)\)\{e-=(\d+)/g;while(m=re.exec(src)){const bs=src.indexOf("{",m.index);const body=src.slice(bs,mB(src,bs,"{","}")+1);const am=/=\s*([\w$]+)\(\)/.exec(body);(baseDefs[m[1]]=baseDefs[m[1]]||[]).push({idx:m.index,offset:+m[2],arrfn:am?am[1]:null,rc4:/o\[r\]\+t\.charCodeAt/.test(body)||/charCodeAt\(\w%\w\.length\)/.test(body)});}}
-{let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
+{let m,re=/function ([\w$]+)\((?:e,t|e)\)\{return ([\w$]+)\(/g;while(m=re.exec(src)){if(baseDefs[m[1]])continue;if(JS_KEYWORDS.has(m[2]))continue;const ci=src.indexOf("(",src.indexOf("return",m.index)+6);(wrapDefs[m[1]]=wrapDefs[m[1]]||[]).push({idx:m.index,base:m[2],inner:src.slice(ci+1,mP(src,ci))});}}
 function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;for(const d of a)if(b===null||Math.abs(d.idx-pos)<Math.abs(b.idx-pos))b=d;return b;}
 
 // ---- resolveExpr: supports keys assembled from ANY number of string-arrays ----
@@ -135,13 +140,19 @@ function nearest(map,name,pos){const a=map[name];if(!a)return null;let b=null;fo
 // terms that use it), so cost is O(sum of array lengths), not the product. Falls back
 // to full brute-force for 1-2 arrays if the independent pass is inconclusive.
 function splitTopPlus(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["){depth++;cur+=c;continue;}if(c===")"||c==="]"){depth--;cur+=c;continue;}if(c==="+"&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts.map(x=>x.trim()).filter(Boolean);}
+// Replace all bare occurrences of `word` in `s` that are NOT inside string literals.
+function replaceIdOutsideStrings(s,word,replacement){let out="",q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){out+=c+s[++i];continue;}if(c===q)q=null;out+=c;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;out+=c;i++;continue;}// word-boundary check
+const prevW=/\w/.test(i>0?s[i-1]:" ");const nextW=/\w/.test(s[i+word.length]||" ");if(!prevW&&s.slice(i,i+word.length)===word&&!nextW){out+=replacement;i+=word.length;continue;}out+=c;i++;}return out;}
+// Collect identifiers that appear at least once OUTSIDE string literals in s.
+function idsOutsideStrings(s){const out=new Set();let q=null,i=0;while(i<s.length){const c=s[i];if(q){if(c==="\\"&&q!=="`"){i+=2;continue;}if(c===q)q=null;i++;continue;}if(c==='"'||c==="'"||c==="`"){q=c;i++;continue;}const m=/^([A-Za-z_$][\w$]*)/.exec(s.slice(i));if(m){out.add(m[1]);i+=m[1].length;}else i++;}return out;}
 function ultimateArrfn(name,pos,guard){guard=guard||0;if(guard>12)return null;const w=nearest(wrapDefs,name,pos),b=nearest(baseDefs,name,pos);if(b&&(!w||Math.abs(b.idx-pos)<=Math.abs(w.idx-pos)))return b.arrfn;if(w){const inner=[...new Set((w.inner.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];for(const nm of inner){const af=ultimateArrfn(nm,pos,guard+1);if(af)return af;}return ultimateArrfn(w.base,pos,guard+1);}return null;}
 function resolveExpr(expr,pos){
   const calls=x=>[...new Set((x.match(/([A-Za-z_$][\w$]*)\(/g)||[]).map(t=>t.slice(0,-1)))];
   const need={base:{},wrap:{}};const arrset=new Set();const stack=calls(expr);
   while(stack.length){const n=stack.pop();if(need.base[n]||need.wrap[n])continue;
+    if(JS_KEYWORDS.has(n))continue; // FIX: skip reserved-word "functions" during traversal
     const w=nearest(wrapDefs,n,pos),b=nearest(baseDefs,n,pos);
-    if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner))stack.push(x);stack.push(w.base);}
+    if(w&&(!b||Math.abs(w.idx-pos)<Math.abs(b.idx-pos))){need.wrap[n]=w;for(const x of calls(w.inner)){if(!JS_KEYWORDS.has(x))stack.push(x);}if(!JS_KEYWORDS.has(w.base))stack.push(w.base);}
     else if(b){need.base[n]=b;if(b.arrfn)arrset.add(b.arrfn);}}
   const arr=[...arrset];
   if(arr.length===0)return null;
@@ -149,9 +160,12 @@ function resolveExpr(expr,pos){
   const rot=(a,r)=>a.slice(r).concat(a.slice(0,r));
   const ok=v=>typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3;
   // decoder defs (shared by both methods)
+  // FIX (safe-decl): skip any wrap whose resolved base is a JS keyword (those entries
+  // are mis-parsed no-ops; they are absent from need.wrap now due to the build-time filter,
+  // but guard here too so partial-rebuild paths are also safe).
   let decl="";
   for(const[n,d]of Object.entries(need.base))decl+=`const ${n}=(e,t)=>{const r=__arrs[${JSON.stringify(d.arrfn)}][e-${d.offset}];return r===undefined?null:(${d.rc4?"__rc4(r,t)":"__b64(r)"});};\n`;
-  for(const[n,w]of Object.entries(need.wrap))decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;
+  for(const[n,w]of Object.entries(need.wrap)){if(JS_KEYWORDS.has(w.base))continue;decl+=`function ${n}(e,t){return ${w.base}(${w.inner})}\n`;}
   let fnFull;try{fnFull=new Function("__arrs","__rc4","__b64",decl+"return ("+expr+")");}catch(e){return null;}
 
   // ---------- METHOD A: independent per-array rotation (scales to any N) ----------
@@ -159,7 +173,7 @@ function resolveExpr(expr,pos){
     const terms=splitTopPlus(expr);
     // per term: which array (if it's a decoder call)
     const termArr=terms.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
-    const fnTerms=new Function("__arrs","__rc4","__b64",decl+"return ["+terms.join(",")+"]");
+    let fnTerms;try{fnTerms=new Function("__arrs","__rc4","__b64",decl+"return ["+terms.join(",")+"]");}catch(e){throw e;}// propagate to outer try/catch
     // group term indices by array
     const groups={};arr.forEach(a=>groups[a]=[]);termArr.forEach((a,i)=>{if(a&&groups[a])groups[a].push(i);});
     // for each array, find rotations where all its terms decode printable
@@ -186,26 +200,7 @@ function resolveExpr(expr,pos){
 
   // ---------- METHOD B: full brute-force fallback (1-2 arrays) ----------
   if(arr.length===1){for(let r=0;r<baseArr[arr[0]].length;r++){try{const v=fnFull({[arr[0]]:rot(baseArr[arr[0]],r)},rc4,b64);if(ok(v))return v;}catch(e){}}return null;}
-  if(arr.length===2){
-    const a0=arr[0],a1=arr[1],A=baseArr[a0],B=baseArr[a1];
-    const terms2=splitTopPlus(expr);
-    const termArr2=terms2.map(t=>{const m=/^([A-Za-z_$][\w$]*)\(/.exec(t);return m?ultimateArrfn(m[1],pos):null;});
-    let fnTermsB=null;try{fnTermsB=new Function("__arrs","__rc4","__b64",decl+"return ["+terms2.join(",")+"]");}catch(e){}
-    if(fnTermsB){
-      const idx0=[],idx1=[];termArr2.forEach((a,i)=>{if(a===a0)idx0.push(i);else if(a===a1)idx1.push(i);});
-      const isPrint=v=>typeof v==="string"&&/^[\x20-\x7e]*$/.test(v);
-      let baseVals=null;try{baseVals=fnTermsB({[a0]:A,[a1]:B},rc4,b64);}catch(e){}
-      if(baseVals){
-        // precompute a0-terms per rotation r0 (+ printability), then a1-terms per r1
-        const rec0=[],good0=[];for(let r0=0;r0<A.length;r0++){let vals;try{vals=fnTermsB({[a0]:rot(A,r0),[a1]:B},rc4,b64);}catch(e){rec0.push(null);continue;}const m={};let okp=true;for(const i of idx0){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec0.push(m);if(okp)good0.push(r0);}
-        const rec1=[],good1=[];for(let r1=0;r1<B.length;r1++){let vals;try{vals=fnTermsB({[a0]:A,[a1]:rot(B,r1)},rc4,b64);}catch(e){rec1.push(null);continue;}const m={};let okp=true;for(const i of idx1){m[i]=vals[i];if(!isPrint(vals[i]))okp=false;}rec1.push(m);if(okp)good1.push(r1);}
-        const L0=good0.length?good0:[...Array(A.length).keys()];
-        const L1=good1.length?good1:[...Array(B.length).keys()];
-        for(const r0 of L0){const m0=rec0[r0];if(!m0)continue;for(const r1 of L1){const m1=rec1[r1];if(!m1)continue;let sec="";for(let i=0;i<terms2.length;i++)sec+=(i in m0?m0[i]:(i in m1?m1[i]:baseVals[i]));if(ok(sec))return sec;}}
-        return null;
-      }
-    }
-    const A2=baseArr[arr[0]],B2=baseArr[arr[1]];for(let r0=0;r0<A2.length;r0++){const A0=rot(A2,r0);for(let r1=0;r1<B2.length;r1++){try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B2,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;}
+  if(arr.length===2){const A=baseArr[arr[0]],B=baseArr[arr[1]];for(let r0=0;r0<A.length;r0++){const A0=rot(A,r0);for(let r1=0;r1<B.length;r1++){try{const v=fnFull({[arr[0]]:A0,[arr[1]]:rot(B,r1)},rc4,b64);if(ok(v))return v;}catch(e){}}}return null;}
   return null;
 }
 
@@ -225,61 +220,6 @@ function roleScores(pos){const w=src.slice(Math.max(0,pos-1400),pos+1400);
 function splitTopComma(s){const parts=[];let depth=0,q=null,cur="";for(let i=0;i<s.length;i++){const c=s[i];if(q){cur+=c;if(c==="\\"){cur+=s[++i]||"";continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;cur+=c;continue;}if(c==="("||c==="["||c==="{"){depth++;cur+=c;continue;}if(c===")"||c==="]"||c==="}"){depth--;cur+=c;continue;}if(c===","&&depth===0){parts.push(cur);cur="";continue;}cur+=c;}if(cur.trim())parts.push(cur);return parts;}
 function cfgNum(expr){let m=/["'`](-?\d+)["'`]/.exec(expr);if(m)return parseInt(m[1],10);m=/(-?\d+)/.exec(expr);return m?parseInt(m[1],10):NaN;}
 function braceObj(str,b){let depth=0,q=null;for(let j=b;j<str.length;j++){const c=str[j];if(q){if(c==="\\"){j++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")depth++;else if(c==="}"){if(--depth===0)return j;}}return -1;}
-// substitute local string-constant variables (e.g. const e="f*^(") into an expression,
-// so decoder calls that use them as an RC4 key (n(e,-177)) can be evaluated.
-function subLocalStr(expr, objStart){
-  const region=src.slice(Math.max(0,objStart-6000),objStart);
-  const ids=[...new Set((expr.match(/[A-Za-z_$][\w$]*/g)||[]))];
-  for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
-    if(new RegExp("\\b"+esc+"\\s*\\(").test(expr))continue;
-    const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
-    let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
-    if(best!==null)expr=expr.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}
-  return expr;
-}
-/* ===== EXECUTION-BASED fallback (for deep-obfuscation bundles the static resolver can't map) =====
-   Runs the bundle's OWN decoder cluster around the secret so every string-array shuffles into place
-   exactly as the browser does, exposes the base wrapper fns, then evaluates the concat with its
-   local wrappers. Used only when resolveExpr() returns null on a direct-concat secret. */
-function runDecoderClusterExec(P){
-  const decRe=/function [\w$]+\((?:e,t|e)\)\{e-=\d+/g, arrRe=/function [\w$]+\(\)\{(?:const|var) e=\[/g;
-  let starts=[];for(const m of src.matchAll(decRe))starts.push(m.index);for(const m of src.matchAll(arrRe))starts.push(m.index);
-  starts=starts.filter(x=>x<P).sort((a,b)=>a-b);
-  if(!starts.length)return {};
-  let start=starts[starts.length-1];
-  for(let i=starts.length-1;i>0;i--){if(starts[i]-starts[i-1]<12000)start=starts[i-1];else break;}
-  const shs=[...src.matchAll(/for\(;;\)try\{if\(/g)].map(m=>m.index).filter(x=>x>start&&x<P+14000);
-  const lastSh=shs.length?shs[shs.length-1]:P;
-  let b=0,q=null,endIdx=-1;
-  for(let k=start;k<src.length;k++){const c=src[k];if(q){if(c==="\\"){k++;continue;}if(c===q)q=null;continue;}if(c==='"'||c==="'"||c==="`"){q=c;continue;}if(c==="{")b++;else if(c==="}")b--;if(k>=lastSh&&b===0){endIdx=k+1;break;}}
-  if(endIdx<0)endIdx=Math.min(src.length,lastSh+4000);
-  const region=src.slice(start,endIdx);
-  const names=new Set();
-  for(const m of region.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{(?:return [\w$]+\(|e-=)/g))names.add(m[1]);
-  let exposer="";for(const n of names)exposer+=`try{globalThis.__DEC['${n}']=${n}}catch(e){}\n`;
-  globalThis.__DEC={};
-  try{ new Function("'use strict';\n"+region+"\n"+exposer)(); }catch(e){}
-  return globalThis.__DEC;
-}
-function localWrappersExec(P){
-  const win=src.slice(Math.max(0,P-6000),P+3000), base=Math.max(0,P-6000), defs={};
-  for(const m of win.matchAll(/function ([\w$]+)\((?:e,t|e)\)\{return [\w$]+\([^{}]*\)\}/g)){
-    const nm=m[1],ix=base+m.index;
-    if(!defs[nm]||Math.abs(ix-P)<Math.abs(defs[nm].idx-P))defs[nm]={idx:ix,text:m[0]};
-  }
-  return defs;
-}
-function decodeSecretExec(secretExpr,P){
-  const decoders=runDecoderClusterExec(P), wrappers=localWrappersExec(P);
-  const need=new Set(), scan=s=>{for(const m of s.matchAll(/([A-Za-z_$][\w$]*)\(/g))need.add(m[1]);};
-  scan(secretExpr);
-  let changed=true;while(changed){changed=false;const before=need.size;for(const n of [...need]){if(wrappers[n])scan(wrappers[n].text);}if(need.size>before)changed=true;}
-  const args=[],vals=[];for(const n of need){if(decoders[n]&&!wrappers[n]){args.push(n);vals.push(decoders[n]);}}
-  let decl="";for(const n of need){if(wrappers[n])decl+=wrappers[n].text+"\n";}
-  const code=`const [${args.join(",")}]=arguments[0];\n${decl}\nreturn (${secretExpr});`;
-  try{const v=new Function(code)(vals);return (typeof v==="string"&&/^[\x20-\x7e]+$/.test(v)&&v.length>=3)?v:null;}catch(e){return null;}
-}
-
 const found=[];
 {let idx=0;const NEEDLE="secret:";
  while((idx=src.indexOf(NEEDLE,idx))!==-1){
@@ -311,36 +251,32 @@ const found=[];
             const val=of.slice(ci+1).trim();
             if(/^function\b/.test(val)) continue;
             if(!/[A-Za-z_$][\w$]*\(/.test(val)) continue;    // must use a decoder call
-            const sval=subLocalStr(val,objStart);            // resolve local key vars (const e="...")
-            let dec=null; try{ dec=resolveExpr(sval,objStart); }catch(e){}
-            if(dec && !/\s/.test(dec) && dec.length>=10 && dec.length>bestLen){ best=sval; bestLen=dec.length; }
+            // Inline any bare string-literal locals (e.g. `const e = "f*^("`) before resolving
+            let resolveVal=val;
+            {const vregion=src.slice(Math.max(0,objStart-6000),oe>0?oe+1:objStart);
+             const vids=idsOutsideStrings(resolveVal);
+             for(const vid of vids){const vesc=vid.replace(/[$]/g,"\\$");
+               if(new RegExp("\\b"+vesc+"\\s*\\(").test(resolveVal))continue;
+               const vdefRe=new RegExp("\\b"+vesc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
+               let vbest=null,vmm;while((vmm=vdefRe.exec(vregion)))vbest=vmm[2];
+               if(vbest!==null)resolveVal=replaceIdOutsideStrings(resolveVal,vid,JSON.stringify(vbest));}}
+            let dec=null; try{ dec=resolveExpr(resolveVal,objStart); }catch(e){}
+            if(dec && !/\s/.test(dec) && dec.length>=10 && dec.length>bestLen){ best=val; bestLen=dec.length; }
           }
           if(best) secretExpr=best;
         }
       }
     }
    }
-   // Resolve the RAW secret expression FIRST. The old code eagerly substituted "local vars", but its
-   // \b-word match also hit letters INSIDE string-literal args (e.g. the `e` in "e[!*"), corrupting
-   // concat-built keys like AC6N`}ULIz…6Q<-o… so they failed to decode and a decoy sitekey object was
-   // picked instead. Raw-first avoids that; substitution is only a fallback.
-   const _rawExpr=secretExpr;
-   let secret=resolveExpr(_rawExpr,objStart);
-   if(!secret){
-     let subbed=_rawExpr;
-     const region=src.slice(Math.max(0,objStart-6000),objStart);
-     const ids=[...new Set((subbed.match(/[A-Za-z_$][\w$]*/g)||[]))];
-     for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
-       if(new RegExp("\\b"+esc+"\\s*\\(").test(subbed))continue;
-       const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
-       let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
-       if(best!==null)subbed=subbed.replace(new RegExp("\\b"+esc+"\\b","g"),JSON.stringify(best));}
-     if(subbed!==_rawExpr)secret=resolveExpr(subbed,objStart);
-   }
-   if(!secret){ secret=decodeSecretExec(_rawExpr,objStart); if(secret)console.log("[info] version",version,"secret decoded via EXECUTION fallback @",objStart); }
+   {const region=src.slice(Math.max(0,objStart-6000),objStart);
+    const ids=idsOutsideStrings(secretExpr);
+    for(const id of ids){const esc=id.replace(/[$]/g,"\\$");
+      if(new RegExp("\\b"+esc+"\\s*\\(").test(secretExpr))continue;
+      const defRe=new RegExp("\\b"+esc+"\\s*=\\s*([\"'`])((?:\\\\.|(?!\\1).)*)\\1","g");
+      let best=null,mm;while((mm=defRe.exec(region)))best=mm[2];
+      if(best!==null)secretExpr=replaceIdOutsideStrings(secretExpr,id,JSON.stringify(best));}}
+   const secret=resolveExpr(secretExpr,objStart);
    if(!secret){console.log("[warn] config version",version,"secret decode FAILED @",objStart,"| secret:",map.secret.slice(0,60));continue;}
-   // A sitekey-shaped value (Cloudflare Turnstile keys start 0x4AAAAA…) is a decoy, never the cipher key.
-   if(/^0x4AAAAA/i.test(secret)){console.log("[info] skipped sitekey-shaped decoy secret @",objStart,"(not a cipher key)");continue;}
    const sc=roleScores(objStart);
    found.push({secret,skip,len,version,sig:sc.sig,res:sc.res,sigEv:sc.sigEv,resEv:sc.resEv});
  }
