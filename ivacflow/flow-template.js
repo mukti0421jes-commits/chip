@@ -13,7 +13,7 @@ const STEPS = [
     headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-sec-navigation-state': '{{ivac:navState}}' },
     body: { phone: '{{ivac:phone}}', password: '{{ivac:password}}', c: '{{ivac:captcha}}' } },
 
-  { name: 'VERIFY OTP', method: 'POST', epKey: 'verifySigninOtp', fallback: '/iams/api/v1/otp/verifySigninOtp',
+  { name: 'VERIFY OTP', method: 'POST', epKey: 'verifyOtp', fallback: '/iams/api/v1/otp/verifySigninOtp',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json' },
     body: { requestId: '{{ivac:requestId}}', phone: '{{ivac:phone}}', code: '{{ivac:otp}}', otpChannel: 'PHONE' } },
 

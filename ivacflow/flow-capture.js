@@ -709,8 +709,20 @@ function extractFromCaptured(entries, final) {
     if (/\/file\/over-?view/i.test(np)) extracted.endpoints.overView = urlPath;
     if (/\/file\/file-confirmation/i.test(np)) extracted.endpoints.fileConfirmation = urlPath;
     if (/\/file\/payment-amount/i.test(np)) extracted.endpoints.paymentAmount = urlPath;
-    if (/\/appointment.*booking-config/i.test(np)) extracted.endpoints.bookingConfig = urlPath;
+    // CONFIG (appointment-booking-config, POST) and AMOUNT (get-booking-config, GET)
+    // both contain "booking-config" — keep them under separate keys so neither
+    // step falls back to a hard-coded path.
+    if (/get-booking-config/i.test(np)) extracted.endpoints.getBookingConfig = urlPath;
+    else if (/booking-config/i.test(np)) extracted.endpoints.bookingConfig = urlPath;
     if (/\/slots\/.*reserve/i.test(np)) extracted.endpoints.reserveSlot = urlPath;
+  }
+  // The mock walk never performs a real multipart file upload, so the upload
+  // endpoint is never observed. It sits in the bundle as a plaintext path
+  // (e.g. /file/upload-file-v453 or /file/upload_file_v2) — recover it directly
+  // so PRIMARY UPLOAD shows the real path instead of a hard-coded fallback.
+  if (!extracted.endpoints.uploadFile && BUNDLE_SRC) {
+    const um = BUNDLE_SRC.match(/\/file\/upload[-_]file(?:[-_]v\d+)?/i);
+    if (um) extracted.endpoints.uploadFile = '/iams/api/v1' + um[0];
   }
   // Fallback to static extraction
   if (!extracted.slotId && BUNDLE_IDS.slotId) extracted.slotId = BUNDLE_IDS.slotId;
