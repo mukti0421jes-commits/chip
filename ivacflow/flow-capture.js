@@ -254,9 +254,14 @@ async function fireMutations(page, payload, onAfterEach) {
 function mockBodyFor(url) {
   // User-supplied overrides first
   for (const key of Object.keys(RESPONSES)) if (url.includes(key)) return RESPONSES[key];
+  // Obfuscated bundles freely swap - and _ in endpoint names (e.g. v4-sign_in,
+  // file_confirmation-and_slot-status). Match detections against a separator-
+  // normalized copy so a mock still fires whichever separator the bundle used.
+  // Captures (url.match) stay on the original url so real ids are untouched.
+  const nurl = url.replace(/[-_]+/g, "-");
 
   // ── Auth sign-in (v2, v3, any version) ──
-  if (/\/auth\/.*sign-?in/i.test(url)) {
+  if (/\/auth\/.*sign-?in/i.test(nurl)) {
     flowState.signedIn = true;
     return {
       data: {
@@ -274,7 +279,7 @@ function mockBodyFor(url) {
   }
 
   // ── OTP verify ──
-  if (/\/otp\/verify/i.test(url)) {
+  if (/\/otp\/verify/i.test(nurl)) {
     flowState.otpVerified = true;
     return {
       data: {
@@ -290,7 +295,7 @@ function mockBodyFor(url) {
   }
 
   // ── OTP send/signup ──
-  if (/\/otp\/(send|signup|resend)/i.test(url)) {
+  if (/\/otp\/(send|signup|resend)/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'OTP sent',
       data: { requestId: 'mock-request-id', phone: MOCK.phone, otpChannel: 'PHONE', status: 'SENT' },
@@ -298,7 +303,7 @@ function mockBodyFor(url) {
   }
 
   // ── Auth signup ──
-  if (/\/auth\/signup/i.test(url)) {
+  if (/\/auth\/signup/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'PENDING', otpChannel: 'PHONE' },
@@ -306,7 +311,7 @@ function mockBodyFor(url) {
   }
 
   // ── File upload ──
-  if (/\/file\/upload/i.test(url)) {
+  if (/\/file\/upload/i.test(nurl)) {
     flowState.fileUploaded = true;
     return {
       successFlag: true, statusCode: 200, message: 'File uploaded',
@@ -319,7 +324,7 @@ function mockBodyFor(url) {
   }
 
   // ── File over-view / overview ──
-  if (/\/file\/over-?view/i.test(url)) {
+  if (/\/file\/over-?view/i.test(nurl)) {
     flowState.fileUploaded = true;
     return {
       data: [{
@@ -348,7 +353,7 @@ function mockBodyFor(url) {
   //   uploadFile && !uploadEnd && !fileUploadConfirmed → allowed: [notice, mission, file-upload]
   //   fileUploadConfirmed && slotOpen → allowed: [time-slot, continue-payment]
   // So fileUploadConfirmed must stay false until mission is selected.
-  if (/\/file\/file-confirmation/i.test(url) && /slot.?status/i.test(url)) {
+  if (/\/file\/file-confirmation/i.test(nurl) && /slot.?status/i.test(nurl)) {
     const now = new Date().toISOString();
     if (DEBUG) console.log('  [mock] slot_status → missionSelected=' + flowState.missionSelected + ' serverTime=' + now);
     if (flowState.missionSelected) {
@@ -382,7 +387,7 @@ function mockBodyFor(url) {
   }
 
   // ── File confirmation (without slot_status) ──
-  if (/\/file\/file-confirmation/i.test(url)) {
+  if (/\/file\/file-confirmation/i.test(nurl)) {
     flowState.fileConfirmed = true;
     return {
       successFlag: true, statusCode: 200, message: 'Confirmed',
@@ -398,7 +403,7 @@ function mockBodyFor(url) {
   }
 
   // ── Payment amount ──
-  if (/\/file\/payment-amount/i.test(url)) {
+  if (/\/file\/payment-amount/i.test(nurl)) {
     return {
       data: 1500.0,
       statusCode: 200,
@@ -409,7 +414,7 @@ function mockBodyFor(url) {
   }
 
   // ── Appointment POST (initial appointment creation) ──
-  if (/\/appointment\/?$/i.test(url)) {
+  if (/\/appointment\/?$/i.test(nurl)) {
     return {
       data: null,
       statusCode: 200,
@@ -420,7 +425,7 @@ function mockBodyFor(url) {
   }
 
   // ── Appointment booking config (mission page submit) ──
-  if (/\/appointment-booking-config/i.test(url)) {
+  if (/\/appointment-booking-config/i.test(nurl)) {
     flowState.missionSelected = true;
     return {
       data: null,
@@ -432,7 +437,7 @@ function mockBodyFor(url) {
   }
 
   // ── High commissions (mission + centre pickers) ──
-  if (/\/high-commission/i.test(url)) {
+  if (/\/high-commission/i.test(nurl)) {
     const missions = [
       { id: 'COM-MOCK-001', name: 'Dhaka', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
     ];
@@ -441,7 +446,7 @@ function mockBodyFor(url) {
     ];
     // A by-id lookup returns one record; the bare collection returns a list.
     // Serving the wrong one throws `.map is not a function` and blanks the page.
-    const singular = /by-id|[?&]id=/i.test(url);
+    const singular = /by-id|[?&]id=/i.test(nurl);
     const defaultShape = singular ? 'object' : 'array';
     const body = shapeFor('high-commissions', defaultShape) === 'array'
       ? missions.map(m => ({ ...m }))
@@ -459,7 +464,7 @@ function mockBodyFor(url) {
   }
 
   // ── IVAC centers ──
-  if (/\/ivac-center/i.test(url)) {
+  if (/\/ivac-center/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: [
@@ -469,7 +474,7 @@ function mockBodyFor(url) {
   }
 
   // ── Visa types ──
-  if (/\/visa.?type/i.test(url)) {
+  if (/\/visa.?type/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: [
@@ -481,7 +486,7 @@ function mockBodyFor(url) {
   }
 
   // ── Booking config ──
-  if (/\/appointment.*booking-config/i.test(url) || /\/get-booking-config/i.test(url)) {
+  if (/\/appointment.*booking-config/i.test(nurl) || /\/get-booking-config/i.test(nurl)) {
     return {
       data: {
         appointmentDate: FUTURE_DATES,
@@ -502,7 +507,7 @@ function mockBodyFor(url) {
   }
 
   // ── Reserve slot (capture slotId from URL) ──
-  if (/\/slots\/.*\/reserve/i.test(url)) {
+  if (/\/slots\/.*\/reserve/i.test(nurl)) {
     const sm = url.match(/\/slots\/([0-9a-zA-Z_-]{20,40})\/reserve/);
     if (sm) flowState.capturedSlotId = sm[1];
     flowState.slotReserved = true;
@@ -517,7 +522,7 @@ function mockBodyFor(url) {
   }
 
   // ── Payment initiate (capture dgepayUuid from URL) ──
-  if (/\/payment\/.*\/(dg-epay|ssl)\/initiate/i.test(url) || /\/payment\/.*\/initiate/i.test(url)) {
+  if (/\/payment\/.*\/(dg-epay|ssl)\/initiate/i.test(nurl) || /\/payment\/.*\/initiate/i.test(nurl)) {
     const pm = url.match(/\/payment\/([0-9a-zA-Z_-]{20,40})\//);
     if (pm) flowState.capturedDgepayUuid = pm[1];
     flowState.paymentInitiated = true;
@@ -533,7 +538,7 @@ function mockBodyFor(url) {
   }
 
   // ── Profile ──
-  if (/\/profile/i.test(url)) {
+  if (/\/profile/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'Mohammad Rahman', email: 'mock@test.com', status: 'ACTIVE' },
@@ -541,7 +546,7 @@ function mockBodyFor(url) {
   }
 
   // ── Invoice ──
-  if (/\/invoice/i.test(url)) {
+  if (/\/invoice/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: { invoiceId: 'mock-invoice-id', amount: 8200, status: 'PAID', downloadUrl: 'https://mock/invoice.pdf' },
@@ -549,7 +554,7 @@ function mockBodyFor(url) {
   }
 
   // ── Forgot password ──
-  if (/\/forgot-password/i.test(url)) {
+  if (/\/forgot-password/i.test(nurl)) {
     return {
       successFlag: true, statusCode: 200, message: 'Success',
       data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'SENT' },
@@ -667,40 +672,45 @@ function extractFromCaptured(entries, final) {
       : /payment\/.*initiate|\/initiate/i.test(p) ? 'initiate' : '';
     const seenTok = {};
     for (const e of entries) {
-      const p = e.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      const rawP = e.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      const p = rawP.replace(/[-_]+/g, '-');   // normalise for step detection
       if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(p)) continue;
       const step = stepOf(p); if (!step || seenTok[step]) continue;
       let bodyC = false; try { const j = JSON.parse(e.body || '{}'); if (j.c) bodyC = true; } catch (_) {}
       const xtok = !!(e.headers && e.headers['x-token']);
       if (!bodyC && !xtok) continue;
       seenTok[step] = true;
-      extracted.tokenMap.push({ step, field: bodyC ? 'c' : 'x-token', encrypted: bodyC, path: p });
+      extracted.tokenMap.push({ step, field: bodyC ? 'c' : 'x-token', encrypted: bodyC, path: rawP });
     }
   }
   for (const e of entries) {
     const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
+    // Detection normalises - and _ so an obfuscated bundle (v4-sign_in,
+    // file_confirmation-and_slot-status) still matches; the ORIGINAL urlPath is
+    // stored so the endpoint is reported exactly as the bundle uses it.
+    const np = urlPath.replace(/[-_]+/g, '-');
     // Skip the direct-fallback's fabricated URLs (mock-uuid / mock-slot-id /
     // mock-appointment…). They are our placeholders, not real bundle values,
     // and must never leak into the extracted output.
-    if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(urlPath)) continue;
+    if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(np)) continue;
     if (!extracted.dgepayUuid) {
-      const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(urlPath);
+      const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg[-_]epay\/initiate/i.exec(urlPath);
       if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
     }
     if (!extracted.slotId) {
-      const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve-slot/.exec(urlPath);
+      const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve[-_]slot/i.exec(urlPath);
       if (slotMatch) extracted.slotId = slotMatch[1];
     }
-    if (/\/payment\/.*\/dg-epay\/initiate/.test(urlPath)) extracted.endpoints.paymentInitiate = urlPath;
-    if (/\/payment\/.*initiate/.test(urlPath)) extracted.endpoints.paymentInitiate = extracted.endpoints.paymentInitiate || urlPath;
-    if (/\/auth\/.*sign-?in/i.test(urlPath)) extracted.endpoints.signin = urlPath;
-    if (/\/otp\/verify/i.test(urlPath)) extracted.endpoints.verifyOtp = urlPath;
-    if (/\/file\/upload/i.test(urlPath)) extracted.endpoints.uploadFile = urlPath;
-    if (/\/file\/over-?view/i.test(urlPath)) extracted.endpoints.overView = urlPath;
-    if (/\/file\/file-confirmation/i.test(urlPath)) extracted.endpoints.fileConfirmation = urlPath;
-    if (/\/file\/payment-amount/i.test(urlPath)) extracted.endpoints.paymentAmount = urlPath;
-    if (/\/appointment.*booking-config/i.test(urlPath)) extracted.endpoints.bookingConfig = urlPath;
-    if (/\/slots\/.*reserve/i.test(urlPath)) extracted.endpoints.reserveSlot = urlPath;
+    if (/\/payment\/.*\/dg-epay\/initiate/.test(np)) extracted.endpoints.paymentInitiate = urlPath;
+    if (/\/payment\/.*initiate/.test(np)) extracted.endpoints.paymentInitiate = extracted.endpoints.paymentInitiate || urlPath;
+    if (/\/auth\/.*sign-?in/i.test(np)) extracted.endpoints.signin = urlPath;
+    if (/\/otp\/verify/i.test(np)) extracted.endpoints.verifyOtp = urlPath;
+    if (/\/file\/upload/i.test(np)) extracted.endpoints.uploadFile = urlPath;
+    if (/\/file\/over-?view/i.test(np)) extracted.endpoints.overView = urlPath;
+    if (/\/file\/file-confirmation/i.test(np)) extracted.endpoints.fileConfirmation = urlPath;
+    if (/\/file\/payment-amount/i.test(np)) extracted.endpoints.paymentAmount = urlPath;
+    if (/\/appointment.*booking-config/i.test(np)) extracted.endpoints.bookingConfig = urlPath;
+    if (/\/slots\/.*reserve/i.test(np)) extracted.endpoints.reserveSlot = urlPath;
   }
   // Fallback to static extraction
   if (!extracted.slotId && BUNDLE_IDS.slotId) extracted.slotId = BUNDLE_IDS.slotId;
