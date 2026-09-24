@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.7
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.7: full-auto for muf1m85x bundle — separator-agnostic endpoint families (handles scrambled -/_ renames), cipher v5 LFSR key byte-verified, slot-id + all 10 endpoints resolve dynamically; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.5.8
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.8: reserve now handles status=FULL (all slots temporarily held by other users) — recognised as transient, fast-retry ~1.5s until a hold drops, clear FULL message. v10.5.7: full-auto for muf1m85x bundle (separator-agnostic endpoints, cipher v5 LFSR byte-verified, dynamic slot-id); sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -7330,6 +7330,8 @@ async function loadReserveDates() {
 })();
 
 let _reserveLastAt = 0;   // gate: last time a reserve API call was launched (Auto/Single only)
+let _reserveLastWasFull = false;   // last reserve response was status=FULL (slots held by others → retry FAST)
+const RESERVE_FULL_RETRY_MS = 1500;   // when a date is FULL, hammer this fast (slots free the instant someone's TTL/payment drops)
 async function stepReserve(signal) {
     if (!_forceStep && isStepAlreadyDone('reserve')) { logStatus(`⏭ Reserve already done`, 'g'); return { win: true, skipped: true }; }
     if (!sessionState.accessToken) { if (_forceStep) logStatus('⚠ No session', 'y'); else { logStatus('❌ No session', 'r'); return { win: false }; } }
@@ -7341,7 +7343,11 @@ async function stepReserve(signal) {
     // NOTE: skip the gate in Parallel mode — there the many concurrent hits are intentional
     // (leaky-bucket); the gate is only for accidental double-fire in plain Auto/Single.
     if ((isAutoOn() || isSingleOn()) && !isParallelOn()) {
-        const _gap = Math.max((getStepDelaySec('reserve') || 0) * 1000, 1500);
+        // When the previous attempt came back FULL (date's slots temporarily held by other users
+        // completing payment), the request itself was well-formed — retry FAST so we grab a slot the
+        // instant someone's hold drops, instead of waiting the full ~21s step delay. Otherwise use the
+        // normal step-delay gate to avoid accidental double-fire / 429.
+        const _gap = _reserveLastWasFull ? RESERVE_FULL_RETRY_MS : Math.max((getStepDelaySec('reserve') || 0) * 1000, 1500);
         if (_reserveLastAt && (Date.now() - _reserveLastAt) < _gap) {
             logStatus(`⏭ Reserve blocked — within ${Math.round(_gap/1000)}s retry delay (duplicate)`, 'y');
             return { win: false, cancelled: true };
@@ -7364,6 +7370,19 @@ async function stepReserve(signal) {
         const r = await H2.fetchH2(RESERVE_URL, { method: 'POST', signal: localAc.signal, headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache', 'x-v-request-meta': 'windos.s' }, referrer: API_REFERRER, body: JSON.stringify({ c: encryptedCaptchaToken, appointmentDate }) });
         let body = null; try { body = await r.json(); } catch(e) {} const reserved = isReservedResponse(body, r.status);
         const burn = shouldBurnToken(r.status, body); if (burn) tokenQueueInvalidate(captchaToken); else unregisterTokenInFlight(captchaToken, localAc);
+        // FULL = request accepted, captcha valid, but every slot for this date is temporarily held by
+        // other users completing payment (server sends reserveTtlSeconds + a "held" message). This is
+        // transient contention, NOT an error — keep retrying FAST until a hold drops and a slot frees.
+        const _rst = ((body && (body.status || (body.data && body.data.status))) || '').toString().toUpperCase();
+        const _isFull = !reserved && r.status >= 200 && r.status < 300 &&
+            (_rst === 'FULL' || /all slots.*held|temporarily held|please check back/i.test((body && body.message) || ''));
+        _reserveLastWasFull = _isFull;
+        if (_isFull) {
+            const _ttl = (body && (body.reserveTtlSeconds ?? body.data?.reserveTtlSeconds));
+            netLogUpdate(logId, { status: r.status, state: 'fail', note: `FULL — held${_ttl ? ' • TTL '+_ttl+'s' : ''} • retrying fast` });
+            logStatus(`⏳ Date FULL — সব slot অন্যরা payment-এ hold করে রেখেছে${_ttl ? ` (TTL ${_ttl}s)` : ''} • fast-retry cholche…`, 'y');
+            return { win: false, full: true };
+        }
         netLogUpdate(logId, { status: r.status, state: reserved ? 'ok' : 'fail', note: reserved ? `${body?.status||body?.data?.status||'?'} • ${body?.appointmentDate||body?.data?.appointmentDate||''}` : (body?.message || `HTTP ${r.status}`) });
         if (reserved) {
             raceCoord.declareWin('reserve', { win: true, data: body });
@@ -7682,7 +7701,9 @@ async function runFullAuto() {
         // 10) Book
         if (!await faStep('Book', () => runStepSmart('book', stepBook), () => !!sessionState.appointmentId, { timeout: 90000 })) return faLog('⏹ stopped at Book', 'r');
         // 11) Reserve
-        if (!await faStep('Reserve', () => runStepSmart('reserve', stepReserve), () => !!sessionState.reservationId, { timeout: 120000 })) return faLog('⏹ stopped at Reserve', 'r');
+        // Reserve keeps retrying (faStep loops until reservationId or Stop). delay:1500 lets FULL-dates
+        // (slots held by others) be re-hit fast the moment a hold drops; the in-step gate still throttles.
+        if (!await faStep('Reserve', () => runStepSmart('reserve', stepReserve), () => !!sessionState.reservationId, { timeout: 120000, delay: 1500 })) return faLog('⏹ stopped at Reserve', 'r');
         // 12) Initiate
         await faStep('Initiate', () => runStepSmart('initiate', stepInitiate), () => faWaitLog(/initiat|payment|webview|✅/i, 30000), { timeout: 90000, retries: 6 });
         faLog('🎉 FULL AUTO finished', 'g');
