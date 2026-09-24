@@ -113,9 +113,11 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 	sharedScanMu.Unlock()
 
 	// FIRST caller does the actual download + parse (RJ SLOT A_E retry loop).
-	const maxTries = 8
+	// RETRY UNTIL SUCCESS: keep trying the live bundle every 2s until it is found
+	// (or the user presses Stop). No fixed cap — a slow/503 site never makes the
+	// scan give up and fall through to stale built-ins.
 	var combined string
-	for attempt := 1; attempt <= maxTries && !stopped(); attempt++ {
+	for attempt := 1; !stopped(); attempt++ {
 		urls := FindBundleURLs(f, origin)
 		if len(urls) > 0 {
 			if c, _ := DownloadBundles(f, urls); c != "" {
@@ -137,7 +139,7 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 				log("🔎 A_E origin returned " + itoa(len(body)) + " bytes: " + snip)
 			}
 		}
-		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + "/" + itoa(maxTries) + ") — retry in 2s")
+		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + ") — retry in 2s (until success)")
 		sleep(2 * time.Second)
 	}
 	j.combined = combined
