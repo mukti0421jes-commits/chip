@@ -473,7 +473,9 @@ function renderProgress(captured){
   const urls=(captured||[]).map(e=>String((e&&e.url)||''));
   let done=0,chips='';
   for(const s of FLOW_STEPS){
-    const hit=urls.some(u=>s.re.test(u));
+    // obfuscated bundles swap - and _ in path names (reserve_slot vs reserve-slot),
+    // so normalise separators before the step regex — else a real step shows as undone.
+    const hit=urls.some(u=>s.re.test(u.replace(/[-_]+/g,'-')));
     if(hit)done++;
     chips+='<span style="margin-right:12px;white-space:nowrap">'+(hit?'✅':'⬜')+' '+s.label+'</span>';
   }
@@ -484,11 +486,12 @@ function renderProgress(captured){
 function resetProgress(){renderProgress([]);}
 function stepName(url){
   const u=String(url||'');
-  if(/sign-?in/i.test(u))return'SIGN IN';
-  if(/otp\\/verif/i.test(u))return'VERIFY OTP';
-  if(/reserve-slot/i.test(u))return'RESERVE';
-  if(/payment\\/.*initiate/i.test(u))return'PAYMENT INITIATE';
-  if(/upload/i.test(u))return'PRIMARY UPLOAD';
+  const n=u.replace(/[-_]+/g,'-');   // normalise - / _ so obfuscated paths still match
+  if(/sign-?in/i.test(n))return'SIGN IN';
+  if(/otp\\/verif/i.test(n))return'VERIFY OTP';
+  if(/reserve-slot/i.test(n))return'RESERVE';
+  if(/payment\\/.*initiate/i.test(n))return'PAYMENT INITIATE';
+  if(/upload/i.test(n))return'PRIMARY UPLOAD';
   return u.replace(/^\\/iams\\/api\\/v\\d+/,'')||u;
 }
 function renderCipher(c){
