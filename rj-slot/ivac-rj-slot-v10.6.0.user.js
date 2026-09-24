@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.5.9
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.6.0
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -358,8 +358,11 @@ H2.preWarm();
 const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v2-sign-in";
 const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
 const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
-function _navState()     { return X_SEC_NAV_STATE; }
-function _runtimeState() { return X_SEC_RUNTIME_STATE; }
+// Prefer the LIVE value captured from the site's real traffic (RJ_DYN.headers) — these security
+// states rotate per session/device; fall back to the hardcoded constant only if nothing captured yet.
+function _navState()     { try { return (RJ_DYN.headers && RJ_DYN.headers['x-sec-navigation-state']) || X_SEC_NAV_STATE; } catch (e) { return X_SEC_NAV_STATE; } }
+function _runtimeState() { try { return (RJ_DYN.headers && RJ_DYN.headers['x-sec-runtime-state'])   || X_SEC_RUNTIME_STATE; } catch (e) { return X_SEC_RUNTIME_STATE; } }
+function _vReqMeta()      { try { return (RJ_DYN.headers && RJ_DYN.headers['x-v-request-meta']) || 'windos.s'; } catch (e) { return 'windos.s'; } }
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_SIGNUP_CONSENT = "https://api.ivacbd.com/iams/api/v1/auth/signup/consent";
 const API_SIGNUP_STATUS  = "https://api.ivacbd.com/iams/api/v1/auth/signup/status";
@@ -409,7 +412,7 @@ function rjRewriteUrl(url) {
             }
         }
         // 4) dg-epay payment-method-id: ANY /payment/<uuid>/dg-epay/initiate → captured current id
-        if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-fA-F-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');
+        if (RJ_DYN.payId) url = url.replace(/\/payment\/[0-9a-zA-Z-]{36}\/dg-epay\/initiate/, '/payment/' + RJ_DYN.payId + '/dg-epay/initiate');   // lenient: IVAC ships typo'd non-hex UUIDs
         if (url !== orig) console.log('%c[RJ Dyn] URL rewritten: ' + orig + ' → ' + url, 'color:#4ade80;font-weight:700');
     } catch (e) {}
     return url;
@@ -7542,9 +7545,12 @@ async function stepInitiate(signal) {
     try {
         const initiateXToken = initiateToken;
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
+        // Payment/initiate is a protected call — the API's WAF rejects (403) requests that don't carry
+        // the same security headers the site sends on other API calls. Mirror them: x-sec-navigation-state
+        // (signin), x-sec-runtime-state (upload) and x-v-request-meta (reserve), all live-captured.
         const initHeaders = useNative
-            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'content-type':'application/json', 'x-token':initiateXToken }
-            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateXToken };
+            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'x-sec-navigation-state':_navState(), 'x-sec-runtime-state':_runtimeState(), 'x-v-request-meta':_vReqMeta(), 'x-token':initiateXToken }
+            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-sec-navigation-state':_navState(), 'x-sec-runtime-state':_runtimeState(), 'x-v-request-meta':_vReqMeta(), 'x-token':initiateXToken };
         const r = await H2.fetchH2Critical(initiateUrl, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });

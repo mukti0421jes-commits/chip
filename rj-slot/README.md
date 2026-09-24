@@ -3,13 +3,13 @@
 Latest working build committed here for safekeeping (scratchpad is ephemeral).
 
 ## Files
-- `ivac-rj-slot-v10.5.9.user.js` — raw Tampermonkey userscript (install this directly).
+- `ivac-rj-slot-v10.6.0.user.js` — raw Tampermonkey userscript (install this directly).
 - `main.obf.b64` — license build (obfuscated + base64). Deploy to `public_html/rj/main.obf.b64`.
 - `gmail-otp.php` — Gmail IMAP OTP reader. Deploy to `public_html/` (root, next to `email.php`). Requires PHP `imap` extension. Converts IVAC word-format OTP (e.g. "Zero-One-…") to digits.
 - `extract_fetch_v13.js` — reference Node extractor (payment paths / dg-epay UUID + slot-id), Strategy A–K.
 - `rjExtractFetchV13.js` — browser port of extract_fetch v13 (embedded in the userscript as `rjExtractFetchV13`).
 
-## What v10.5.9 does dynamically (no hardcode)
+## What v10.6.0 does dynamically (no hardcode)
 - **dg-epay UUID + reserve slot-id**: scanned from the live bundle via the extract_fetch v13 port
   (handles nested multi-array RC4 obfuscation and non-hex/typo UUIDs, e.g. `…3s28…`, `…830bs`).
 - **Endpoints** (v3-sign-in, verify-otp-v3, over-view-v421, upload_file_v321, …): matched by
