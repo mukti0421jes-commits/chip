@@ -95,12 +95,33 @@ func ClearScanCache() {
 // while the bundle isn't ready); callers arriving while it runs wait on the same
 // job; callers within the TTL after it finished get the cached result instantly.
 // Returns nil if the bundle stayed unreachable (caller falls back to built-ins).
+// waitScanDone blocks until the shared scan finishes, but returns false early if
+// Stop is pressed — so an instance the user stopped never hangs behind a scan that
+// is still retrying (e.g. an unreachable bundle behind a dead proxy). This is why
+// "Stop All" now takes effect immediately even mid-scan.
+func waitScanDone(done <-chan struct{}, stopped func() bool) bool {
+	t := time.NewTicker(150 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return true
+		case <-t.C:
+			if stopped() {
+				return false
+			}
+		}
+	}
+}
+
 func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(time.Duration), log func(string)) *sharedScanResult {
 	sharedScanMu.Lock()
 	if sharedScanCur != nil && time.Since(sharedScanAt) < sharedScanTTL {
 		j := sharedScanCur
 		sharedScanMu.Unlock()
-		<-j.done
+		if !waitScanDone(j.done, stopped) {
+			return nil // user stopped while waiting for the shared scan
+		}
 		if j.combined == "" {
 			return nil
 		}
@@ -112,31 +133,66 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 	sharedScanAt = time.Now()
 	sharedScanMu.Unlock()
 
-	// FIRST caller does the actual download + parse (RJ SLOT A_E retry loop).
-	// RETRY UNTIL SUCCESS: keep trying the live bundle every 2s until it is found
-	// (or the user presses Stop). No fixed cap — a slow/503 site never makes the
-	// scan give up and fall through to stale built-ins.
+	// FIRST caller does the actual download + parse. RETRY UNTIL SUCCESS: keep
+	// trying the live bundle every 2s until it is found or the user presses Stop.
+	// Each attempt runs in a goroutine, and the wait is a Stop-aware select, so
+	// pressing Stop aborts within ~150ms instead of blocking on the HTTP timeout.
+	type fetchOut struct {
+		combined, bundle, probe, probeErr string
+	}
 	var combined string
 	for attempt := 1; !stopped(); attempt++ {
-		urls := FindBundleURLs(f, origin)
-		if len(urls) > 0 {
-			if c, _ := DownloadBundles(f, urls); c != "" {
-				combined = c
-				j.bundle = urls[0]
-				log("🔍 Bundle found (try " + itoa(attempt) + ", " + itoa(len(urls)) + " chunk) — scanning…")
-				break
+		doProbe := attempt == 1
+		resCh := make(chan fetchOut, 1) // buffered: an abandoned attempt never blocks
+		go func() {
+			var out fetchOut
+			if urls := FindBundleURLs(f, origin); len(urls) > 0 {
+				if c, _ := DownloadBundles(f, urls); c != "" {
+					out.combined, out.bundle = c, urls[0]
+				}
+			}
+			if out.combined == "" && doProbe {
+				if body, err := f.Get(origin + "/"); err != nil {
+					out.probeErr = err.Error()
+				} else {
+					if len(body) > 120 {
+						body = body[:120]
+					}
+					out.probe = body
+				}
+			}
+			resCh <- out
+		}()
+		var res fetchOut
+		got := false
+		wait := time.NewTicker(150 * time.Millisecond)
+	waitLoop:
+		for {
+			select {
+			case res = <-resCh:
+				got = true
+				break waitLoop
+			case <-wait.C:
+				if stopped() {
+					break waitLoop
+				}
 			}
 		}
-		if attempt == 1 {
-			body, err := f.Get(origin + "/")
-			if err != nil {
-				log("🔎 A_E fetch error: " + err.Error())
+		wait.Stop()
+		if stopped() {
+			break
+		}
+		if got && res.combined != "" {
+			combined = res.combined
+			j.bundle = res.bundle
+			log("🔍 Bundle found (try " + itoa(attempt) + ") — scanning…")
+			break
+		}
+		if got && doProbe {
+			if res.probeErr != "" {
+				log("🔎 A_E fetch error: " + res.probeErr)
 			} else {
-				snip := body
-				if len(snip) > 120 {
-					snip = snip[:120]
-				}
-				log("🔎 A_E origin returned " + itoa(len(body)) + " bytes: " + snip)
+				log("🔎 A_E origin returned: " + res.probe)
 			}
 		}
 		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + ") — retry in 2s (until success)")
