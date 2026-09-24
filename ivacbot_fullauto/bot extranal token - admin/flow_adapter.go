@@ -140,6 +140,13 @@ type FullAutoInput struct {
 func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	cfg := flow.NewConfig() // dynamic headers (nav/runtime) filled by scan/runtime; VRequestMeta defaults to "windos.s"
 
+	// Apply the UI-controlled encrypt-token toggles (dashboard checkboxes). Either
+	// the env var (NewConfig) OR the dashboard setting turns a purpose ON.
+	configMu.RLock()
+	cfg.EncryptUpload = cfg.EncryptUpload || globalConfig.EncryptUpload
+	cfg.EncryptInitiate = cfg.EncryptInitiate || globalConfig.EncryptInitiate
+	configMu.RUnlock()
+
 	mode := flow.Mode{Single: in.Single, Auto: in.Auto, Delay: time.Duration(in.DelaySec) * time.Second}
 	// wire the dashboard's per-step retry delays into the flow so the UI controller
 	// actually drives each step's retry gap (signin/verify/book/reserve/initiate).

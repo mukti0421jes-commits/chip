@@ -223,6 +223,13 @@ type Config struct {
 	FlowAuto      bool           `json:"flowAuto"`
 	StepDelaySec  map[string]int `json:"stepDelaySec"` // signin/verify/reserve/book/initiate (seconds) — Single retry delay
 	AutoDelaySec  int            `json:"autoDelaySec"` // delay between steps when Auto chains (the "0" field)
+
+	// ── Encrypt-token toggles (UI-controlled) ──
+	// Today upload + initiate send a RAW captcha x-token. If a future IVAC bundle
+	// requires those tokens encrypted (like signin/reserve), flip these ON from the
+	// dashboard — no rebuild/env needed. Default false = current RAW behavior.
+	EncryptUpload   bool `json:"encryptUpload"`
+	EncryptInitiate bool `json:"encryptInitiate"`
 }
 
 type RoutingModeInfo struct {
@@ -5422,6 +5429,39 @@ func handleParallelRetryMode(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleEncryptToggle reads (GET) or sets (POST) the upload/initiate encrypt-token
+// toggles from the dashboard. POST body: {"upload":bool,"initiate":bool}. The new
+// value applies to the NEXT Full Auto run and is persisted to config.json.
+func handleEncryptToggle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "GET" {
+		configMu.RLock()
+		u, i := globalConfig.EncryptUpload, globalConfig.EncryptInitiate
+		configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"upload": u, "initiate": i})
+		return
+	}
+	if r.Method == "POST" {
+		var req struct {
+			Upload   bool `json:"upload"`
+			Initiate bool `json:"initiate"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "message": err.Error()})
+			return
+		}
+		configMu.Lock()
+		globalConfig.EncryptUpload = req.Upload
+		globalConfig.EncryptInitiate = req.Initiate
+		configMu.Unlock()
+		saveConfig()
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "saved", "upload": req.Upload, "initiate": req.Initiate})
+		return
+	}
+	w.WriteHeader(405)
+}
+
 func handleRoutingMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		status := GetRoutingModeStatus()
@@ -6500,6 +6540,21 @@ func getDashboardHTML() string {
             </div>
         </div>
         
+        <div class="config-panel"><h3>🔐 Token Encryption (Upload / Initiate)</h3>
+            <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:14px;border-left:3px solid #f59e0b;">
+                <span style="color:#94a3b8;font-size:13px;">Ekhon Upload + Initiate step RAW captcha token pathay. Bhobishyote IVAC bundle update hoye <strong style="color:#fbbf24;">encrypted token</strong> chaile ei toggle ON korun — rebuild lagbe na. Default OFF (ekhon-kar RAW behaviour). Signin/Reserve সবসময় encrypted-i thake.</span>
+            </div>
+            <div class="config-group" style="gap:24px;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="encUploadChk" onchange="saveEncryptToggle()" style="width:18px;height:18px;"> Upload token encrypt
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="encInitiateChk" onchange="saveEncryptToggle()" style="width:18px;height:18px;"> Initiate token encrypt
+                </label>
+                <span id="encToggleStatus" style="color:#94a3b8;font-size:13px;"></span>
+            </div>
+        </div>
+
         <div class="config-panel"><h3>🧾 Invoice Download <span class="always-enabled-badge">🟢 RJ SLOT</span></h3>
             <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:14px;border-left:3px solid #2dd4bf;">
                 <span style="color:#94a3b8;font-size:13px;">Reserve hole <strong style="color:#67e8f9;">Reservation ID</strong> auto kore Tran ID box-e bose. Submit dile invoice ready hooয়া porjonto auto-retry kore, ready hole browser-e PDF download hoy.</span>
@@ -6836,7 +6891,7 @@ function showTab(tabName) {
     document.querySelectorAll('.nav-item').forEach(function(b) { b.classList.remove('active'); }); 
     document.getElementById('tab-' + tabName).classList.add('active'); 
     document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active'); 
-    if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); } 
+    if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); loadEncryptToggle(); }
     if (tabName === 'parallel') { loadTraditionalParallelConfig(); loadParallelRetryConfig(); } 
     if (tabName === 'proxies') loadProxies(); 
     if (tabName === 'hosts') { loadHostIPs(); loadHostStats(); } 
@@ -7043,7 +7098,25 @@ function clearLogs() {
     }); 
 }
 
-function refresh() { 
+function loadEncryptToggle() {
+    fetch('/api/encryptToggle').then(function(r){return r.json();}).then(function(d){
+        var u=document.getElementById('encUploadChk'), i=document.getElementById('encInitiateChk');
+        if(u) u.checked=!!d.upload;
+        if(i) i.checked=!!d.initiate;
+        var s=document.getElementById('encToggleStatus');
+        if(s) s.textContent=(d.upload||d.initiate)?'⚠ encrypted mode ON':'RAW (default)';
+    }).catch(function(){});
+}
+function saveEncryptToggle() {
+    var u=document.getElementById('encUploadChk').checked, i=document.getElementById('encInitiateChk').checked;
+    fetch('/api/encryptToggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload:u,initiate:i})})
+      .then(function(r){return r.json();}).then(function(d){
+        var s=document.getElementById('encToggleStatus');
+        if(d.status==='saved'){ if(s) s.textContent=(u||i)?'✅ saved — encrypted mode ON (next run)':'✅ saved — RAW (default)'; if(typeof showToast==='function') showToast('Encrypt toggle saved','success'); }
+        else { if(s) s.textContent='❌ save failed'; }
+      }).catch(function(){ var s=document.getElementById('encToggleStatus'); if(s) s.textContent='❌ save failed'; });
+}
+function refresh() {
     fetch('/api/instances').then(function(r) { return r.json(); }).then(function(data) { 
         document.getElementById('totalCount').innerText = data.total; 
         document.getElementById('runningCount').innerText = data.running; 
@@ -8557,6 +8630,7 @@ func main() {
 	// ivacflow pushes its snapshot here. The handler itself enforces loopback-only
 	// plus the shared token in ivacflow_token.txt (see authorizeIvacflowPush), so
 	// it is not behind the dashboard session ivacflow has no way to hold.
+	http.HandleFunc("/api/encryptToggle", adminOnly(handleEncryptToggle))
 	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)
 	http.HandleFunc("/api/ivacflowStatus", adminOnly(handleIvacflowStatus))
 	http.HandleFunc("/api/clearIvacflow", adminOnly(handleClearIvacflow))
