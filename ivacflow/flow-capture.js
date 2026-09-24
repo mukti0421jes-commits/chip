@@ -1076,10 +1076,15 @@ function findChromeExe() {
       }
     } catch (_) {}
 
-    // 4. Handle file upload inputs
+    // 4. Handle file upload inputs — set the native <input type=file>, AND, for
+    // drag-drop zones that have no such input, fire a real `drop` with a
+    // DataTransfer so the bundle's own handler builds and POSTs the multipart
+    // upload (which we then intercept). This makes PRIMARY UPLOAD a real,
+    // walk-verified call instead of a static path read from the bundle.
     await page.evaluate(() => {
       document.querySelectorAll('input[type="file"]').forEach(fi => fi.removeAttribute('required'));
     }).catch(() => {});
+    let _fileWasSet = false;
     const fileInputs = await page.locator('input[type="file"]').all().catch(() => []);
     for (const fi of fileInputs) {
       try {
@@ -1088,10 +1093,52 @@ function findChromeExe() {
         fs.writeFileSync(tmpFile, buf);
         await fi.setInputFiles(tmpFile, { timeout: 2000 });
         try { fs.unlinkSync(tmpFile); } catch (_) {}
+        _fileWasSet = true;
       } catch (_) {}
+    }
+    // 4b. Drag-drop zones (no usable <input type=file>): synthesize a drop with a
+    // real File in the DataTransfer on the most likely dropzone element.
+    if (curPath.includes('upload') || curPath.includes('file')) {
+      await page.evaluate(() => {
+        const bytes = new Uint8Array([37,80,68,70,45,49,46,52,10,109,111,99,107]); // "%PDF-1.4\nmock"
+        const file = new File([bytes], 'passport.pdf', { type: 'application/pdf' });
+        const zones = [...document.querySelectorAll('[class*="drop"],[class*="drag"],[class*="upload"],[class*="dropzone"],label,div')]
+          .filter(el => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 40; });
+        // prefer an element whose text/ID hints at upload
+        zones.sort((a,b) => {
+          const s = el => /upload|drag|drop|browse|ছবি|ফাইল|passport|choose|select file/i.test((el.textContent||'')+' '+el.className+' '+el.id) ? 1 : 0;
+          return s(b) - s(a);
+        });
+        for (const zone of zones.slice(0, 5)) {
+          try {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            for (const type of ['dragenter','dragover','drop']) {
+              const ev = new DragEvent(type, { bubbles: true, cancelable: true });
+              try { Object.defineProperty(ev, 'dataTransfer', { value: dt }); } catch (_) {}
+              zone.dispatchEvent(ev);
+            }
+          } catch (_) {}
+        }
+      }).catch(() => {});
     }
 
     await page.waitForTimeout(sms(500));
+
+    // 4c. Click an explicit upload / submit / "আপলোড" button so the bundle fires
+    // the multipart POST (some flows upload on button-click, not on file-select).
+    if (_fileWasSet || curPath.includes('upload')) {
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')];
+        for (const b of btns) {
+          const t = (b.textContent || b.value || '').trim();
+          const r = b.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          if (/^(upload|আপলোড|submit|save|জমা)$|upload file|আপলোড কর/i.test(t)) { b.disabled = false; b.removeAttribute('disabled'); b.click(); }
+        }
+      }).catch(() => {});
+      await page.waitForTimeout(sms(500));
+    }
 
     // 5. Handle checkboxes (terms, declarations)
     await page.evaluate(() => {
