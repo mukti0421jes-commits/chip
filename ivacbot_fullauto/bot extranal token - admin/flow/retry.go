@@ -89,6 +89,14 @@ type Runner struct {
 	// StepReserve falls back to Tokens (old behavior).
 	ReserveTokens TokenProvider
 	Fetcher       Fetcher // plain GET (SMS OTP poll, bundle download)
+	// ScanFetcher, when set, is used ONLY for the bundle discovery + download during
+	// Scan(), instead of Fetcher. It is wired to a DIRECT (no-proxy) client so the
+	// live cipher/endpoint scan works on every instance regardless of that instance's
+	// routing mode: the bundle is public IVAC JS, needs no proxy, and a dead proxy
+	// must never stall the scan (the scan retries until success). When nil, Scan falls
+	// back to Fetcher (old behavior). SMS polling and all API calls still use the
+	// instance's own proxy-aware clients.
+	ScanFetcher   Fetcher
 
 	// inputs
 	Phone    string

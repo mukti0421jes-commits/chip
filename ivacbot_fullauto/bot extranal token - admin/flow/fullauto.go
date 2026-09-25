@@ -6,7 +6,14 @@ import "time"
 // Config with the live encryption config, endpoint literals and slot id — the
 // A_E step. Hardcoded fallbacks stay in place for anything not resolved.
 func (r *Runner) Scan() {
-	if r.Fetcher == nil {
+	// The bundle scan always prefers the DIRECT scan fetcher (proxy-free) when one is
+	// wired, so a dead/absent proxy on this instance never stalls the live scan. It
+	// falls back to the normal Fetcher when no scan fetcher was set.
+	sf := r.ScanFetcher
+	if sf == nil {
+		sf = r.Fetcher
+	}
+	if sf == nil {
 		r.log("⚠ No fetcher — using hardcoded endpoint fallback")
 		return
 	}
@@ -14,7 +21,7 @@ func (r *Runner) Scan() {
 	// download + goja cipher/dg-epay work. We only fetch the (light) bundle URL list
 	// to read the live bundle NAME; if it matches the last-good snapshot, reuse.
 	if lg := parseLastGood(r.Config.LastGoodJSON); lg.hasCipher() {
-		if urls := FindBundleURLs(r.Fetcher, AppointmentOrigin); len(urls) > 0 && bundleNameMatches(lg.BundleName, urls) {
+		if urls := FindBundleURLs(sf, AppointmentOrigin); len(urls) > 0 && bundleNameMatches(lg.BundleName, urls) {
 			lg.applyTo(r.Config) // cipher + endpoints + slot + dg-epay + api base
 			// A freshly pushed endpoint-cache for THIS same bundle still overrides
 			// (keeps endpoints current if the operator re-pushed); mismatch is skipped.
@@ -41,7 +48,7 @@ func (r *Runner) Scan() {
 	// window and share the result across all instances (the first instance scans
 	// live, the rest reuse it instantly). It stays live — a redeployed bundle differs
 	// and, after the TTL, re-scans. The RJ SLOT A_E retry loop lives inside.
-	sc := getSharedScan(r.Fetcher, AppointmentOrigin, r.Stopped, r.interruptibleSleep, r.log)
+	sc := getSharedScan(sf, AppointmentOrigin, r.Stopped, r.interruptibleSleep, r.log)
 	if sc == nil {
 		r.log("⚠ Bundle unreachable — using CURRENT built-in endpoints + cipher fallback (signin will still work)")
 		// nothing was scanned → every value is a gap the import may be able to fill

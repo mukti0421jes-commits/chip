@@ -172,6 +172,11 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	r.Doer = newFlowDoer(in.ProxyURL, in.OnHTTP)
 	r.OnOTP = in.OnOTP
 	r.Fetcher = newFlowFetcher(in.ProxyURL)
+	// The live bundle scan always goes DIRECT (no proxy), independent of this
+	// instance's routing mode: the bundle is public IVAC JS that needs no proxy, and a
+	// dead/absent proxy must never stall the scan. Instances that have no proxy already
+	// use direct for everything; this makes the SCAN direct for proxied instances too.
+	r.ScanFetcher = newFlowFetcher("")
 	r.Tokens = flowTokens{purpose: "Signin"}
 	r.ReserveTokens = flowTokens{purpose: "Reserve"} // reserve needs Reserve-widget tokens, not Signin
 	r.Phone = in.Phone
