@@ -37,6 +37,7 @@ type portalUser struct {
 type portalEntry struct {
 	ID            string `json:"id"`
 	Owner         string `json:"owner"`
+	Name          string `json:"name"` // account holder's name (shown as CLIENT in the instances table)
 	Phone         string `json:"phone"`
 	Password      string `json:"password"`
 	Email         string `json:"email"`
@@ -228,7 +229,13 @@ func portalEntriesAPI(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// ---- Phase 2: create a runnable ADMIN instance from this entry ----
-		instID := addInstance(u.Username, e.Phone, e.Password, e.Phone, "", e.Mission, e.Type, "auto")
+		// The CLIENT column shows the account holder's NAME entered in File Manager;
+		// fall back to the portal username when no name was given.
+		clientName := strings.TrimSpace(e.Name)
+		if clientName == "" {
+			clientName = u.Username
+		}
+		instID := addInstance(clientName, e.Phone, e.Password, e.Phone, "", e.Mission, e.Type, "auto")
 		instancesMu.RLock()
 		inst, ok := instances[instID]
 		instancesMu.RUnlock()

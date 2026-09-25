@@ -6524,7 +6524,7 @@ func getDashboardHTML() string {
                 <th class="checkbox-col"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll()"></th>
                 <th>ID</th><th>Client</th><th>Phone</th><th>Password</th><th>Type</th><th>Step</th><th>OTP</th>
                 <th>Device ID</th><th>Appointment ID</th><th>RID</th><th>Endpoint</th><th>Status</th>
-                <th>Host IP</th><th>Proxy IP</th><th>Payment Url</th><th>Last Log</th><th>Action</th>
+                <th>Payment Url</th><th>Last Log</th><th>Action</th>
             </thead><tbody id="tableBody"></tbody>
             </table>
         </div>
@@ -7190,30 +7190,17 @@ function refresh() {
             row.insertCell(9).innerHTML = '<div class="appointment-container"><input type="text" class="appointment-input" id="appointment_input_' + inst.id + '" placeholder="Appointment ID" value="' + (inst.appointmentId || '') + '"><button class="btn btn-primary btn-sm" onclick="saveAppointmentID(' + inst.id + ')">💾 Save</button></div>'; 
             row.insertCell(10).innerHTML = '<small style="color:#64748b;">' + (inst.reservationId ? inst.reservationId.substring(0, 8) + '...' : '-') + '<br>' + (inst.appointmentDate || '') + '</small>'; 
             row.insertCell(11).innerHTML = '<span class="endpoint-name">' + (inst.endpoint || '-') + '</span>' + (inst.requestId ? '<br><span class="request-id">' + inst.requestId.substring(0, 12) + '...</span>' : ''); 
-            row.insertCell(12).innerHTML = inst.statusCode ? getStatusBadge(inst.statusCode) : '-'; 
-            row.insertCell(13).innerHTML = inst.clientIp && inst.clientIp != '-' ? '<span class="client-ip">🌐 ' + inst.clientIp + '</span>' : (inst.currentHostIP || '-'); 
-            
-            var proxyDisplay = '-';
-            if (inst.proxyIp && inst.proxyIp != '-') {
-                proxyDisplay = '<span class="proxy-ip">🔒 ' + inst.proxyIp + '</span>';
-                if (inst.proxyRotated) {
-                    proxyDisplay += ' <span class="proxy-rotated-badge">🔄 Rotated</span>';
-                }
-            } else if (inst.currentProxy && inst.currentProxy != '-') {
-                proxyDisplay = '<span class="proxy-ip">🔒 ' + inst.currentProxy + '</span>';
-                if (inst.proxyRotated) {
-                    proxyDisplay += ' <span class="proxy-rotated-badge">🔄 Rotated</span>';
-                }
-            }
-            row.insertCell(14).innerHTML = proxyDisplay;
-            
+            row.insertCell(12).innerHTML = inst.statusCode ? getStatusBadge(inst.statusCode) : '-';
+            // Host IP + Proxy IP columns removed from the table (proxy is used
+            // internally and is visible in the per-instance log, not needed here).
+
             if (inst.paymentUrl) {
-                row.insertCell(15).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button></div></div>';
-            } else { 
-                row.insertCell(15).innerHTML = '-'; 
-            } 
-            
-            row.insertCell(16).innerHTML = '<span style="color:#64748b;font-size:11px;">' + (inst.lastLog || '-') + '</span>'; 
+                row.insertCell(13).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button></div></div>';
+            } else {
+                row.insertCell(13).innerHTML = '-';
+            }
+
+            row.insertCell(14).innerHTML = '<span style="color:#64748b;font-size:11px;">' + (inst.lastLog || '-') + '</span>';
             
             var actionHtml = '';
             // Full Auto is the only run path now (simple Start/Resume removed — they
@@ -7223,7 +7210,7 @@ function refresh() {
             if (inst.status === 'RUNNING')
                 actionHtml += '<button class="btn btn-danger btn-sm" onclick="stopInstance(' + inst.id + ')">⏹️</button> ';
             actionHtml += '<button class="btn btn-outline btn-sm" onclick="showLogs(' + inst.id + ')">📋</button> <button class="btn btn-outline btn-sm" onclick="openEditModal(' + JSON.stringify(inst).replace(/'/g, "\\'") + ')">✏️</button> <button class="btn btn-outline btn-sm" onclick="deleteInstance(' + inst.id + ')">🗑️</button>';
-            row.insertCell(17).innerHTML = actionHtml; 
+            row.insertCell(15).innerHTML = actionHtml;
         }); 
         
         if (data.slotMonitorEnabled !== undefined) { 

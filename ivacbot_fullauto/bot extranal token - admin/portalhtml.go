@@ -156,14 +156,15 @@ select option{background:#0a1020}
           <div class="h1" style="font-size:20px">&#10133; New Entry</div>
           <div class="muted" id="lockMsg" style="margin:6px 0 18px"></div>
           <div class="grid2">
+            <div><label>Account Holder Name (optional — auto-filled from primary file)</label><input id="f-name" placeholder="e.g. Md Rahim Uddin"></div>
             <div><label>Phone Number (11 digits)</label><input id="f-phone" placeholder="01XXXXXXXXX"></div>
             <div><label>IVAC Password</label><input id="f-pass" type="password" placeholder="Password"></div>
             <div><label>IVAC Registered Email</label><input id="f-email" placeholder="email@gmail.com"></div>
             <div><label>Appointment ID (optional)</label><input id="f-appt" placeholder="e.g. 2369ab0e-..."></div>
           </div>
           <div class="grid4" style="margin-top:14px">
-            <div><label>Mission</label><select id="f-mission"><option value="">-- Select --</option><option>Dhaka</option><option>Chittagong</option><option>Khulna</option><option>Rajshahi</option><option>Sylhet</option></select></div>
-            <div><label>Type</label><select id="f-type"><option value="">-- Select --</option><option>Medical</option><option>Entry</option><option>Double Entry</option><option>Student</option><option>Business</option><option>Tourist</option></select></div>
+            <div><label>Mission</label><select id="f-mission"><option selected>Dhaka</option><option>Chittagong</option><option>Khulna</option><option>Rajshahi</option><option>Sylhet</option></select></div>
+            <div><label>Type</label><select id="f-type"><option>Medical</option><option>Entry</option><option>Double Entry</option><option>Student</option><option>Business</option><option selected>Tourist</option></select></div>
             <div><label>BGD Files</label><select id="f-bgd"><option value="">-- Select --</option><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
             <div><label>Who Will Pay?</label><select id="f-pay"><option value="">-- Select --</option><option value="admin">Admin Pay</option><option value="self">Self Pay</option></select></div>
           </div>
@@ -365,7 +366,7 @@ function allPdfsValid(){
 }
 function doSaveEntry(){
   var btn=document.getElementById('saveEntry');
-  var body={Phone:document.getElementById('f-phone').value,Password:document.getElementById('f-pass').value,Email:document.getElementById('f-email').value,AppointmentID:document.getElementById('f-appt').value,Mission:document.getElementById('f-mission').value,Type:document.getElementById('f-type').value,BGD:document.getElementById('f-bgd').value,PayMode:document.getElementById('f-pay').value};
+  var body={Name:document.getElementById('f-name').value,Phone:document.getElementById('f-phone').value,Password:document.getElementById('f-pass').value,Email:document.getElementById('f-email').value,AppointmentID:document.getElementById('f-appt').value,Mission:document.getElementById('f-mission').value,Type:document.getElementById('f-type').value,BGD:document.getElementById('f-bgd').value,PayMode:document.getElementById('f-pay').value};
   if(!body.Phone){alert('Phone required');return;}
   if(!allPdfsValid())return;
   if(btn)btn.disabled=true;
@@ -373,7 +374,7 @@ function doSaveEntry(){
     if(d.ok){
       uploadEntryPDFs(d.id).then(function(){
         if(btn)btn.disabled=false;
-        alert('Entry saved!');document.getElementById('f-phone').value='';document.getElementById('f-pass').value='';document.getElementById('f-email').value='';document.getElementById('f-appt').value='';
+        alert('Entry saved!');document.getElementById('f-name').value='';document.getElementById('f-phone').value='';document.getElementById('f-pass').value='';document.getElementById('f-email').value='';document.getElementById('f-appt').value='';
         ['f-pdf1','f-pdf2','f-pdf3','f-pdf4'].forEach(function(x){var el=document.getElementById(x);if(el)el.value='';setPdfStatus(x,'','');});
         pdfMeta={};
         showSec('entries');

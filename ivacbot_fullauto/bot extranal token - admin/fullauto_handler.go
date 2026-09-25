@@ -538,7 +538,52 @@ func handlePortalUploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("📎 [Portal] %s uploaded %s (%d bytes) for entry %s\n", u.Username, fname, len(data), entryID)
+
+	// Auto-detect the account holder's name from the PRIMARY webfile's original
+	// filename (which carries the applicant's name) and show it as the CLIENT — but
+	// ONLY when File Manager was left without a manual name, so a name typed by hand
+	// always wins and is never overwritten.
+	if slot == "PRIMARY" {
+		if holder := holderNameFromFilename(orig); holder != "" {
+			pMu.Lock()
+			for i := range pEntries {
+				if pEntries[i].ID != entryID {
+					continue
+				}
+				if strings.TrimSpace(pEntries[i].Name) == "" {
+					pEntries[i].Name = holder
+					instID := pEntries[i].InstanceID
+					portalSaveEntriesLocked()
+					instancesMu.RLock()
+					inst, ok := instances[instID]
+					instancesMu.RUnlock()
+					if ok {
+						inst.mu.Lock()
+						inst.Data.ClientName = holder
+						inst.mu.Unlock()
+						saveInstancesToFile()
+					}
+					fmt.Printf("🧾 [Portal] CLIENT auto-set to \"%s\" from primary file for entry %s\n", holder, entryID)
+				}
+				break
+			}
+			pMu.Unlock()
+		}
+	}
+
 	portalJSON(w, map[string]interface{}{"ok": "1", "name": fname, "size": len(data)})
+}
+
+// holderNameFromFilename derives a display name from a primary webfile's original
+// PDF filename. It drops the ".pdf" extension, turns underscores/dashes into
+// spaces and collapses whitespace, so "PRIMARY__Md_Rahim_Uddin.pdf" (stored with
+// the original name after "__") shows as "Md Rahim Uddin". Returns "" when nothing
+// usable remains.
+func holderNameFromFilename(orig string) string {
+	name := strings.TrimSuffix(orig, filepath.Ext(orig))
+	name = strings.NewReplacer("_", " ", "-", " ").Replace(name)
+	name = strings.Join(strings.Fields(name), " ")
+	return strings.TrimSpace(name)
 }
 
 // fullAutoStepDelays snapshots the dashboard's per-step retry delays (seconds) so
