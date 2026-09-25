@@ -709,9 +709,14 @@ func holderNameFromFilename(orig string) string {
 		}
 		return false
 	}
-	firstWord := func(s string) string {
-		if f := strings.Fields(s); len(f) > 0 {
-			return f[0]
+	// givenWord returns the first WORD that actually contains a letter, skipping a
+	// leading serial/index token like "06." or "81." (a filename such as
+	// "81. MST MAHMUDA 1980 02.pdf" must not show "81." as the name).
+	givenWord := func(s string) string {
+		for _, w := range strings.Fields(s) {
+			if hasAlpha(w) {
+				return w
+			}
 		}
 		return s
 	}
@@ -720,10 +725,11 @@ func holderNameFromFilename(orig string) string {
 		if c == "" || isIndex(c) || looksLikeSlip(c) || !hasAlpha(c) {
 			continue
 		}
-		// Show only the GIVEN name (first word), e.g. "LITAN BISWAS" → "LITAN".
-		return firstWord(c)
+		// Show only the GIVEN name (first real word), e.g. "LITAN BISWAS" → "LITAN",
+		// "81. MST MAHMUDA" → "MST".
+		return givenWord(c)
 	}
-	return firstWord(clean(base))
+	return givenWord(clean(base))
 }
 
 // fullAutoStepDelays snapshots the dashboard's per-step retry delays (seconds) so

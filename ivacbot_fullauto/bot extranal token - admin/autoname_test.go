@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestHolderNameFromFilename(t *testing.T) {
+	cases := map[string]string{
+		"LITAN BISWAS=BGDDW0A25A26LI830520.pdf":              "LITAN",
+		"SOSHY RANI KUNDU=BGDDW0A22326SO941226.pdf":          "SOSHY",
+		"01=  KANCHAN KUNDU ====   BGDDW0F13226KA820112.pdf": "KANCHAN",
+		"81. MST MAHMUDA FERDOUS 1980 02.pdf":                "MST",
+		"06. RAKIB HASAN 1999 01.pdf":                        "RAKIB",
+		"Md_Rahim_Uddin.pdf":                                 "Md",
+	}
+	for in, want := range cases {
+		if got := holderNameFromFilename(in); got != want {
+			t.Errorf("holderNameFromFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestAutoDetectClientNameFromPrimary reproduces the File-Manager flow: an entry
 // with an EMPTY name, then a PRIMARY pdf upload whose filename carries the holder.
 // The CLIENT (instance.Data.ClientName) must become the given name automatically.
