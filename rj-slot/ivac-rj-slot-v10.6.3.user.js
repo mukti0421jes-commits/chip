@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.6.2
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.2: A_E endpoint-cache sync now pulls from the always-on Go bot first (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.6.3
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.3: FIX post-verify upload flow — stale hardcoded endpoints refreshed to current bundle (over-view-v412, upload-file-v453, file_confirmation-and_slot-status, auth/v4-sign_in, verify-Signin_Otp, verify_otp_v5) so upload/overview/confirm work standalone even before any dynamic sync. v10.6.2: A_E endpoint-cache sync from the always-on Go bot (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -355,7 +355,7 @@ function getTagFromUrl(url) {
 H2.preWarm();
 
 // ==================== API CONFIG ====================
-const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v2-sign-in";
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v4-sign_in";
 const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
 const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 // Prefer the LIVE value captured from the site's real traffic (RJ_DYN.headers) — these security
@@ -369,10 +369,10 @@ const API_SIGNUP_STATUS  = "https://api.ivacbd.com/iams/api/v1/auth/signup/statu
 const PAYMENT_METHOD_ID = '20218968-2226-4e28-861f-465bb28337e6';   // fixed fallback (extracted from current bundle via extract_fetch, 2026-08-27)
 const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
-const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verifySigninOtp";
+const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verify-Signin_Otp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
 const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
-const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation_and_slot_status";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file_confirmation-and_slot-status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 const API_EMAIL_SERVER = "https://duttauzzal.shop/email.php";   // email OTP fetcher (catch-all inbox reader)
@@ -4282,7 +4282,7 @@ function _auTokensMatch(fileTokens, nameTokens) {
 
 async function _auFetchOverview() {
     try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v3", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v412", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
         let body = null; try { body = await r.json(); } catch (e) {}
         const ok = !!(r && r.status >= 200 && r.status < 300 && body);
         return { ok, data: (body && body.data) || [] };
@@ -6100,7 +6100,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const fileInput = document.getElementById(fileInputId);
         const file = (fileInput?.files?.length > 0) ? fileInput.files[0] : (rjSavedUploads[fileInputId] || null);
         if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return false; }   // never upload an empty part
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2", tag: 'upload', state: 'pending', note: `${label}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file-v453", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
             let uploadEntry;
@@ -6110,7 +6110,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
                 const r = await sendMultipartUpload(
-                    "https://api.ivacbd.com/iams/api/v1/file/upload_file_v2",
+                    "https://api.ivacbd.com/iams/api/v1/file/upload-file-v453",
                     { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
                     file, { isPrimary: String(isPrimary) }
                 );
@@ -6200,9 +6200,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         logStatus('📋 Checking file overview…', 'y');
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view-v3", tag: 'upload', state: 'pending' });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view-v412", tag: 'upload', state: 'pending' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v3", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v412", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
             const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
@@ -6346,9 +6346,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
         // NEW system: verify does NOT need a captcha token (real traffic shows no x-token on verify-otp-v2).
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
             // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
@@ -6388,9 +6388,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
         // NEW system: verify does NOT need a captcha token.
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify-otp-v2", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
             // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
