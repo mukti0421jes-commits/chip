@@ -456,6 +456,83 @@ func loadEntryPDFs(entryID string) ([]flow.PDFFile, error) {
 	return files, nil
 }
 
+// primaryFileOriginalName returns the ORIGINAL filename of an entry's primary
+// applicant PDF (the part after "<slot>__"), without reading the file bytes. It
+// prefers the "PRIMARY__" file; if none is marked, it falls back to the first PDF.
+// Returns "" when the entry has no files yet.
+func primaryFileOriginalName(entryID string) string {
+	ents, err := os.ReadDir(entryFilesDir(entryID))
+	if err != nil {
+		return ""
+	}
+	first := ""
+	for _, de := range ents {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if !strings.EqualFold(filepath.Ext(name), ".pdf") {
+			continue
+		}
+		orig := name
+		if i := strings.Index(name, "__"); i >= 0 {
+			orig = name[i+2:]
+		}
+		if strings.HasPrefix(name, "PRIMARY__") {
+			return orig // best match — stop here
+		}
+		if first == "" {
+			first = orig
+		}
+	}
+	return first
+}
+
+// resolveMissingClientNames runs once at startup so the CLIENT column shows the
+// webfile holder even for entries whose primary file was uploaded by an OLDER
+// build (before auto-detect existed). For each portal entry it fills the linked
+// instance's ClientName from the manual name, else from the primary file — but
+// ONLY when the current ClientName is empty or is still the fallback login
+// username, so a real name (typed by hand or already detected) is never clobbered.
+func resolveMissingClientNames() {
+	pMu.Lock()
+	entries := make([]portalEntry, len(pEntries))
+	copy(entries, pEntries)
+	pMu.Unlock()
+
+	fixed := 0
+	for _, e := range entries {
+		if e.InstanceID <= 0 {
+			continue
+		}
+		desired := strings.TrimSpace(e.Name)
+		if desired == "" {
+			desired = holderNameFromFilename(primaryFileOriginalName(e.ID))
+		}
+		if desired == "" {
+			continue
+		}
+		instancesMu.RLock()
+		inst, ok := instances[e.InstanceID]
+		instancesMu.RUnlock()
+		if !ok {
+			continue
+		}
+		inst.mu.Lock()
+		cur := strings.TrimSpace(inst.Data.ClientName)
+		// override only the fallback (empty or the portal login username)
+		if (cur == "" || cur == e.Owner) && cur != desired {
+			inst.Data.ClientName = desired
+			fixed++
+		}
+		inst.mu.Unlock()
+	}
+	if fixed > 0 {
+		saveInstancesToFile()
+		fmt.Printf("🧾 [Portal] CLIENT name resolved for %d existing instance(s) from primary file/name\n", fixed)
+	}
+}
+
 // handlePortalUploadFile stores one applicant PDF for a File-Manager entry.
 // POST multipart/form-data: field "file"; query ?entryId=..&primary=1&slot=app2
 func handlePortalUploadFile(w http.ResponseWriter, r *http.Request) {

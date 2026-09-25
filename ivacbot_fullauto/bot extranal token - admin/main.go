@@ -8569,6 +8569,9 @@ func main() {
 	configMu.RUnlock()
 
 	RegisterUserPortal()
+	// Backfill the CLIENT column for entries whose primary file was uploaded before
+	// auto-detect existed (portal entries are loaded inside RegisterUserPortal).
+	resolveMissingClientNames()
 	http.HandleFunc("/", serveDashboard)
 	http.HandleFunc("/ws", adminOnly(websocketHandler))
 	http.HandleFunc("/api/instances", adminOnly(getInstances))
