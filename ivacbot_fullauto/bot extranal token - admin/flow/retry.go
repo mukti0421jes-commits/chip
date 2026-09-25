@@ -124,6 +124,13 @@ type Runner struct {
 
 	dgJob *dgJob // background dg-epay resolution (awaited before Initiate)
 
+	// scannedBundle is the live bundle basename this run resolved against (full scan
+	// or reused snapshot). Used to persist a fresh last-good snapshot on success.
+	scannedBundle string
+	// OnScanResolved fires with a serialized last-good snapshot after a successful
+	// run, so the caller can persist it (last_good_config.json) for smart-skip.
+	OnScanResolved func(snapshot []byte)
+
 	// optional hooks — fired the moment a value is resolved, so the caller can
 	// persist it (e.g. appointmentId → instance field, survives re-login).
 	OnAppointment func(id, date string)

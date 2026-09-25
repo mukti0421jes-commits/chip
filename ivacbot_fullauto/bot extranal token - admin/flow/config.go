@@ -72,6 +72,11 @@ type Config struct {
 	// autocheck folder (extract_fetch.js v15 output). Applied during Scan, but only
 	// when its bundleName matches the live bundle. Empty = not pushed / not used.
 	EndpointCacheJSON []byte
+
+	// LastGoodJSON is the snapshot of the last SUCCESSFUL scan (last_good_config.json).
+	// If the live bundle name still matches this snapshot, Scan reuses it and skips
+	// the heavy download + goja cipher/dg-epay work (smart-skip). Empty = none yet.
+	LastGoodJSON []byte
 }
 
 // anyCipher returns the first available scanned cipher (all purposes share one key

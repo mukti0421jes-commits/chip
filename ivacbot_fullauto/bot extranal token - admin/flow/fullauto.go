@@ -10,6 +10,32 @@ func (r *Runner) Scan() {
 		r.log("⚠ No fetcher — using hardcoded endpoint fallback")
 		return
 	}
+	// ── SMART SKIP: same bundle as last successful run → reuse it, skip the heavy
+	// download + goja cipher/dg-epay work. We only fetch the (light) bundle URL list
+	// to read the live bundle NAME; if it matches the last-good snapshot, reuse.
+	if lg := parseLastGood(r.Config.LastGoodJSON); lg.hasCipher() {
+		if urls := FindBundleURLs(r.Fetcher, AppointmentOrigin); len(urls) > 0 && bundleNameMatches(lg.BundleName, urls) {
+			lg.applyTo(r.Config) // cipher + endpoints + slot + dg-epay + api base
+			// A freshly pushed endpoint-cache for THIS same bundle still overrides
+			// (keeps endpoints current if the operator re-pushed); mismatch is skipped.
+			r.Config.ApplyEndpointCache(r.Config.EndpointCacheJSON, urls[0], r.log)
+			r.Config.LiveBundleURL = urls[0]
+			r.scannedBundle = lg.BundleName
+			r.applyForcedIDs()
+			r.log("♻ Same bundle (" + lg.BundleName + ") — cipher/dg-epay scan skipped (fast start)")
+			r.log("🔐 cipher signin:   " + describeCipher(r.Config.Signin))
+			r.log("🔐 cipher reserve:  " + describeCipher(r.Config.Reserve))
+			r.log("🔐 cipher initiate: " + describeCipher(r.Config.Initiate))
+			r.log("🔍 Scan (fast) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
+			if r.OnScanComplete != nil {
+				r.OnScanComplete(true, "fast: reused last-good config for bundle "+lg.BundleName)
+			}
+			if !r.Stopped() {
+				r.log("▶ Scan complete (fast) — signin shuru hocche…")
+			}
+			return
+		}
+	}
 	// SHARED live scan: the bundle download + endpoint regex + cipher goja are
 	// identical for every instance on the same live bundle, so run them ONCE per TTL
 	// window and share the result across all instances (the first instance scans
@@ -49,6 +75,9 @@ func (r *Runner) Scan() {
 	r.log("💳 dg-epay resolving in background (won't block signin/upload)…")
 	// fill ONLY what this scan could not resolve — the scan always wins
 	r.Config.LiveBundleURL = sc.bundle
+	if sc.cipherOK {
+		r.scannedBundle = baseName(sc.bundle) // enables the last-good snapshot on success
+	}
 	r.Config.ApplyImportGaps(sc.ep, sc.cipherOK, r.log)
 	r.applyForcedIDs()
 	r.log("🔍 Scan done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
@@ -216,6 +245,15 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	r.ensureDgEpay()
 	if res := r.RunStepSmart(StInitiate, StepInitiate); !res.Win {
 		return failOrStop(r, "initiate")
+	}
+
+	// Persist the working config so a same-bundle run next time can smart-skip the
+	// heavy scan. Only saved after a real success, so the snapshot is proven-good.
+	if r.OnScanResolved != nil && r.scannedBundle != "" {
+		if snap := serializeLastGood(r.Config, r.scannedBundle); snap != nil {
+			r.OnScanResolved(snap)
+			r.log("💾 last-good config saved (bundle " + r.scannedBundle + ") — next same-bundle run will fast-start")
+		}
 	}
 
 	r.log("🎉 FULL AUTO finished — payment URL: " + r.PaymentURL)

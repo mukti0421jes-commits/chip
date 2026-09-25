@@ -150,6 +150,8 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	// Hand the latest pushed endpoint-cache to this run; Scan applies it only when
 	// its bundleName matches the live bundle.
 	cfg.EndpointCacheJSON = currentEndpointCache()
+	// Hand the last-good snapshot so Scan can smart-skip when the bundle is unchanged.
+	cfg.LastGoodJSON = currentLastGood()
 
 	mode := flow.Mode{Single: in.Single, Auto: in.Auto, Delay: time.Duration(in.DelaySec) * time.Second}
 	// wire the dashboard's per-step retry delays into the flow so the UI controller
@@ -185,6 +187,7 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	r.OnAppointment = in.OnAppointment
 	r.OnReservation = in.OnReservation
 	r.OnScanIDs = in.OnScanIDs
+	r.OnScanResolved = saveLastGood // persist last-good snapshot for smart-skip
 	r.OnSignedIn = in.OnSignedIn
 	r.OnVerified = in.OnVerified
 	r.OnScanComplete = func(ok bool, detail string) {

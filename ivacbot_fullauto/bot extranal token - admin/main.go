@@ -8687,6 +8687,7 @@ func main() {
 	LoadCapturedConfig()      // restore a previously imported RJ SLOT capture (safety net)
 	LoadIvacflowConfig()      // restore the last snapshot ivacflow pushed
 	LoadEndpointCacheStore()  // restore the last .endpoint-cache.json pushed from autocheck
+	LoadLastGoodConfig()      // restore last-good snapshot (smart-skip scan on same bundle)
 	StartInvoiceDoneWatcher() // auto-confirm payments (every 20s) → payment hub ✓ Done
 
 	exec.Command("cmd", "/C", "start", "http://localhost:8080").Run()
