@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.6.0
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.6.1
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.1: A_E now ALSO syncs endpoints from your local folder — pulls .endpoint-cache.json via endpoint-cache-server.js (default http://127.0.0.1:8798/endpoint-cache, set localStorage rj_epcache_url to change) and merges fam(10)/slotId/payId/reserveSeg into RJ_DYN, filling whatever live bundle-scan misses. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -461,6 +461,58 @@ const RJ_EP_FAMILIES = [
     { code: '/file/file-confirmation_and_slot_status',  re: /\/file\/file[-_]?confirmation[a-z0-9_-]*/i },
     { code: '/file/payment-amount',                     re: /\/file\/payment[-_]?amount[a-z0-9_-]*/i }
 ];
+
+// ==================== FOLDER ENDPOINT-CACHE SYNC (local endpoint-cache-server.js) ====================
+// A_E pulls the folder's .endpoint-cache.json (served by endpoint-cache-server.js, default :8798) and
+// merges endpoints + slot-id + dg-epay id + reserve segment into RJ_DYN. This fills in exactly what the
+// live bundle-scan misses. Configurable URL: localStorage 'rj_epcache_url'.
+const EP_CACHE_URL_KEY = 'rj_epcache_url';
+function epCacheUrl() { try { return (localStorage.getItem(EP_CACHE_URL_KEY) || 'http://127.0.0.1:8798/endpoint-cache').replace(/\/+$/, ''); } catch (e) { return 'http://127.0.0.1:8798/endpoint-cache'; } }
+function _gmGetText(url, timeout) {
+    return new Promise((resolve) => {
+        try {
+            const g = (typeof GM_xmlhttpRequest !== 'undefined' && GM_xmlhttpRequest) || (typeof GM !== 'undefined' && GM.xmlHttpRequest);
+            if (!g) { resolve(null); return; }
+            g({ method: 'GET', url, timeout: timeout || 6000,
+                onload: r => resolve((r && r.status >= 200 && r.status < 300) ? (r.responseText || '') : null),
+                onerror: () => resolve(null), ontimeout: () => resolve(null) });
+        } catch (e) { resolve(null); }
+    });
+}
+// Map a parsed .endpoint-cache.json into RJ_DYN. Returns a short summary or null.
+function rjApplyEndpointCache(cache) {
+    try {
+        if (!cache || typeof cache !== 'object' || !Array.isArray(cache.endpoints)) return null;
+        const paths = cache.endpoints.map(e => (e && (e.path || e.normPath)) || '').filter(Boolean);
+        let famN = 0;
+        RJ_DYN.fam = RJ_DYN.fam || {};
+        for (const f of RJ_EP_FAMILIES) {
+            for (const p of paths) { if (f.re.test(p)) { if (RJ_DYN.fam[f.code] !== p) { RJ_DYN.fam[f.code] = p; } famN++; break; } }
+        }
+        const U = cache.uuids || {};
+        if (U.SLOT_UUID)   RJ_DYN.slotId = U.SLOT_UUID;
+        if (U.DGEPAY_UUID) RJ_DYN.payId  = U.DGEPAY_UUID;
+        // reserve segment from /slots/<uuid>/reserve[_-]slot
+        for (const p of paths) { const m = p.match(/\/slots\/[^/]+\/(reserve[_-]?slot)/i); if (m) { RJ_DYN.reserveSeg = m[1]; break; } }
+        RJ_DYN.epCacheAt = Date.now();
+        rjPersistDyn();
+        // reflect slot-id / payId in their input boxes so the UI matches (folder is authoritative baseline)
+        try { const sbox = document.getElementById('ivac-reserve-slot-id'); if (sbox && RJ_DYN.slotId && sbox.value.trim() !== RJ_DYN.slotId) { sbox.value = RJ_DYN.slotId; try { localStorage.setItem(RESERVE_SLOT_ID_KEY, RJ_DYN.slotId); } catch (e) {} } } catch (e) {}
+        try { const pbox = document.getElementById('ivac-payment-method-id'); if (pbox && RJ_DYN.payId && pbox.value.trim() !== RJ_DYN.payId) { pbox.value = RJ_DYN.payId; try { localStorage.setItem(PAYMENT_METHOD_ID_KEY, RJ_DYN.payId); } catch (e) {} } } catch (e) {}
+        return { fam: famN, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId, reserveSeg: RJ_DYN.reserveSeg, bundle: cache.bundleName || '' };
+    } catch (e) { return null; }
+}
+// Fetch + apply the folder endpoint-cache. Silent-friendly; returns summary or null.
+async function rjSyncEndpointCache(silent) {
+    const url = epCacheUrl();
+    const txt = await _gmGetText(url, 6000);
+    if (!txt) { if (!silent) logStatus(`⚠ endpoint-cache server na (start korun: node endpoint-cache-server.js) — ${url}`, 'y'); return null; }
+    let cache = null; try { cache = JSON.parse(txt); } catch (e) { if (!silent) logStatus('⚠ endpoint-cache JSON parse fail', 'y'); return null; }
+    const sum = rjApplyEndpointCache(cache);
+    if (!sum) { if (!silent) logStatus('⚠ endpoint-cache shape invalid', 'y'); return null; }
+    logStatus(`📁 Folder sync: ${sum.fam}/10 endpoints • slot ${sum.slotId ? sum.slotId.slice(0,8) : '?'} • pay ${sum.payId ? sum.payId.slice(0,8) : '?'} • ${sum.reserveSeg || ''}${sum.bundle ? ' • ' + sum.bundle : ''}`, 'g');
+    return sum;
+}
 
 const RJ_REC_KEY = 'rj_req_records';
 const RJ_REC = (function () { try { const s = JSON.parse(localStorage.getItem(RJ_REC_KEY) || 'null'); return (s && typeof s === 'object') ? s : {}; } catch (e) { return {}; } })();
@@ -5525,6 +5577,9 @@ document.getElementById('enc-clear-btn')?.addEventListener('click', () => {
 async function scanAndMaybeAutoSignin(reason) {
     localStorage.removeItem(ENC_BUNDLE_HASH_KEY);
     if (reason) logStatus(reason, 'y');
+    // FOLDER SYNC (parallel intent): pull endpoints + slot-id + dg-epay id + reserve segment from the
+    // local endpoint-cache-server so anything the live bundle-scan misses is filled from the folder.
+    try { await rjSyncEndpointCache(true); } catch (e) {}
     const res = await encConfigAutoFetch(true);
     const signinReady = !!(res && res.signin && encConfig.signin && encConfig.signin.active && encConfig.signin.key);
     if (!signinReady) return false;
