@@ -25,6 +25,8 @@ type lastGoodConfig struct {
 	Endpoints  map[string]string `json:"endpoints"`
 	SlotID     string            `json:"slotId"`
 	DgepayID   string            `json:"dgepayId"`
+	ReservePath  string          `json:"reservePath"`
+	InitiatePath string          `json:"initiatePath"`
 	Signin     *PurposeCipher    `json:"signin"`
 	Reserve    *PurposeCipher    `json:"reserve"`
 	Initiate   *PurposeCipher    `json:"initiate"`
@@ -41,9 +43,11 @@ func serializeLastGood(c *Config, bundleName string) []byte {
 		BundleName: baseName(bundleName),
 		APIBase:    c.APIBase,
 		Endpoints:  map[string]string{},
-		SlotID:     c.SlotID,
-		DgepayID:   c.DgepayID,
-		Signin:     c.Signin,
+		SlotID:       c.SlotID,
+		DgepayID:     c.DgepayID,
+		ReservePath:  c.CacheReservePath,
+		InitiatePath: c.CacheInitiatePath,
+		Signin:       c.Signin,
 		Reserve:    c.Reserve,
 		Initiate:   c.Initiate,
 		SavedAt:    time.Now().Format(time.RFC3339),
@@ -96,6 +100,12 @@ func (lg *lastGoodConfig) applyTo(c *Config) {
 	}
 	if lg.DgepayID != "" {
 		c.DgepayID = lg.DgepayID
+	}
+	if lg.ReservePath != "" {
+		c.CacheReservePath = lg.ReservePath
+	}
+	if lg.InitiatePath != "" {
+		c.CacheInitiatePath = lg.InitiatePath
 	}
 	if lg.Signin != nil {
 		c.Signin = lg.Signin

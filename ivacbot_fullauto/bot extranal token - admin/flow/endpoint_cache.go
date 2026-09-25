@@ -132,6 +132,24 @@ func (c *Config) ApplyEndpointCache(raw []byte, liveBundle string, log func(stri
 		c.Endpoints[code] = lit
 		c.noteSource("ep:"+code, SrcIvacflow)
 	}
+	// Capture the FULL reserve + initiate paths (uuid + current suffix) so those two
+	// endpoints follow any IVAC path/suffix change instead of using a built-in suffix.
+	for _, e := range cf.Endpoints {
+		p := strings.TrimSpace(e.Path)
+		if p == "" {
+			continue
+		}
+		lp, np := strings.ToLower(p), normSep(p)
+		if strings.Contains(lp, "/slots/") && strings.Contains(np, "reserveslot") {
+			c.CacheReservePath = p
+		}
+		if strings.Contains(lp, "/payment/") && strings.Contains(lp, "initiate") {
+			// prefer the dg-epay uuid path; fall back to any initiate (e.g. ssl) path
+			if strings.Contains(lp, "dg-epay") || c.CacheInitiatePath == "" {
+				c.CacheInitiatePath = p
+			}
+		}
+	}
 	if s := strings.TrimSpace(cf.UUIDs.SlotUUID); s != "" {
 		c.SlotID = s
 		c.noteSource("slotId", SrcIvacflow)

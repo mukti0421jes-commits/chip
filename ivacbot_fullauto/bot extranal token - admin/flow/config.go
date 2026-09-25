@@ -73,6 +73,14 @@ type Config struct {
 	// when its bundleName matches the live bundle. Empty = not pushed / not used.
 	EndpointCacheJSON []byte
 
+	// CacheReservePath / CacheInitiatePath are the FULL reserve/initiate paths (with
+	// the live slot/dg-epay uuid AND the current suffix) captured from the endpoint
+	// cache or last-good snapshot for this exact bundle. When set, ReserveURLFor /
+	// InitiateURLFor use them verbatim instead of reconstructing with a built-in
+	// suffix — so an IVAC path/suffix change is followed automatically.
+	CacheReservePath  string
+	CacheInitiatePath string
+
 	// LastGoodJSON is the snapshot of the last SUCCESSFUL scan (last_good_config.json).
 	// If the live bundle name still matches this snapshot, Scan reuses it and skips
 	// the heavy download + goja cipher/dg-epay work (smart-skip). Empty = none yet.
@@ -180,8 +188,15 @@ func (c *Config) VerifyURL() string { return c.join(c.ep("/otp/verifySigninOtp")
 // BookURL → .../appointment/get-booking-config.
 func (c *Config) BookURL() string { return c.join(c.ep("/appointment/get-booking-config")) }
 
-// ReserveURLFor builds the reserve URL from the scanned slot id (path param).
+// ReserveURLFor builds the reserve URL. If the endpoint-cache/last-good captured the
+// FULL reserve path for this exact bundle (CacheReservePath, e.g. it carries the
+// live slot uuid AND the current suffix, be it reserve-slot or reserve_slot), that
+// is used verbatim — so a suffix change on IVAC's side is followed automatically.
+// Otherwise it reconstructs /slots/<slotId>/reserve-slot (built-in behavior).
 func (c *Config) ReserveURLFor() string {
+	if c.CacheReservePath != "" {
+		return c.join(c.CacheReservePath)
+	}
 	slot := c.SlotID
 	if slot == "" {
 		slot = "{slotId}"
@@ -196,12 +211,17 @@ func (c *Config) ReserveURLFor() string {
 // bundle. A manual dashboard override (ForcedDgepayID) wins; else the scanned /
 // fallback DgepayID is used.
 func (c *Config) InitiateURLFor() string {
-	id := c.DgepayID
+	// Manual dashboard override always wins.
 	if c.ForcedDgepayID != "" {
-		id = c.ForcedDgepayID
+		return c.join("/payment/" + c.ForcedDgepayID + "/dg-epay/initiate")
 	}
-	if id != "" {
-		return c.join("/payment/" + id + "/dg-epay/initiate")
+	// Full initiate path captured for THIS exact bundle (endpoint-cache/last-good) —
+	// used verbatim so a suffix/gateway change (dg-epay → ssl, etc.) is followed.
+	if c.CacheInitiatePath != "" {
+		return c.join(c.CacheInitiatePath)
+	}
+	if c.DgepayID != "" {
+		return c.join("/payment/" + c.DgepayID + "/dg-epay/initiate")
 	}
 	// last resort: whatever initiate path the extractor decoded.
 	if c.InitiatePath != "" {
