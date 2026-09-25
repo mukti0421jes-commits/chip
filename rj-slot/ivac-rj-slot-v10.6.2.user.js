@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.6.1
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.1: A_E now ALSO syncs endpoints from your local folder — pulls .endpoint-cache.json via endpoint-cache-server.js (default http://127.0.0.1:8798/endpoint-cache, set localStorage rj_epcache_url to change) and merges fam(10)/slotId/payId/reserveSeg into RJ_DYN, filling whatever live bundle-scan misses. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.6.2
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.6.2: A_E endpoint-cache sync now pulls from the always-on Go bot first (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -462,12 +462,18 @@ const RJ_EP_FAMILIES = [
     { code: '/file/payment-amount',                     re: /\/file\/payment[-_]?amount[a-z0-9_-]*/i }
 ];
 
-// ==================== FOLDER ENDPOINT-CACHE SYNC (local endpoint-cache-server.js) ====================
-// A_E pulls the folder's .endpoint-cache.json (served by endpoint-cache-server.js, default :8798) and
-// merges endpoints + slot-id + dg-epay id + reserve segment into RJ_DYN. This fills in exactly what the
-// live bundle-scan misses. Configurable URL: localStorage 'rj_epcache_url'.
+// ==================== FOLDER ENDPOINT-CACHE SYNC ====================
+// A_E pulls the folder's .endpoint-cache.json and merges endpoints + slot-id + dg-epay id + reserve
+// segment into RJ_DYN — filling exactly what the live bundle-scan misses. Two sources, tried in order:
+//   1) the always-on Go bot:  GET http://127.0.0.1:8080/api/endpointCache   (no extra window needed)
+//   2) the standalone helper:  GET http://127.0.0.1:8798/endpoint-cache      (endpoint-cache-server.js)
+// Override with localStorage 'rj_epcache_url' (single URL) — when set, ONLY that URL is used.
 const EP_CACHE_URL_KEY = 'rj_epcache_url';
-function epCacheUrl() { try { return (localStorage.getItem(EP_CACHE_URL_KEY) || 'http://127.0.0.1:8798/endpoint-cache').replace(/\/+$/, ''); } catch (e) { return 'http://127.0.0.1:8798/endpoint-cache'; } }
+const EP_CACHE_DEFAULTS = ['http://127.0.0.1:8080/api/endpointCache', 'http://127.0.0.1:8798/endpoint-cache'];
+function epCacheUrls() {
+    try { const o = (localStorage.getItem(EP_CACHE_URL_KEY) || '').trim(); if (o) return [o.replace(/\/+$/, '')]; } catch (e) {}
+    return EP_CACHE_DEFAULTS.slice();
+}
 function _gmGetText(url, timeout) {
     return new Promise((resolve) => {
         try {
@@ -502,16 +508,21 @@ function rjApplyEndpointCache(cache) {
         return { fam: famN, slotId: RJ_DYN.slotId, payId: RJ_DYN.payId, reserveSeg: RJ_DYN.reserveSeg, bundle: cache.bundleName || '' };
     } catch (e) { return null; }
 }
-// Fetch + apply the folder endpoint-cache. Silent-friendly; returns summary or null.
+// Fetch + apply the endpoint-cache. Tries each source URL in order (Go bot first, then helper server);
+// the first that returns a valid cache wins. Silent-friendly; returns summary or null.
 async function rjSyncEndpointCache(silent) {
-    const url = epCacheUrl();
-    const txt = await _gmGetText(url, 6000);
-    if (!txt) { if (!silent) logStatus(`⚠ endpoint-cache server na (start korun: node endpoint-cache-server.js) — ${url}`, 'y'); return null; }
-    let cache = null; try { cache = JSON.parse(txt); } catch (e) { if (!silent) logStatus('⚠ endpoint-cache JSON parse fail', 'y'); return null; }
-    const sum = rjApplyEndpointCache(cache);
-    if (!sum) { if (!silent) logStatus('⚠ endpoint-cache shape invalid', 'y'); return null; }
-    logStatus(`📁 Folder sync: ${sum.fam}/10 endpoints • slot ${sum.slotId ? sum.slotId.slice(0,8) : '?'} • pay ${sum.payId ? sum.payId.slice(0,8) : '?'} • ${sum.reserveSeg || ''}${sum.bundle ? ' • ' + sum.bundle : ''}`, 'g');
-    return sum;
+    const urls = epCacheUrls();
+    for (const url of urls) {
+        const txt = await _gmGetText(url, 6000);
+        if (!txt) continue;                                  // unreachable / 404 (nothing pushed) → try next
+        let cache = null; try { cache = JSON.parse(txt); } catch (e) { continue; }
+        const sum = rjApplyEndpointCache(cache);
+        if (!sum) continue;
+        logStatus(`📁 Folder sync: ${sum.fam}/10 endpoints • slot ${sum.slotId ? sum.slotId.slice(0,8) : '?'} • pay ${sum.payId ? sum.payId.slice(0,8) : '?'} • ${sum.reserveSeg || ''}${sum.bundle ? ' • ' + sum.bundle : ''}`, 'g');
+        return sum;
+    }
+    if (!silent) logStatus(`⚠ endpoint-cache pawa jayni — Go bot (8080) ba endpoint-cache-server (8798) cholche to? [${urls.join(' , ')}]`, 'y');
+    return null;
 }
 
 const RJ_REC_KEY = 'rj_req_records';
