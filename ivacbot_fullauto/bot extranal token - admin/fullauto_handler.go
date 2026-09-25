@@ -632,14 +632,21 @@ func holderNameFromFilename(orig string) string {
 		}
 		return false
 	}
+	firstWord := func(s string) string {
+		if f := strings.Fields(s); len(f) > 0 {
+			return f[0]
+		}
+		return s
+	}
 	for _, seg := range strings.Split(base, "=") {
 		c := clean(seg)
 		if c == "" || isIndex(c) || looksLikeSlip(c) || !hasAlpha(c) {
 			continue
 		}
-		return c
+		// Show only the GIVEN name (first word), e.g. "LITAN BISWAS" → "LITAN".
+		return firstWord(c)
 	}
-	return clean(base)
+	return firstWord(clean(base))
 }
 
 // fullAutoStepDelays snapshots the dashboard's per-step retry delays (seconds) so
