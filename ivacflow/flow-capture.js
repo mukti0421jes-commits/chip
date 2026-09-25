@@ -800,6 +800,30 @@ function findChromeExe() {
   const page = await context.newPage();
 
   const isAsset = (u) => /\.(css|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)(\?|$)/i.test(u) || /fonts\.(googleapis|gstatic)\.com/.test(u);
+  // The payment gateway lives on a different origin (checkout.dgepay.net,
+  // sslcommerz, aamarpay, …) that we don't serve, so after initiate the app
+  // navigates there and the page stays blank. Detect that navigation and serve
+  // a mock gateway page so the visible walk actually shows a "gateway loaded"
+  // screen (proof the flow reached payment). It's a stand-in, not a real gateway.
+  const isGateway = (u) => /checkout\.dgepay|dgepay\.net|sandbox\.|sslcommerz|securepay|aamarpay|shurjopay|portwallet|payment-methods|\/gateway|gwprocess|webview/i.test(u);
+  const GATEWAY_HTML = (u) => '<!doctype html><html lang="bn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment Gateway</title>' +
+    '<style>body{font-family:system-ui,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;align-items:center;justify-content:center}' +
+    '.card{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:32px 36px;max-width:440px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.4)}' +
+    '.badge{display:inline-block;background:#1f6feb;color:#fff;font-size:12px;padding:3px 10px;border-radius:20px;margin-bottom:14px}' +
+    'h1{font-size:20px;margin:.2em 0}.amt{font-size:34px;font-weight:700;color:#3fb950;margin:10px 0}' +
+    '.row{display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid #21262d;font-size:14px}.k{color:#8b949e}' +
+    '.methods{display:flex;gap:10px;margin:18px 0}.m{flex:1;text-align:center;padding:12px 0;border:1px solid #30363d;border-radius:10px;font-size:13px}' +
+    '.btn{display:block;width:100%;padding:13px;background:#238636;color:#fff;border:0;border-radius:10px;font-size:16px;margin-top:16px;cursor:pointer}' +
+    '.note{font-size:11px;color:#8b949e;margin-top:14px;text-align:center}</style></head>' +
+    '<body><div class="card"><span class="badge">DG-ePay</span><h1>IVAC Appointment Payment</h1>' +
+    '<div class="amt">৳ 1,500.00</div>' +
+    '<div class="row"><span class="k">Merchant</span><span>IVAC Bangladesh</span></div>' +
+    '<div class="row"><span class="k">Order</span><span>' + (u.match(/payment\/([0-9a-zA-Z_-]{8,40})/)?.[1] || 'IVAC-ORDER').slice(0, 18) + '</span></div>' +
+    '<div class="row"><span class="k">Status</span><span style="color:#3fb950">Ready</span></div>' +
+    '<div class="methods"><div class="m">bKash</div><div class="m">Nagad</div><div class="m">Card</div></div>' +
+    '<button class="btn">Pay ৳ 1,500.00</button>' +
+    '<div class="note">🔒 Mock gateway — extraction/demo only. Real gateway loads when the bot calls initiate on the live site.</div>' +
+    '</div></body></html>';
   const CORS_HEADERS = {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
@@ -818,13 +842,22 @@ function findChromeExe() {
     });
   }
 
-  await page.route('**/*', async (route) => {
+  const routeHandler = async (route) => {
     const req = route.request();
     const url = req.url();
     const method = req.method();
     if (HOST_ORIGIN && url.startsWith(HOST_ORIGIN)) return route.continue();
     if (isTurnstile(url)) return route.fulfill({ status: 200, headers: { 'content-type': 'application/javascript' }, body: '/* turnstile blocked */' });
     if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_HEADERS, body: '' });
+    // Payment-gateway navigation → serve the mock gateway page (so it visibly
+    // loads). Checked BEFORE isApi because the gateway URL also contains
+    // "/payment/". The real initiate API (api.ivacbd.com/.../dg-epay/initiate)
+    // does not match isGateway, so it still goes through the API mock below.
+    if (isGateway(url)) {
+      console.log('  💳 gateway page served (mock):', url.replace(/^https?:\/\/[^/]+/, '').slice(0, 60));
+      flowState.gatewayLoaded = true;
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: GATEWAY_HTML(url) });
+    }
     if (isApi(url)) {
       const mockResp = mockBodyFor(url);
       const shortUrl = url.replace(/^https?:\/\/[^/]+/, '');
@@ -836,6 +869,13 @@ function findChromeExe() {
     }
     if (isAsset(url) || /fonts\.|youtube\.com|ytimg\.com|googleapis\.com/i.test(url)) return route.fulfill({ status: 200, body: '' });
     return route.continue();
+  };
+  await page.route('**/*', routeHandler);
+  // The gateway often opens in a NEW tab/window (window.open) — route those too
+  // so the popup shows the mock gateway instead of a blank cross-origin page.
+  context.on('page', async (p) => {
+    try { await p.route('**/*', routeHandler); } catch (_) {}
+    p.on('pageerror', () => {});
   });
 
   page.on('pageerror', e => { console.log('  page-error:', e.message.substring(0, 200)); if (e.stack) console.log('  stack:', e.stack.substring(0, 600)); });
@@ -1777,6 +1817,24 @@ function findChromeExe() {
   }
 
   writeFlow();
+
+  // Payment reached → drive the browser to the gateway so it visibly loads.
+  // In mock mode our routeHandler serves the mock gateway page; in LIVE mode we
+  // navigate to the REAL webview_url the server returned (real gateway loads).
+  if (flowState.paymentInitiated || log.some(e => /\/payment\/.*initiate/i.test(e.url))) {
+    try {
+      let gw = '';
+      // Prefer a real webview_url captured from a live initiate response.
+      for (const k of Object.keys(responsesMap || {})) {
+        if (/initiate/i.test(k)) { const d = responsesMap[k] && responsesMap[k].data; if (d && (d.webview_url || d.gatewayUrl || d.redirectUrl)) { gw = d.webview_url || d.gatewayUrl || d.redirectUrl; break; } }
+      }
+      if (!gw) gw = 'https://checkout.dgepay.net/payment/payment-methods?data=MOCK_PAYMENT_DATA';
+      console.log('  💳 navigating to payment gateway:', gw.slice(0, 70));
+      await page.goto(gw, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(sms(1200)).catch(() => {});
+      if (flowState.gatewayLoaded) console.log('  ✓ payment gateway page loaded');
+    } catch (_) {}
+  }
 
   if (HOLD_OPEN_MS > 0) {
     console.log(`🖐 manual mode — window open for ${Math.round(HOLD_OPEN_MS / 1000)}s`);
