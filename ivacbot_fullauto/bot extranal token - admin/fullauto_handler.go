@@ -574,16 +574,72 @@ func handlePortalUploadFile(w http.ResponseWriter, r *http.Request) {
 	portalJSON(w, map[string]interface{}{"ok": "1", "name": fname, "size": len(data)})
 }
 
-// holderNameFromFilename derives a display name from a primary webfile's original
-// PDF filename. It drops the ".pdf" extension, turns underscores/dashes into
-// spaces and collapses whitespace, so "PRIMARY__Md_Rahim_Uddin.pdf" (stored with
-// the original name after "__") shows as "Md Rahim Uddin". Returns "" when nothing
-// usable remains.
+// holderNameFromFilename derives the account holder's display name from a primary
+// webfile's original PDF filename. IVAC files are named "<NAME>=<SLIP NUMBER>.pdf"
+// (e.g. "LITAN BISWAS=BGDDW0A25A26LI830520.pdf"), sometimes with a leading index
+// like "01= NAME ==== SLIP.pdf". So it drops the extension, splits on '=', and
+// returns the first segment that looks like a NAME rather than a slip/index:
+//
+//   - a slip number is a run with no spaces that mixes letters and digits (or
+//     starts with "BGD"), e.g. BGDDW0A25A26LI830520 → skipped
+//   - a pure-numeric index (01, 2, …) → skipped
+//   - the first segment with an actual alphabetic word wins → cleaned up
+//
+// Falls back to the whole cleaned filename when no segment qualifies. Returns ""
+// when nothing usable remains.
 func holderNameFromFilename(orig string) string {
-	name := strings.TrimSuffix(orig, filepath.Ext(orig))
-	name = strings.NewReplacer("_", " ", "-", " ").Replace(name)
-	name = strings.Join(strings.Fields(name), " ")
-	return strings.TrimSpace(name)
+	base := strings.TrimSuffix(orig, filepath.Ext(orig))
+	clean := func(s string) string {
+		s = strings.NewReplacer("_", " ", "-", " ").Replace(s)
+		return strings.Join(strings.Fields(s), " ")
+	}
+	looksLikeSlip := func(s string) bool {
+		f := strings.Fields(s)
+		if len(f) != 1 { // a real name almost always has a space
+			return false
+		}
+		w := f[0]
+		if strings.HasPrefix(strings.ToUpper(w), "BGD") {
+			return true
+		}
+		hasDigit, hasAlpha := false, false
+		for _, c := range w {
+			if c >= '0' && c <= '9' {
+				hasDigit = true
+			} else if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				hasAlpha = true
+			}
+		}
+		return hasDigit && hasAlpha // mixed letters+digits, no space → slip
+	}
+	isIndex := func(s string) bool {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return true
+		}
+		for _, c := range s {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true // all digits (e.g. "01")
+	}
+	hasAlpha := func(s string) bool {
+		for _, c := range s {
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				return true
+			}
+		}
+		return false
+	}
+	for _, seg := range strings.Split(base, "=") {
+		c := clean(seg)
+		if c == "" || isIndex(c) || looksLikeSlip(c) || !hasAlpha(c) {
+			continue
+		}
+		return c
+	}
+	return clean(base)
 }
 
 // fullAutoStepDelays snapshots the dashboard's per-step retry delays (seconds) so
