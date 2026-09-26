@@ -6313,6 +6313,24 @@ func getDashboardHTML() string {
 
         .tab-content { display: none; animation: fadeIn 0.3s ease; }
         .tab-content.active { display: block; }
+        /* ── Overview page (multi-page nav landing) ── */
+        .nav-badge { margin-left:auto; background:rgba(34,211,238,.16); color:#67e8f9; font-size:11px; font-weight:700; padding:1px 8px; border-radius:999px; min-width:18px; text-align:center; }
+        .nav-badge:empty { display:none; }
+        .ov-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:18px; }
+        .ov-card { display:flex; align-items:center; gap:14px; padding:18px 20px; background:linear-gradient(135deg,rgba(13,21,37,.85),rgba(13,21,37,.55)); border:1px solid rgba(45,212,191,.12); border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.18); }
+        .ov-card .ov-ic { font-size:26px; line-height:1; }
+        .ov-card .ov-num { font-size:30px; font-weight:800; color:#e2e8f0; line-height:1.1; }
+        .ov-card .ov-lbl { font-size:12px; color:#8b93a7; font-weight:600; margin-top:2px; }
+        .ov-run { border-color:rgba(56,189,248,.28); }
+        .ov-done { border-color:rgba(52,211,153,.28); }
+        .ov-fail { border-color:rgba(248,113,113,.28); }
+        .ov-pay { border-color:rgba(251,191,36,.28); }
+        .ov-otp { border-color:rgba(129,140,248,.28); }
+        .ov-panels { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+        .ov-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid rgba(148,163,184,.08); }
+        .ov-row:last-child { border-bottom:none; }
+        .ov-name { color:#38bdf8; font-weight:600; }
+        .ov-sub { color:#64748b; font-size:11px; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         @media (max-width: 1024px) { 
@@ -6448,7 +6466,8 @@ func getDashboardHTML() string {
         </p>
     </div>
     <div class="sidebar-nav">
-        <div class="nav-item active" data-tab="instances"><span class="nav-icon">📋</span><span class="nav-label">Instances</span></div>
+        <div class="nav-item active" data-tab="overview"><span class="nav-icon">🏠</span><span class="nav-label">Overview</span></div>
+        <div class="nav-item" data-tab="instances"><span class="nav-icon">📋</span><span class="nav-label">Instances</span><span id="navBadgeInstances" class="nav-badge"></span></div>
         <div class="nav-item" data-tab="config"><span class="nav-icon">⚙️</span><span class="nav-label">Configuration</span></div>
         <div class="nav-item" data-tab="parallel"><span class="nav-icon">⚡</span><span class="nav-label">Parallel Config</span></div>
         <div class="nav-item" data-tab="proxies"><span class="nav-icon">🌐</span><span class="nav-label">Proxies</span></div>
@@ -6518,8 +6537,30 @@ func getDashboardHTML() string {
         </div>
     </div>
     
+    <!-- TAB: OVERVIEW -->
+    <div id="tab-overview" class="tab-content active">
+        <div class="ov-grid">
+            <div class="ov-card"><div class="ov-ic">📊</div><div class="ov-meta"><div class="ov-num" id="ovTotal">0</div><div class="ov-lbl">Total Accounts</div></div></div>
+            <div class="ov-card ov-run"><div class="ov-ic">▶️</div><div class="ov-meta"><div class="ov-num" id="ovRunning">0</div><div class="ov-lbl">Running</div></div></div>
+            <div class="ov-card ov-done"><div class="ov-ic">✅</div><div class="ov-meta"><div class="ov-num" id="ovCompleted">0</div><div class="ov-lbl">Completed</div></div></div>
+            <div class="ov-card ov-fail"><div class="ov-ic">❌</div><div class="ov-meta"><div class="ov-num" id="ovFailed">0</div><div class="ov-lbl">Failed</div></div></div>
+            <div class="ov-card ov-pay"><div class="ov-ic">💳</div><div class="ov-meta"><div class="ov-num" id="ovPayReady">0</div><div class="ov-lbl">Payment Ready</div></div></div>
+            <div class="ov-card ov-otp"><div class="ov-ic">⏳</div><div class="ov-meta"><div class="ov-num" id="ovWaitOtp">0</div><div class="ov-lbl">Waiting OTP</div></div></div>
+        </div>
+        <div class="ov-panels">
+            <div class="config-panel ov-panel">
+                <h3>🕒 Recent Activity</h3>
+                <div id="ovRecent" style="font-size:13px;color:#94a3b8;">No activity yet.</div>
+            </div>
+            <div class="config-panel ov-panel">
+                <h3>💳 Payment Ready</h3>
+                <div id="ovPayList" style="font-size:13px;color:#94a3b8;">None yet.</div>
+            </div>
+        </div>
+    </div>
+
     <!-- TAB: INSTANCES -->
-    <div id="tab-instances" class="tab-content active">
+    <div id="tab-instances" class="tab-content">
         <div class="add-form">
             <span style="color:#8b93a7;font-size:13px;font-weight:600;">📁 Entries & files are added from <b style="color:#22d3ee;">File Manager</b>. Control instances here:</span>
             <span style="display:inline-flex;align-items:center;gap:6px;">
@@ -6950,8 +6991,13 @@ function toggleSidebar() {
 function showTab(tabName) { 
     document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); }); 
     document.querySelectorAll('.nav-item').forEach(function(b) { b.classList.remove('active'); }); 
-    document.getElementById('tab-' + tabName).classList.add('active'); 
-    document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active'); 
+    document.getElementById('tab-' + tabName).classList.add('active');
+    document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active');
+    // Overview is a clean read-only landing — hide the instances control bars there.
+    var sg=document.querySelector('.stats-grid'), sm=document.querySelector('.slot-monitor-bar');
+    var showBars = (tabName !== 'overview');
+    if(sg) sg.style.display = showBars ? '' : 'none';
+    if(sm) sm.style.display = showBars ? '' : 'none';
     if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); loadEncryptToggle(); loadLiveScanTries(); }
     if (tabName === 'parallel') { loadTraditionalParallelConfig(); loadParallelRetryConfig(); } 
     if (tabName === 'proxies') loadProxies(); 
@@ -7212,8 +7258,37 @@ function saveEncryptToggle() {
         else { if(s) s.textContent='❌ save failed'; }
       }).catch(function(){ var s=document.getElementById('encToggleStatus'); if(s) s.textContent='❌ save failed'; });
 }
+function ovEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function renderOverview(list, data){
+    list = list || [];
+    var payReady=0, waitOtp=0;
+    list.forEach(function(x){
+        if(x.paymentUrl) payReady++;
+        if(x.step==='WAITING_OTP' || (x.waitingOtp && !x.otp)) waitOtp++;
+    });
+    var set=function(id,v){ var el=document.getElementById(id); if(el) el.innerText=v; };
+    set('ovTotal', (data&&data.total!=null)?data.total:list.length);
+    set('ovRunning', (data&&data.running!=null)?data.running:'0');
+    set('ovCompleted', (data&&data.completed!=null)?data.completed:'0');
+    set('ovFailed', (data&&data.failed!=null)?data.failed:'0');
+    set('ovPayReady', payReady);
+    set('ovWaitOtp', waitOtp);
+    var nb=document.getElementById('navBadgeInstances'); if(nb) nb.innerText=list.length? list.length:'';
+    // Recent activity: latest instances that have a lastLog, newest id first.
+    var recent=list.filter(function(x){return x.lastLog;}).sort(function(a,b){return b.id-a.id;}).slice(0,8);
+    var rc=document.getElementById('ovRecent');
+    if(rc){ rc.innerHTML = recent.length? recent.map(function(x){
+        return '<div class="ov-row"><span><span class="ov-name">'+ovEsc(x.clientName||('#'+x.id))+'</span> <span class="ov-sub">'+ovEsc(x.step||'')+'</span></span><span class="ov-sub">'+ovEsc((x.lastLog||'').slice(0,60))+'</span></div>';
+    }).join('') : 'No activity yet.'; }
+    // Payment-ready list
+    var pr=list.filter(function(x){return x.paymentUrl;}).sort(function(a,b){return a.id-b.id;});
+    var pl=document.getElementById('ovPayList');
+    if(pl){ pl.innerHTML = pr.length? pr.map(function(x){
+        return '<div class="ov-row"><span class="ov-name">'+ovEsc(x.clientName||('#'+x.id))+'</span><a href="'+ovEsc(x.paymentUrl)+'" target="_blank" class="btn-pay" style="padding:2px 10px;">💳 Pay</a></div>';
+    }).join('') : 'None yet.'; }
+}
 function refresh() {
-    fetch('/api/instances').then(function(r) { return r.json(); }).then(function(data) { 
+    fetch('/api/instances').then(function(r) { return r.json(); }).then(function(data) {
         document.getElementById('totalCount').innerText = data.total; 
         document.getElementById('runningCount').innerText = data.running; 
         document.getElementById('failedCount').innerText = data.failed; 
@@ -7224,6 +7299,7 @@ function refresh() {
         });
         
         instancesDataCache = sortedInstances;
+        renderOverview(sortedInstances, data);
         autoFillInvoiceTrxId(sortedInstances);
         var tbody = document.getElementById('tableBody');
         tbody.innerHTML = ''; 
@@ -8479,6 +8555,7 @@ loadSingleHitRetryConfig();
 loadTraditionalParallelConfig();
 loadParallelRetryConfig();
 loadLiveScanTriesTop();
+showTab('overview'); // set initial landing state (hides instances control bars)
 updateTokenStatistics();
 
 setInterval(function() {
