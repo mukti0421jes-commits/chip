@@ -6331,6 +6331,11 @@ func getDashboardHTML() string {
         .ov-row:last-child { border-bottom:none; }
         .ov-name { color:#38bdf8; font-weight:600; }
         .ov-sub { color:#64748b; font-size:11px; }
+        /* ── Instances filter bar ── */
+        .filter-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0 10px; padding:8px 12px; background:rgba(13,21,37,.55); border:1px solid rgba(45,212,191,.10); border-radius:10px; }
+        .filter-bar input[type=text], .filter-bar select { font-size:12px; padding:6px 9px; border-radius:7px; border:1px solid #2b3a52; background:#0d1424; color:#e2e8f0; }
+        .filter-bar input[type=text] { min-width:200px; }
+        .privacy-toggle { margin-left:auto; display:flex; align-items:center; gap:6px; color:#94a3b8; font-size:12px; font-weight:600; cursor:pointer; padding:4px 10px; border:1px solid rgba(129,140,248,.25); border-radius:8px; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         @media (max-width: 1024px) { 
@@ -6608,6 +6613,26 @@ func getDashboardHTML() string {
             </label>
         </div>
         
+        <div class="filter-bar">
+            <input type="text" id="fltSearch" placeholder="🔍 Search name / phone…" oninput="applyInstanceFilters()">
+            <select id="fltMission" onchange="applyInstanceFilters()">
+                <option value="">All missions</option>
+                <option>Dhaka</option><option>Chittagong</option><option>Rajshahi</option><option>Sylhet</option><option>Khulna</option><option>Jashore</option>
+            </select>
+            <select id="fltVisa" onchange="applyInstanceFilters()">
+                <option value="">All visa types</option>
+                <option>Medical</option><option>Tourist</option><option>Student</option><option>Business</option><option>Entry</option><option>Double Entry</option>
+            </select>
+            <select id="fltStatus" onchange="applyInstanceFilters()">
+                <option value="">All status</option>
+                <option value="RUNNING">Running</option><option value="COMPLETED">Completed</option><option value="FAILED">Failed</option><option value="IDLE">Idle/Stopped</option>
+            </select>
+            <span id="fltCount" style="color:#64748b;font-size:11px;"></span>
+            <button class="btn btn-outline btn-sm" onclick="clearInstanceFilters()" style="margin-left:6px;">✖ Clear</button>
+            <label class="privacy-toggle" title="Phone/email mask kore rakhe (screen-share er somoy)">
+                <input type="checkbox" id="privacyModeChk" onchange="togglePrivacyMode()"> 🕶️ Privacy Mode
+            </label>
+        </div>
         <div class="table-container">
             <table class="instances-table"><thead>
                 <th class="checkbox-col"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll()"></th>
@@ -7259,6 +7284,40 @@ function saveEncryptToggle() {
       }).catch(function(){ var s=document.getElementById('encToggleStatus'); if(s) s.textContent='❌ save failed'; });
 }
 function ovEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+// ── Instances filters + Privacy Mode (front-end only) ──
+var privacyMode = false;
+try { privacyMode = localStorage.getItem('ivacPrivacy')==='1'; } catch(e){}
+function maskPhone(p){ p=String(p||''); if(!privacyMode||p.length<4) return p; return p.slice(0,3)+'••••'+p.slice(-2); }
+function maskName(n){ n=String(n||''); if(!privacyMode||n.length<2||n==='-') return n; return n.slice(0,1)+'•••'; }
+function instancePassesFilter(inst){
+    var q=(document.getElementById('fltSearch')||{}).value; q=(q||'').trim().toLowerCase();
+    var m=(document.getElementById('fltMission')||{}).value||'';
+    var v=(document.getElementById('fltVisa')||{}).value||'';
+    var s=(document.getElementById('fltStatus')||{}).value||'';
+    var typ=((inst.type||'')+' '+(inst.highCom||'')+' '+(inst.visaType||'')).toLowerCase();
+    if(m && typ.indexOf(m.toLowerCase())<0) return false;
+    if(v && typ.indexOf(v.toLowerCase())<0) return false;
+    if(s){
+        var st=(inst.status||'').toUpperCase();
+        if(s==='IDLE'){ if(st==='RUNNING'||st==='COMPLETED'||st==='FAILED') return false; }
+        else if(st!==s) return false;
+    }
+    if(q){
+        var hay=((inst.clientName||'')+' '+(inst.loginPhone||'')+' '+(inst.otpPhone||'')).toLowerCase();
+        if(hay.indexOf(q)<0) return false;
+    }
+    return true;
+}
+function applyInstanceFilters(){ refresh(); }
+function clearInstanceFilters(){
+    ['fltSearch','fltMission','fltVisa','fltStatus'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+    refresh();
+}
+function togglePrivacyMode(){
+    privacyMode = !!(document.getElementById('privacyModeChk')||{}).checked;
+    try { localStorage.setItem('ivacPrivacy', privacyMode?'1':'0'); } catch(e){}
+    refresh();
+}
 function renderOverview(list, data){
     list = list || [];
     var payReady=0, waitOtp=0;
@@ -7278,13 +7337,13 @@ function renderOverview(list, data){
     var recent=list.filter(function(x){return x.lastLog;}).sort(function(a,b){return b.id-a.id;}).slice(0,8);
     var rc=document.getElementById('ovRecent');
     if(rc){ rc.innerHTML = recent.length? recent.map(function(x){
-        return '<div class="ov-row"><span><span class="ov-name">'+ovEsc(x.clientName||('#'+x.id))+'</span> <span class="ov-sub">'+ovEsc(x.step||'')+'</span></span><span class="ov-sub">'+ovEsc((x.lastLog||'').slice(0,60))+'</span></div>';
+        return '<div class="ov-row"><span><span class="ov-name">'+ovEsc(maskName(x.clientName||("#"+x.id)))+'</span> <span class="ov-sub">'+ovEsc(x.step||'')+'</span></span><span class="ov-sub">'+ovEsc((x.lastLog||'').slice(0,60))+'</span></div>';
     }).join('') : 'No activity yet.'; }
     // Payment-ready list
     var pr=list.filter(function(x){return x.paymentUrl;}).sort(function(a,b){return a.id-b.id;});
     var pl=document.getElementById('ovPayList');
     if(pl){ pl.innerHTML = pr.length? pr.map(function(x){
-        return '<div class="ov-row"><span class="ov-name">'+ovEsc(x.clientName||('#'+x.id))+'</span><a href="'+ovEsc(x.paymentUrl)+'" target="_blank" class="btn-pay" style="padding:2px 10px;">💳 Pay</a></div>';
+        return '<div class="ov-row"><span class="ov-name">'+ovEsc(maskName(x.clientName||("#"+x.id)))+'</span><a href="'+ovEsc(x.paymentUrl)+'" target="_blank" class="btn-pay" style="padding:2px 10px;">💳 Pay</a></div>';
     }).join('') : 'None yet.'; }
 }
 function refresh() {
@@ -7302,9 +7361,12 @@ function refresh() {
         renderOverview(sortedInstances, data);
         autoFillInvoiceTrxId(sortedInstances);
         var tbody = document.getElementById('tableBody');
-        tbody.innerHTML = ''; 
-        
-        sortedInstances.forEach(function(inst) { 
+        tbody.innerHTML = '';
+
+        var visibleInstances = sortedInstances.filter(instancePassesFilter);
+        var fc=document.getElementById('fltCount');
+        if(fc) fc.textContent = (visibleInstances.length===sortedInstances.length) ? (sortedInstances.length+' shown') : (visibleInstances.length+' / '+sortedInstances.length+' shown');
+        visibleInstances.forEach(function(inst) {
             var row = tbody.insertRow(); 
             row.className = 'instance-row'; 
             row.id = 'instance-row-' + inst.id;
@@ -7322,8 +7384,8 @@ function refresh() {
             })(inst.id); 
             row.insertCell(0).appendChild(cb); 
             row.insertCell(1).innerHTML = '<b style="color:#38bdf8;">#' + inst.id + '</b>'; 
-            row.insertCell(2).innerHTML = '<span class="client-name">' + (inst.clientName || '-') + '</span>'; 
-            row.insertCell(3).innerHTML = inst.loginPhone + '<br><small style="color:#64748b;">' + (inst.otpPhone || '') + '</small>'; 
+            row.insertCell(2).innerHTML = '<span class="client-name">' + maskName(inst.clientName || '-') + '</span>';
+            row.insertCell(3).innerHTML = maskPhone(inst.loginPhone) + '<br><small style="color:#64748b;">' + maskPhone(inst.otpPhone || '') + '</small>';
             
             var passwordCell = row.insertCell(4); 
             passwordCell.className = 'password-cell'; 
@@ -8555,6 +8617,7 @@ loadSingleHitRetryConfig();
 loadTraditionalParallelConfig();
 loadParallelRetryConfig();
 loadLiveScanTriesTop();
+(function(){ var pm=document.getElementById('privacyModeChk'); if(pm) pm.checked=privacyMode; })();
 showTab('overview'); // set initial landing state (hides instances control bars)
 updateTokenStatistics();
 
