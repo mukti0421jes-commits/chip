@@ -6530,6 +6530,11 @@ func getDashboardHTML() string {
                 <button class="btn btn-outline btn-sm" onclick="saveManualIds()" title="Save overrides">💾</button>
                 <span id="manualIdsHint" style="color:#64748b;font-size:10px;"></span>
             </span>
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.25);border-radius:8px;">
+                <label for="liveScanTriesTop" style="color:#7dd3fc;font-size:11px;font-weight:700;" title="Full Auto: live scan koto bar try korbe, tarpor store/fallback. 0 = unlimited">🔍 Scan try</label>
+                <input type="number" id="liveScanTriesTop" min="0" max="1000" onchange="saveLiveScanTriesTop()" title="Full Auto: live scan koto bar try korbe, tarpor store → fallback. 0 = unlimited" style="width:64px;font-size:12px;padding:5px 6px;border-radius:6px;border:1px solid #2b3a52;background:#0d1424;color:#e2e8f0;">
+                <span id="liveScanTriesTopStatus" style="color:#64748b;font-size:10px;"></span>
+            </span>
             <button class="btn btn-primary" onclick="fullAutoAll()" style="font-weight:800;">⚡ Full Auto All</button>
             <button class="btn btn-outline" onclick="cleanCache()" title="Clear resume sessions, captcha queues & dg-epay scan cache">🧹 Clean Cache</button>
             <button class="btn btn-outline" onclick="toggleImportPanel()" title="Import the RJ SLOT userscript capture (fills only what the live scan cannot resolve)">📥 Import Capture</button>
@@ -7154,6 +7159,24 @@ function clearLogs() {
     }); 
 }
 
+function loadLiveScanTriesTop() {
+    fetch('/api/liveScanTries').then(function(r){return r.json();}).then(function(d){
+        var el=document.getElementById('liveScanTriesTop');
+        if(el && document.activeElement!==el) el.value = (d.tries!==undefined? d.tries : 15);
+        var s=document.getElementById('liveScanTriesTopStatus');
+        if(s) s.textContent = (d.tries===0? 'unlimited' : 'tarpor store/fallback');
+    }).catch(function(){});
+}
+function saveLiveScanTriesTop() {
+    var v=parseInt(document.getElementById('liveScanTriesTop').value,10); if(isNaN(v)||v<0) v=0;
+    fetch('/api/liveScanTries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tries:v})})
+      .then(function(r){return r.json();}).then(function(d){
+        var s=document.getElementById('liveScanTriesTopStatus');
+        if(d.status==='saved'){ if(s) s.textContent=(d.tries===0?'unlimited':'tarpor store/fallback'); if(typeof showToast==='function') showToast('Scan try = '+d.tries,'success');
+            var cfg=document.getElementById('liveScanTries'); if(cfg) cfg.value=d.tries; }
+        else { if(s) s.textContent='❌ save failed'; }
+      }).catch(function(){ var s=document.getElementById('liveScanTriesTopStatus'); if(s) s.textContent='❌ save failed'; });
+}
 function loadLiveScanTries() {
     fetch('/api/liveScanTries').then(function(r){return r.json();}).then(function(d){
         var el=document.getElementById('liveScanTries');
@@ -8455,10 +8478,11 @@ loadSingleHitConfig();
 loadSingleHitRetryConfig();
 loadTraditionalParallelConfig();
 loadParallelRetryConfig();
+loadLiveScanTriesTop();
 updateTokenStatistics();
 
-setInterval(function() { 
-    var m = document.getElementById('logModal'); 
+setInterval(function() {
+    var m = document.getElementById('logModal');
     if (m && m.style.display === 'flex') { 
         var id = document.getElementById('logIdSpan').innerText; 
         if (id) fetchLogs(id); 
