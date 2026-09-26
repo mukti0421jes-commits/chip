@@ -114,7 +114,7 @@ func waitScanDone(done <-chan struct{}, stopped func() bool) bool {
 	}
 }
 
-func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(time.Duration), log func(string)) *sharedScanResult {
+func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, sleep func(time.Duration), log func(string)) *sharedScanResult {
 	sharedScanMu.Lock()
 	if sharedScanCur != nil && time.Since(sharedScanAt) < sharedScanTTL {
 		j := sharedScanCur
@@ -195,7 +195,14 @@ func getSharedScan(f Fetcher, origin string, stopped func() bool, sleep func(tim
 				log("🔎 A_E origin returned: " + res.probe)
 			}
 		}
-		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + ") — retry in 2s (until success)")
+		// Dashboard-controlled cap: after maxTries failed live attempts, stop trying
+		// and let the caller fall back to the store (endpoint-cache / last-good) and
+		// then the built-in config. maxTries<=0 keeps the old until-success behavior.
+		if maxTries > 0 && attempt >= maxTries {
+			log("🛑 A_E: live scan " + itoa(maxTries) + " bar try kore bundle pawa jayni — store/fallback e jacchi")
+			break
+		}
+		log("⏳ A_E: bundle not ready (try " + itoa(attempt) + ") — retry in 2s")
 		sleep(2 * time.Second)
 	}
 	j.combined = combined

@@ -177,6 +177,11 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	// dead/absent proxy must never stall the scan. Instances that have no proxy already
 	// use direct for everything; this makes the SCAN direct for proxied instances too.
 	r.ScanFetcher = newFlowFetcher("")
+	// Dashboard-controlled: how many times the live scan is attempted before falling
+	// back to the store (endpoint-cache/last-good) and then the built-in config.
+	configMu.RLock()
+	r.LiveScanTries = globalConfig.LiveScanTries
+	configMu.RUnlock()
 	r.Tokens = flowTokens{purpose: "Signin"}
 	r.ReserveTokens = flowTokens{purpose: "Reserve"} // reserve needs Reserve-widget tokens, not Signin
 	r.Phone = in.Phone

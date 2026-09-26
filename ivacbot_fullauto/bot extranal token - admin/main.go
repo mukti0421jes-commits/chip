@@ -230,6 +230,11 @@ type Config struct {
 	// dashboard — no rebuild/env needed. Default false = current RAW behavior.
 	EncryptUpload   bool `json:"encryptUpload"`
 	EncryptInitiate bool `json:"encryptInitiate"`
+
+	// LiveScanTries caps how many times Full Auto attempts the live bundle scan
+	// before it stops and falls back (store → built-in). Dashboard-controlled.
+	// 0 = unlimited (retry until success/Stop). Default set in globalConfig init.
+	LiveScanTries int `json:"liveScanTries"`
 }
 
 type RoutingModeInfo struct {
@@ -1196,6 +1201,7 @@ func loadConfig() error {
 		ParallelRetryEnabled: false,
 		FlowSingle:           true,
 		FlowAuto:             true,
+		LiveScanTries:        15, // Full Auto: live scan koto bar try korbe (0 = unlimited)
 		StepDelaySec: map[string]int{
 			"signin": 4, "verify": 4, "upload": 4, "reserve": 21, "book": 4, "initiate": 4,
 		},
@@ -5462,6 +5468,43 @@ func handleEncryptToggle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(405)
 }
 
+// handleLiveScanTries reads (GET) or sets (POST) how many times Full Auto attempts
+// the live bundle scan before falling back to the store, then the built-in config.
+// POST body: {"tries":int}. 0 = unlimited (retry until success/Stop). Persisted.
+func handleLiveScanTries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "GET" {
+		configMu.RLock()
+		t := globalConfig.LiveScanTries
+		configMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"tries": t})
+		return
+	}
+	if r.Method == "POST" {
+		var req struct {
+			Tries int `json:"tries"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "message": err.Error()})
+			return
+		}
+		if req.Tries < 0 {
+			req.Tries = 0
+		}
+		if req.Tries > 1000 {
+			req.Tries = 1000
+		}
+		configMu.Lock()
+		globalConfig.LiveScanTries = req.Tries
+		configMu.Unlock()
+		saveConfig()
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "saved", "tries": req.Tries})
+		return
+	}
+	w.WriteHeader(405)
+}
+
 func handleRoutingMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		status := GetRoutingModeStatus()
@@ -6540,6 +6583,19 @@ func getDashboardHTML() string {
             </div>
         </div>
         
+        <div class="config-panel"><h3>🔍 Live Scan Control (Full Auto)</h3>
+            <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:14px;border-left:3px solid #38bdf8;">
+                <span style="color:#94a3b8;font-size:13px;">Full Auto All click korle live bundle scan <strong style="color:#7dd3fc;">koto bar try</strong> korbe. Ei koto bar-er moddhe na pele loop theme jabe → <strong style="color:#7dd3fc;">store</strong> (endpoint-cache / last-good) theke auto flow shuru hobe; store faka thakle <strong style="color:#7dd3fc;">built-in fallback</strong> diye (signin → initiate, All). <strong style="color:#fbbf24;">0 = unlimited</strong> (jotokkhon na pai / Stop).</span>
+            </div>
+            <div class="config-group" style="gap:12px;flex-wrap:wrap;align-items:center;">
+                <label style="color:#cbd5e1;font-size:13px;">Live scan try:
+                    <input type="number" id="liveScanTries" min="0" max="1000" style="width:90px;margin-left:8px;padding:6px 8px;border-radius:6px;border:1px solid #2b3a52;background:#0d1424;color:#e2e8f0;">
+                </label>
+                <button class="btn btn-primary btn-sm" onclick="saveLiveScanTries()">💾 Save</button>
+                <span id="liveScanTriesStatus" style="color:#94a3b8;font-size:13px;"></span>
+            </div>
+        </div>
+
         <div class="config-panel"><h3>🔐 Token Encryption (Upload / Initiate)</h3>
             <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:14px;border-left:3px solid #f59e0b;">
                 <span style="color:#94a3b8;font-size:13px;">Ekhon Upload + Initiate step RAW captcha token pathay. Bhobishyote IVAC bundle update hoye <strong style="color:#fbbf24;">encrypted token</strong> chaile ei toggle ON korun — rebuild lagbe na. Default OFF (ekhon-kar RAW behaviour). Signin/Reserve সবসময় encrypted-i thake.</span>
@@ -6891,7 +6947,7 @@ function showTab(tabName) {
     document.querySelectorAll('.nav-item').forEach(function(b) { b.classList.remove('active'); }); 
     document.getElementById('tab-' + tabName).classList.add('active'); 
     document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active'); 
-    if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); loadEncryptToggle(); }
+    if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); loadEncryptToggle(); loadLiveScanTries(); }
     if (tabName === 'parallel') { loadTraditionalParallelConfig(); loadParallelRetryConfig(); } 
     if (tabName === 'proxies') loadProxies(); 
     if (tabName === 'hosts') { loadHostIPs(); loadHostStats(); } 
@@ -7098,6 +7154,23 @@ function clearLogs() {
     }); 
 }
 
+function loadLiveScanTries() {
+    fetch('/api/liveScanTries').then(function(r){return r.json();}).then(function(d){
+        var el=document.getElementById('liveScanTries');
+        if(el && document.activeElement!==el) el.value = (d.tries!==undefined? d.tries : 15);
+        var s=document.getElementById('liveScanTriesStatus');
+        if(s) s.textContent = (d.tries===0? 'unlimited (retry until success)' : (d.tries+' bar try, tarpor store/fallback'));
+    }).catch(function(){});
+}
+function saveLiveScanTries() {
+    var v=parseInt(document.getElementById('liveScanTries').value,10); if(isNaN(v)||v<0) v=0;
+    fetch('/api/liveScanTries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tries:v})})
+      .then(function(r){return r.json();}).then(function(d){
+        var s=document.getElementById('liveScanTriesStatus');
+        if(d.status==='saved'){ if(s) s.textContent=(d.tries===0?'✅ saved — unlimited':'✅ saved — '+d.tries+' bar try, tarpor store/fallback'); if(typeof showToast==='function') showToast('Live scan try saved','success'); }
+        else { if(s) s.textContent='❌ save failed'; }
+      }).catch(function(){ var s=document.getElementById('liveScanTriesStatus'); if(s) s.textContent='❌ save failed'; });
+}
 function loadEncryptToggle() {
     fetch('/api/encryptToggle').then(function(r){return r.json();}).then(function(d){
         var u=document.getElementById('encUploadChk'), i=document.getElementById('encInitiateChk');
@@ -8621,6 +8694,7 @@ func main() {
 	// plus the shared token in ivacflow_token.txt (see authorizeIvacflowPush), so
 	// it is not behind the dashboard session ivacflow has no way to hold.
 	http.HandleFunc("/api/encryptToggle", adminOnly(handleEncryptToggle))
+	http.HandleFunc("/api/liveScanTries", adminOnly(handleLiveScanTries))
 	http.HandleFunc("/api/endpointCachePush", handleEndpointCachePush)
 	http.HandleFunc("/api/endpointCacheStatus", adminOnly(handleEndpointCacheStatus))
 	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)

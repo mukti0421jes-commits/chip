@@ -48,14 +48,29 @@ func (r *Runner) Scan() {
 	// window and share the result across all instances (the first instance scans
 	// live, the rest reuse it instantly). It stays live — a redeployed bundle differs
 	// and, after the TTL, re-scans. The RJ SLOT A_E retry loop lives inside.
-	sc := getSharedScan(sf, AppointmentOrigin, r.Stopped, r.interruptibleSleep, r.log)
+	sc := getSharedScan(sf, AppointmentOrigin, r.LiveScanTries, r.Stopped, r.interruptibleSleep, r.log)
 	if sc == nil {
-		r.log("⚠ Bundle unreachable — using CURRENT built-in endpoints + cipher fallback (signin will still work)")
+		// Live scan failed (unreachable, or the dashboard try-count ran out). Do NOT
+		// give up: fall back in order — STORE first (last-good snapshot, then the
+		// pushed endpoint-cache), and only if the store is empty, the built-in config.
+		// Either way the pipeline then runs signin→initiate (All).
+		if r.applyStoreFallback() {
+			r.applyForcedIDs()
+			r.log("🔍 Scan (store) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
+			if r.OnScanComplete != nil {
+				r.OnScanComplete(true, "live scan failed — store (endpoint-cache/last-good) e kaj hocche")
+			}
+			if !r.Stopped() {
+				r.log("▶ Scan complete (store) — signin shuru hocche…")
+			}
+			return
+		}
+		r.log("⚠ Store faka — CURRENT built-in endpoints + cipher fallback e kaj hocche (signin still works)")
 		// nothing was scanned → every value is a gap the import may be able to fill
 		r.Config.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, r.log)
 		r.applyForcedIDs()
 		if r.OnScanComplete != nil {
-			r.OnScanComplete(false, "bundle unreachable — built-in fallback in use")
+			r.OnScanComplete(false, "live+store faka — built-in fallback in use")
 		}
 		return
 	}
@@ -102,6 +117,35 @@ func (r *Runner) Scan() {
 	if !r.Stopped() {
 		r.log("▶ Scan complete — signin shuru hocche…")
 	}
+}
+
+// applyStoreFallback fills the Config from the STORE when the live scan gave up.
+// Order (best → weakest):
+//  1. last-good snapshot (last_good_config.json) — the richest: it carries the
+//     cipher AND endpoints/slot/dg-epay/paths from the last SUCCESSFUL run.
+//  2. pushed endpoint-cache (endpoint_cache.json) — endpoints + slot + dg-epay
+//     (no cipher; the built-in cipher fallback stays in place).
+// It applies these UNCONDITIONALLY (no live bundle to match against — that is the
+// whole point of a fallback), by matching each store blob against its OWN bundle.
+// Returns true when it applied something, false when the store is empty.
+func (r *Runner) applyStoreFallback() bool {
+	applied := false
+	if lg := parseLastGood(r.Config.LastGoodJSON); lg.hasCipher() {
+		lg.applyTo(r.Config)
+		r.log("♻ store: last-good snapshot applied (bundle " + lg.BundleName + ")")
+		r.log("🔐 cipher signin:   " + describeCipher(r.Config.Signin))
+		r.log("🔐 cipher reserve:  " + describeCipher(r.Config.Reserve))
+		r.log("🔐 cipher initiate: " + describeCipher(r.Config.Initiate))
+		applied = true
+	}
+	// Overlay the pushed endpoint-cache too (its endpoints are the freshest the
+	// operator captured). Match it against its OWN bundle so the gate always passes.
+	if raw := r.Config.EndpointCacheJSON; len(raw) > 0 {
+		if r.Config.ApplyEndpointCache(raw, EndpointCacheBundleName(raw), r.log) {
+			applied = true
+		}
+	}
+	return applied
 }
 
 // boolWord renders a bool for the scan summary line.

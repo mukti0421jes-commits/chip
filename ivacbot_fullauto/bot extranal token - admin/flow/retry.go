@@ -132,6 +132,12 @@ type Runner struct {
 
 	dgJob *dgJob // background dg-epay resolution (awaited before Initiate)
 
+	// LiveScanTries caps how many times the live bundle scan is attempted before it
+	// gives up and falls back (store → built-in). It is the dashboard-controlled count
+	// ("Full Auto → live scan try কতবার"). 0 means unlimited (retry until success or
+	// Stop), preserving the old behavior when the dashboard leaves it unset.
+	LiveScanTries int
+
 	// scannedBundle is the live bundle basename this run resolved against (full scan
 	// or reused snapshot). Used to persist a fresh last-good snapshot on success.
 	scannedBundle string
