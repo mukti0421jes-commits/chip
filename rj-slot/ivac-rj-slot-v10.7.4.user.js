@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.7.3
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.7.3: auto-detect mission/center from the loaded file web-file number (BGDD→dhaka, BGDR→rajshahi, BGDC→chittagong, BGDS→sylhet, BGDK→khulna) and set it before Confirm Mission & Center (falls back to profile/dropdown). v10.7.2: FIX auto-flow stall — appointment success now = HTTP 2xx (in-body statusCode gate removed) so the loop stops and file upload starts instead of re-calling appointment forever; dropped a misleading appointmentId check (appointment POST returns no id). v10.7.0: bundle extractor upgraded v13→v15 (vFinal) — RJ live-scan now decodes the obfuscated dg-epay UUID (RC4+base64+rotation, UV-1..UV-13) that v13 could not; slot-id + dg-epay + 27 endpoints byte-verified from bundle. v10.6.3: FIX post-verify upload flow — stale hardcoded endpoints refreshed to current bundle (over-view-v412, upload-file-v453, file_confirmation-and_slot-status, auth/v4-sign_in, verify-Signin_Otp, verify_otp_v5) so upload/overview/confirm work standalone even before any dynamic sync. v10.6.2: A_E endpoint-cache sync from the always-on Go bot (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.7.4
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.7.4: auto mission/center from the SERVER — reads commissionId from the upload/overview response, calls high-commissions/by-id for the exact mission + ivacCenter, and confirms with those (file-name independent; falls back to file web-file code/profile/dropdown). v10.7.3: auto-detect mission/center from the loaded file web-file number (BGDD→dhaka, BGDR→rajshahi, BGDC→chittagong, BGDS→sylhet, BGDK→khulna) and set it before Confirm Mission & Center (falls back to profile/dropdown). v10.7.2: FIX auto-flow stall — appointment success now = HTTP 2xx (in-body statusCode gate removed) so the loop stops and file upload starts instead of re-calling appointment forever; dropped a misleading appointmentId check (appointment POST returns no id). v10.7.0: bundle extractor upgraded v13→v15 (vFinal) — RJ live-scan now decodes the obfuscated dg-epay UUID (RC4+base64+rotation, UV-1..UV-13) that v13 could not; slot-id + dg-epay + 27 endpoints byte-verified from bundle. v10.6.3: FIX post-verify upload flow — stale hardcoded endpoints refreshed to current bundle (over-view-v412, upload-file-v453, file_confirmation-and_slot-status, auth/v4-sign_in, verify-Signin_Otp, verify_otp_v5) so upload/overview/confirm work standalone even before any dynamic sync. v10.6.2: A_E endpoint-cache sync from the always-on Go bot (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -4083,17 +4083,42 @@ async function autoUploadChain() {
             return;
         }
 
-        // 4) Confirm Mission & Center (only when everything matched)
-        // PRIORITY: auto-detect the centre from the loaded file's web-file number (BGDD/BGDR/…),
-        // then fall back to the profile's saved mission, then the dropdown, then Dhaka. This targets
-        // the SAME centre the uploaded file belongs to instead of leaving it at the default.
-        let _cmission = 'dhaka';
-        const _det = _auDetectCenterFromFiles();
-        if (_det) { _cmission = _det.center; logStatus(`🎯 Center from file: ${_det.code} → ${_det.center.toUpperCase()} ("${_det.file}")`, 'g'); }
-        else { try { _cmission = (profiles[activeProfileName]?.mission) || document.getElementById('ivac-appointment-mission')?.value || 'dhaka'; } catch (e) {} }
-        try { const _ms = document.getElementById('ivac-appointment-mission'); if (_ms && _ms.value !== _cmission) { _ms.value = _cmission; _ms.dispatchEvent(new Event('change', { bubbles: true })); } } catch (e) {}
-        logStatus(`✅ Overview matched → confirming Mission & Center (${_cmission})…`, 'g');
-        try { const cbtn = document.getElementById('ivac-btn-appointment-booking'); if (cbtn) cbtn.click(); } catch (e) {}
+        // 4) Confirm Mission & Center — resolve the centre from the SERVER (file-name independent).
+        // The overview carries each applicant's commissionId + commissionName; high-commissions/by-id
+        // then gives the EXACT mission + ivacCenter strings the confirm needs (byte-verified from live
+        // traffic). This targets the real centre the web-file belongs to, no matter how files are named.
+        let _confirm = null;   // { mission, ivacCenter }
+        try {
+            const _first = Array.isArray(data) ? (data.find(a => a && a.primary) || data[0]) : null;
+            const _cid = _first && _first.commissionId;
+            if (_cid) {
+                const hr = await H2.fetchH2(`https://api.ivacbd.com/iams/api/v1/high-commissions/by-id?id=${encodeURIComponent(_cid)}`, { method: 'GET', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: null });
+                let hb = null; try { hb = await hr.json(); } catch (e) {}
+                const _m = hb && hb.data && hb.data.commission && hb.data.commission[0] && hb.data.commission[0].missionName;
+                const _c = hb && hb.data && hb.data.centers && hb.data.centers[0] && hb.data.centers[0].centerName;
+                if (_m && _c) _confirm = { mission: _m, ivacCenter: _c };
+            }
+        } catch (e) {}
+
+        if (_confirm) {
+            // server-resolved: confirm directly with the exact mission + centre
+            logStatus(`🎯 Mission/Center from server: ${_confirm.mission} • ${_confirm.ivacCenter} → confirming…`, 'g');
+            try {
+                const cr = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/appointment/appointment-booking-config", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'content-type': 'application/json', 'pragma': 'no-cache' }, referrer: API_REFERRER, body: JSON.stringify({ mission: _confirm.mission, ivacCenter: _confirm.ivacCenter }) });
+                const _cok = !!(cr && cr.status >= 200 && cr.status < 300);
+                logStatus(_cok ? `✅ Mission & Center confirmed (${_confirm.mission} • ${_confirm.ivacCenter})` : `❌ Confirm failed — HTTP ${cr.status}`, _cok ? 'g' : 'r');
+                if (_cok) { try { showMilestonePopup('Center Confirmed', `${_confirm.mission} • ${_confirm.ivacCenter}`, '🏛'); } catch (e) {} }
+            } catch (e) { logStatus('❌ Confirm error: ' + e.message, 'r'); }
+        } else {
+            // FALLBACK (no commissionId from server): file web-file code → profile → dropdown → Dhaka, then click
+            let _cmission = 'dhaka';
+            const _det = _auDetectCenterFromFiles();
+            if (_det) { _cmission = _det.center; logStatus(`🎯 Center from file: ${_det.code} → ${_det.center.toUpperCase()} ("${_det.file}")`, 'g'); }
+            else { try { _cmission = (profiles[activeProfileName]?.mission) || document.getElementById('ivac-appointment-mission')?.value || 'dhaka'; } catch (e) {} }
+            try { const _ms = document.getElementById('ivac-appointment-mission'); if (_ms && _ms.value !== _cmission) { _ms.value = _cmission; _ms.dispatchEvent(new Event('change', { bubbles: true })); } } catch (e) {}
+            logStatus(`✅ Overview matched → confirming Mission & Center (${_cmission})…`, 'g');
+            try { const cbtn = document.getElementById('ivac-btn-appointment-booking'); if (cbtn) cbtn.click(); } catch (e) {}
+        }
         autoUploadConfirmed = true;   // upload fully complete + center confirmed → book may now run get-booking-config
         try { showMilestonePopup('Auto Upload Done', `${overviewCount} file(s) uploaded & matched → confirming center`, '🎉'); } catch (e) {}
         // next steps (Book → Reserve → Initiate) continue as before via your existing Auto flow.
