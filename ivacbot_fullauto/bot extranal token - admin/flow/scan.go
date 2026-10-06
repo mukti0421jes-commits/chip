@@ -11,16 +11,20 @@ type epFamily struct {
 
 // epFamilies mirrors RJ_EP_FAMILIES (Go's (?i) == JS /i). Order preserved.
 var epFamilies = []epFamily{
-	{"/auth/v2-sign-in", regexp.MustCompile(`(?i)/auth/[a-z0-9-]*sign-?in[a-z0-9-]*`)},
-	{"/file/upload_file_v2", regexp.MustCompile(`(?i)/file/upload_file[a-z0-9_-]*`)},
-	{"/otp/verify-otp", regexp.MustCompile(`(?i)/otp/verify-otp[a-z0-9_-]*`)},
-	{"/otp/verifySigninOtp", regexp.MustCompile(`(?i)/otp/verifySigninOtp[a-z0-9_-]*`)},
-	{"/otp/signupOtp", regexp.MustCompile(`(?i)/otp/signupOtp[a-z0-9_-]*`)},
-	{"/appointment/get-booking-config", regexp.MustCompile(`(?i)/appointment/get-booking-config[a-z0-9_-]*`)},
-	{"/appointment/appointment-booking-config", regexp.MustCompile(`(?i)/appointment/appointment-booking-config[a-z0-9_-]*`)},
-	{"/file/over-view-v3", regexp.MustCompile(`(?i)/file/over-view[a-z0-9_-]*`)},
-	{"/file/file-confirmation_and_slot_status", regexp.MustCompile(`(?i)/file/file-confirmation[a-z0-9_-]*`)},
-	{"/file/payment-amount", regexp.MustCompile(`(?i)/file/payment-amount[a-z0-9_-]*`)},
+	// SEPARATOR-TOLERANT: IVAC swaps '-'/'_'/camelCase between word parts per bundle
+	// (e.g. v4-sign_in, upload-file-v453, verify_otp_v5, verify-Signin_Otp,
+	// file_confirmation-and_slot-status). Each inner separator is [-_]? so any variant
+	// matches — byte-ported from the working RJ SLOT userscript's RJ_EP_FAMILIES.
+	{"/auth/v2-sign-in", regexp.MustCompile(`(?i)/auth/[a-z0-9_-]*sign[-_]?in[a-z0-9_-]*`)},
+	{"/file/upload_file_v2", regexp.MustCompile(`(?i)/file/upload[-_]?file[a-z0-9_-]*`)},
+	{"/otp/verify-otp", regexp.MustCompile(`(?i)/otp/verify[-_]?otp[a-z0-9_-]*`)},
+	{"/otp/verifySigninOtp", regexp.MustCompile(`(?i)/otp/verify[-_]?signin[-_]?otp[a-z0-9_-]*`)},
+	{"/otp/signupOtp", regexp.MustCompile(`(?i)/otp/signup[-_]?otp[a-z0-9_-]*`)},
+	{"/appointment/get-booking-config", regexp.MustCompile(`(?i)/appointment/get[-_]?booking[-_]?config[a-z0-9_-]*`)},
+	{"/appointment/appointment-booking-config", regexp.MustCompile(`(?i)/appointment/appointment[-_]?booking[-_]?config[a-z0-9_-]*`)},
+	{"/file/over-view-v3", regexp.MustCompile(`(?i)/file/over[-_]?view[a-z0-9_-]*`)},
+	{"/file/file-confirmation_and_slot_status", regexp.MustCompile(`(?i)/file/file[-_]?confirmation[a-z0-9_-]*`)},
+	{"/file/payment-amount", regexp.MustCompile(`(?i)/file/payment[-_]?amount[a-z0-9_-]*`)},
 }
 
 // detectApiBaseUrl patterns — byte-exact from RJ SLOT v10.5 detectApiBaseUrl.
@@ -36,7 +40,9 @@ var apiBasePatterns = []*regexp.Regexp{
 // id that is NOT strictly hex (e.g. "139fd4d2-27c9-4758-a623-368583e830bs" — note
 // the trailing "bs"), so the old [0-9a-fA-F-]{36} pattern rejected it and the flow
 // fell back to a stale id → reserve hit the wrong slot. Allow any alnum + hyphen.
-var slotIDRe = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve-slot`)
+// The reserve action segment is reserve-slot OR reserve_slot depending on the
+// bundle (this bundle uses the underscore), so the separator is [-_].
+var slotIDRe = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve[-_]slot`)
 
 // EndpointScan is the plain-text (non-obfuscated) part of the live scan: API base,
 // per-family endpoint literals, and the reserve slot id. Encryption config and the

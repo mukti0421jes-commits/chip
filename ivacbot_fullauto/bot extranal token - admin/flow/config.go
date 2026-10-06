@@ -114,27 +114,32 @@ type PurposeCipher struct {
 func NewConfig() *Config {
 	return &Config{
 		APIBase: "https://api.ivacbd.com/iams/api/v1",
+		// Built-in fallback endpoints — refreshed to the CURRENT live bundle
+		// (muwjfj8w / 2026-10-06, byte-verified by scanning the bundle). Used only when
+		// the live scan AND every pushed store (ivacflow / endpoint-cache / last-good)
+		// are unavailable, so signin still targets the right URLs.
 		Endpoints: map[string]string{
-			"/auth/v2-sign-in":     "/auth/v3-sign-in",
-			"/file/upload_file_v2": "/file/upload_file_v321",
-			"/file/over-view-v3":   "/file/over-view-v421",
-			"/otp/verifySigninOtp": "/otp/verifySigninOtp",
-			"/file/file-confirmation_and_slot_status": "/file/file-confirmation-and-slot_status",
+			"/auth/v2-sign-in":                        "/auth/v4-sign_in",
+			"/file/upload_file_v2":                    "/file/upload-file-v453",
+			"/file/over-view-v3":                      "/file/over-view-v412",
+			"/otp/verify-otp":                         "/otp/verify_otp_v5",
+			"/otp/verifySigninOtp":                    "/otp/verify-Signin_Otp",
+			"/file/file-confirmation_and_slot_status": "/file/file_confirmation-and_slot-status",
 		},
-		SlotID:       "139fd4d2-27c9-4758-a623-368583e830bs",
-		DgepayID:     "23228961-2326-3s28-861f-465bb28337a3", // live dg-epay uuid (from a real 2026-09 initiate request)
+		SlotID:       "139fd5d2-27c9-4728-a103-278583e830bd", // current bundle slot uuid (2026-10-06)
+		DgepayID:     "27228961-2327-3s28-861a-465sb28327b3", // live dg-epay uuid (from a real 2026-10-06 initiate / ivacflow push)
 		VRequestMeta: "windos.s",
 		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
 		// the server accepts the request but returns {data:null,"Success"} — no
 		// session — so these must be sent on sign-in / upload.
 		NavState:     "80d51dc5-af20-46fa-a7bb-e6a8f3f80065",
 		RuntimeState: "v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a",
-		// cipher fallback (from live bundle 2026-09: version 10 / skip 8 / len 21)
-		// so signin/reserve can still encrypt the captcha token into body `c` when
-		// the bundle is unreachable.
-		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
-		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
-		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 8, Length: 21, Version: 10},
+		// cipher fallback (from live bundle muwjfj8w 2026-10-06: version 5 / skip 6 /
+		// len 26 — byte-verified by scanning the bundle) so signin/reserve can still
+		// encrypt the captcha token into body `c` when the bundle is unreachable.
+		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
+		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
+		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
 		// OFF by default (current RAW behavior). Turn ON only if a future bundle
 		// requires encrypted upload/initiate tokens — no rebuild needed, just env.
 		EncryptUpload:   envOn("IVAC_ENCRYPT_UPLOAD"),
@@ -142,8 +147,9 @@ func NewConfig() *Config {
 	}
 }
 
-// fallbackCipherKey is the current bundle's captcha-token cipher key (live 2026-09).
-const fallbackCipherKey = "Ak*a]5XJI8VhKgXkQwaE$fAQYG2IAYYkGq+g;7DPO0BnQmDqWcgK*lGWEM4OGEEq"
+// fallbackCipherKey is the current bundle's captcha-token cipher key (live bundle
+// muwjfj8w, 2026-10-06 — byte-verified by decoding the bundle with the resolver).
+const fallbackCipherKey = "Am)flu36I&4fx+RRQ|7TbqT[Yw>Cn=9wGs=lra58O_6ld]XXW.9ZhwZ|Ec!It}1c"
 
 // ApplyEndpointScan merges a plain-regex scan result into the config.
 func (c *Config) ApplyEndpointScan(s EndpointScan) {

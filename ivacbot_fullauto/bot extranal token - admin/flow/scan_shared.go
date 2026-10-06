@@ -4,8 +4,24 @@ import (
 	"hash/fnv"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// ── ivacflow push signal ──────────────────────────────────────────────────────
+// When ivacflow_FINAL pushes a snapshot that carries BOTH a cipher and endpoints,
+// the handler bumps this generation counter. A live-scan retry loop watches it and,
+// the instant it changes, stops retrying the (unreachable) bundle and lets the
+// pipeline start immediately from the just-pushed cipher + endpoints. This is what
+// turns "Full Auto keeps looping" into "push lands → auto-flow starts now".
+var ivacflowGenV int32
+
+// NotifyIvacflowReady is called by the ivacflow push handler after a successful
+// push that carries cipher + endpoints, to wake any in-flight scan loop.
+func NotifyIvacflowReady() { atomic.AddInt32(&ivacflowGenV, 1) }
+
+// ivacflowGen returns the current ivacflow push generation.
+func ivacflowGen() int32 { return atomic.LoadInt32(&ivacflowGenV) }
 
 // dg-epay resolution is a ~37s goja deobfuscation. Running it inline on every
 // Full Auto pegs a CPU core, starving the HTTP server and captcha pool. Instead
@@ -114,24 +130,31 @@ func waitScanDone(done <-chan struct{}, stopped func() bool) bool {
 	}
 }
 
-func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, sleep func(time.Duration), log func(string)) *sharedScanResult {
+// getSharedScan returns (result, pushInterrupted). pushInterrupted is true when the
+// retry loop stopped because an ivacflow push with cipher+endpoints arrived — the
+// caller should then start the pipeline from that pushed config immediately.
+func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, sleep func(time.Duration), log func(string)) (*sharedScanResult, bool) {
 	sharedScanMu.Lock()
 	if sharedScanCur != nil && time.Since(sharedScanAt) < sharedScanTTL {
 		j := sharedScanCur
 		sharedScanMu.Unlock()
 		if !waitScanDone(j.done, stopped) {
-			return nil // user stopped while waiting for the shared scan
+			return nil, false // user stopped while waiting for the shared scan
 		}
 		if j.combined == "" {
-			return nil
+			return nil, false
 		}
 		log("♻ scan: reusing shared live-scan result (same bundle)")
-		return j
+		return j, false
 	}
 	j := &sharedScanResult{done: make(chan struct{})}
 	sharedScanCur = j
 	sharedScanAt = time.Now()
 	sharedScanMu.Unlock()
+
+	// Watch for an ivacflow push landing mid-scan (cipher+endpoints) → stop instantly.
+	startGen := ivacflowGen()
+	pushInterrupt := false
 
 	// FIRST caller does the actual download + parse. RETRY UNTIL SUCCESS: keep
 	// trying the live bundle every 2s until it is found or the user presses Stop.
@@ -176,10 +199,18 @@ func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, 
 				if stopped() {
 					break waitLoop
 				}
+				if ivacflowGen() != startGen { // a usable ivacflow push just landed
+					break waitLoop
+				}
 			}
 		}
 		wait.Stop()
 		if stopped() {
+			break
+		}
+		if ivacflowGen() != startGen {
+			pushInterrupt = true
+			log("⚡ ivacflow push (cipher+endpoints) ধরা পড়ল — live scan থামিয়ে push data দিয়ে auto-flow")
 			break
 		}
 		if got && res.combined != "" {
@@ -224,9 +255,9 @@ func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, 
 			sharedScanCur = nil
 		}
 		sharedScanMu.Unlock()
-		return nil
+		return nil, pushInterrupt
 	}
-	return j
+	return j, false
 }
 
 // ensureDgEpay waits (interruptibly, capped) for the background dg-epay job to

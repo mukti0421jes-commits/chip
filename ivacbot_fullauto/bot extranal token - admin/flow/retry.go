@@ -145,6 +145,10 @@ type Runner struct {
 	// run, so the caller can persist it (last_good_config.json) for smart-skip.
 	OnScanResolved func(snapshot []byte)
 
+	// RefreshFallbacks re-reads the latest fallback captures (ivacflow + recorder) so
+	// a mid-scan ivacflow push can be applied immediately. Set by the adapter.
+	RefreshFallbacks func() []*Imported
+
 	// optional hooks — fired the moment a value is resolved, so the caller can
 	// persist it (e.g. appointmentId → instance field, survives re-login).
 	OnAppointment func(id, date string)

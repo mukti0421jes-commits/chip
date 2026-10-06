@@ -161,6 +161,12 @@ func handleIvacflowPush(w http.ResponseWriter, r *http.Request) {
 	importMu.Unlock()
 	// the next run should scan afresh and see this capture, not reuse a cached scan
 	flow.ClearScanCache()
+	// If this push carries BOTH a cipher and endpoints, wake any in-flight live-scan
+	// loop so Full Auto stops retrying the unreachable bundle and starts the pipeline
+	// NOW from the just-pushed cipher + endpoints.
+	if imp.Signin != nil && len(imp.Families) > 0 {
+		flow.NotifyIvacflowReady()
+	}
 
 	fmtPrintln("🧪 ivacflow push received: " + imp.Summary())
 	writeJSON(w, map[string]interface{}{

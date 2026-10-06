@@ -48,8 +48,26 @@ func (r *Runner) Scan() {
 	// window and share the result across all instances (the first instance scans
 	// live, the rest reuse it instantly). It stays live — a redeployed bundle differs
 	// and, after the TTL, re-scans. The RJ SLOT A_E retry loop lives inside.
-	sc := getSharedScan(sf, AppointmentOrigin, r.LiveScanTries, r.Stopped, r.interruptibleSleep, r.log)
+	sc, pushInterrupted := getSharedScan(sf, AppointmentOrigin, r.LiveScanTries, r.Stopped, r.interruptibleSleep, r.log)
 	if sc == nil {
+		// An ivacflow push (cipher+endpoints) landed mid-scan → start the pipeline NOW
+		// from that pushed config, skipping the (unreachable) live bundle entirely.
+		if pushInterrupted {
+			if r.RefreshFallbacks != nil {
+				r.Config.Fallbacks = r.RefreshFallbacks() // pick up the just-pushed ivacflow snapshot
+			}
+			r.Config.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, r.log)
+			r.applyForcedIDs()
+			r.log("🔐 cipher signin:   " + describeCipher(r.Config.Signin))
+			r.log("🔍 Scan (ivacflow push) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
+			if r.OnScanComplete != nil {
+				r.OnScanComplete(true, "ivacflow push (cipher+endpoints) — instant auto-flow")
+			}
+			if !r.Stopped() {
+				r.log("▶ Scan complete (ivacflow push) — signin shuru hocche…")
+			}
+			return
+		}
 		// Live scan failed (unreachable, or the dashboard try-count ran out). Do NOT
 		// give up: fall back in order — STORE first (last-good snapshot, then the
 		// pushed endpoint-cache), and only if the store is empty, the built-in config.

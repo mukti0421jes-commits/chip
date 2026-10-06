@@ -222,6 +222,8 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	// captured-config safety net, best source first: used ONLY where the live scan
 	// resolves nothing (ivacflow, then the RJ SLOT recorder capture)
 	cfg.Fallbacks = getFallbackConfigs()
+	// let a mid-scan ivacflow push be re-read instantly (push → stop loop → auto-flow)
+	r.RefreshFallbacks = getFallbackConfigs
 	// manual dashboard overrides win over the live scan
 	cfg.ForcedSlotID, cfg.ForcedDgepayID = getOverrideIDs()
 	if in.RegisterStop != nil {
