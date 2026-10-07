@@ -88,6 +88,35 @@ func LooksLikeIvacflow(raw []byte) bool {
 	return probe.Type == "" && probe.Config != nil
 }
 
+// algoToCipherVersion maps an ivacflow cipher ALGORITHM NAME to the numeric
+// EncryptByVersion version, so a push that carries "algo" but version 0 still
+// encrypts correctly. Returns 0 when the name is unknown (caller then falls back).
+func algoToCipherVersion(algo string) int {
+	switch strings.ToLower(strings.TrimSpace(algo)) {
+	case "chacha", "chacha20":
+		return 1
+	case "bitmix":
+		return 2
+	case "cellular", "ca":
+		return 3
+	case "rc4":
+		return 4
+	case "lfsr":
+		return 5
+	case "poly", "polynomial":
+		return 6
+	case "sbox", "s-box":
+		return 7
+	case "lcg":
+		return 8
+	case "modsq", "modsquare", "modular", "modularsquaring", "mod-square":
+		return 9
+	case "logistic":
+		return 10
+	}
+	return 0
+}
+
 // ParseIvacflow reads an ivacflow snapshot into the same *Imported the RJ SLOT
 // path produces, so both share one gap-filling code path.
 func ParseIvacflow(raw []byte) (*Imported, error) {
@@ -142,7 +171,26 @@ func ParseIvacflow(raw []byte) (*Imported, error) {
 		if r.Key == "" {
 			continue
 		}
-		p := &PurposeCipher{Key: r.Key, Skip: int(r.Skip), Length: int(r.Len), Version: int(r.Version)}
+		// Resolve the cipher VERSION. ivacflow sometimes pushes a key + skip + len but
+		// a 0/missing numeric version (it may only know the algo NAME). Version 0 maps
+		// to EncryptByVersion's default = RAW token → IVAC rejects it with "Captcha
+		// verification failed". So: 1) use the numeric version if given, 2) else map
+		// the algo name, 3) else fall back to the current bundle's known version.
+		ver := int(r.Version)
+		if ver == 0 {
+			ver = algoToCipherVersion(r.Algo)
+		}
+		if ver == 0 {
+			ver = fallbackCipherVersion
+		}
+		skip, ln := int(r.Skip), int(r.Len)
+		if skip == 0 {
+			skip = fallbackCipherSkip
+		}
+		if ln == 0 {
+			ln = fallbackCipherLength
+		}
+		p := &PurposeCipher{Key: r.Key, Skip: skip, Length: ln, Version: ver}
 		switch strings.ToLower(r.Role) {
 		case "signin":
 			imp.Signin = p

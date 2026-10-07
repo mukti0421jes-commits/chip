@@ -137,9 +137,9 @@ func NewConfig() *Config {
 		// cipher fallback (from live bundle muwjfj8w 2026-10-06: version 5 / skip 6 /
 		// len 26 — byte-verified by scanning the bundle) so signin/reserve can still
 		// encrypt the captcha token into body `c` when the bundle is unreachable.
-		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
-		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
-		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: 6, Length: 26, Version: 5},
+		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
+		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
+		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
 		// OFF by default (current RAW behavior). Turn ON only if a future bundle
 		// requires encrypted upload/initiate tokens — no rebuild needed, just env.
 		EncryptUpload:   envOn("IVAC_ENCRYPT_UPLOAD"),
@@ -150,6 +150,16 @@ func NewConfig() *Config {
 // fallbackCipherKey is the current bundle's captcha-token cipher key (live bundle
 // muwjfj8w, 2026-10-06 — byte-verified by decoding the bundle with the resolver).
 const fallbackCipherKey = "Am)flu36I&4fx+RRQ|7TbqT[Yw>Cn=9wGs=lra58O_6ld]XXW.9ZhwZ|Ec!It}1c"
+
+// Current bundle's captcha cipher PARAMETERS (byte-verified from muwjfj8w 2026-10-06).
+// fallbackCipherVersion is ALSO used to repair an ivacflow push that carries a key
+// but a 0/invalid version (which would otherwise send the token RAW → IVAC returns
+// "Captcha verification failed").
+const (
+	fallbackCipherVersion = 5  // EncryptByVersion case 5 (genLFSR) — this bundle's algo
+	fallbackCipherSkip    = 6
+	fallbackCipherLength  = 26
+)
 
 // ApplyEndpointScan merges a plain-regex scan result into the config.
 func (c *Config) ApplyEndpointScan(s EndpointScan) {
