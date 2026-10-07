@@ -8,10 +8,14 @@ import (
 // AppointmentOrigin is the site the bundle is served from (RJ SLOT location.origin).
 const AppointmentOrigin = "https://appointment.ivacbd.com"
 
-// bundleRe / bundleReG mirror RJ SLOT findBundleUrls:
-//
-//	/\/assets\/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js/g
-var bundleReG = regexp.MustCompile(`/assets/[a-zA-Z0-9]{8,}(?:-[a-zA-Z0-9]+)+\.js`)
+// bundleReG finds the entry bundle URL in the index HTML. The old pattern allowed
+// only [a-zA-Z0-9] and '-' between parts, so a bundle whose hash carries an
+// UNDERSCORE (e.g. /assets/muwjfj8w-DmPoT_10.js — IVAC 2026-10) was NOT matched,
+// the scan found nothing, and the pipeline fell back to waiting for an ivacflow
+// push. Now it accepts word chars ('_' included), '.' and '-' in the name, while
+// still requiring a "<name>-<hash>.js" shape (6+ char hash) so plain files like
+// /assets/vendor.js are not picked up.
+var bundleReG = regexp.MustCompile(`/assets/[A-Za-z0-9][\w.-]*-[A-Za-z0-9_]{6,}\.js`)
 
 // pathRe / bareRe mirror the transitive chunk discovery inside the entry bundle:
 //
