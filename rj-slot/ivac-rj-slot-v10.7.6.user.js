@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IVAC RJ SLOT + Manual Panel (Merged) — HTTP/2 Edition
 // @namespace    http://tampermonkey.net/
-// @version      10.7.5
-// @description  RJ SLOT v7.5 engine + Manual Panel. v10.7.5: FIX post-appointment "out of order" — the reserve-date background loop (every 1.5s) no longer fires get-booking-config / auto-reserve while the auto-upload chain (appointment→upload→overview→confirm) is running, so the upload sequence runs clean and in order. v10.7.4: auto mission/center from the SERVER — reads commissionId from the upload/overview response, calls high-commissions/by-id for the exact mission + ivacCenter, and confirms with those (file-name independent; falls back to file web-file code/profile/dropdown). v10.7.3: auto-detect mission/center from the loaded file web-file number (BGDD→dhaka, BGDR→rajshahi, BGDC→chittagong, BGDS→sylhet, BGDK→khulna) and set it before Confirm Mission & Center (falls back to profile/dropdown). v10.7.2: FIX auto-flow stall — appointment success now = HTTP 2xx (in-body statusCode gate removed) so the loop stops and file upload starts instead of re-calling appointment forever; dropped a misleading appointmentId check (appointment POST returns no id). v10.7.0: bundle extractor upgraded v13→v15 (vFinal) — RJ live-scan now decodes the obfuscated dg-epay UUID (RC4+base64+rotation, UV-1..UV-13) that v13 could not; slot-id + dg-epay + 27 endpoints byte-verified from bundle. v10.6.3: FIX post-verify upload flow — stale hardcoded endpoints refreshed to current bundle (over-view-v412, upload-file-v453, file_confirmation-and_slot-status, auth/v4-sign_in, verify-Signin_Otp, verify_otp_v5) so upload/overview/confirm work standalone even before any dynamic sync. v10.6.2: A_E endpoint-cache sync from the always-on Go bot (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
+// @version      10.7.6
+// @description  RJ SLOT v7.5 engine + Manual Panel. v10.7.6: new bundle muz358li — endpoints renamed again (upload-file_v5, over_view-v5, sign-in_v5, v5_verify_Signin_Otp, v5_verify-otp, file_confirmation_and-slot_status, reserve-slot hyphen) + new slot-id/pay-id; all hardcoded fallbacks refreshed and OTP family regexes made prefix-tolerant (v5_verify…) so file upload + flow work. v10.7.5: FIX post-appointment "out of order" — the reserve-date background loop (every 1.5s) no longer fires get-booking-config / auto-reserve while the auto-upload chain (appointment→upload→overview→confirm) is running, so the upload sequence runs clean and in order. v10.7.4: auto mission/center from the SERVER — reads commissionId from the upload/overview response, calls high-commissions/by-id for the exact mission + ivacCenter, and confirms with those (file-name independent; falls back to file web-file code/profile/dropdown). v10.7.3: auto-detect mission/center from the loaded file web-file number (BGDD→dhaka, BGDR→rajshahi, BGDC→chittagong, BGDS→sylhet, BGDK→khulna) and set it before Confirm Mission & Center (falls back to profile/dropdown). v10.7.2: FIX auto-flow stall — appointment success now = HTTP 2xx (in-body statusCode gate removed) so the loop stops and file upload starts instead of re-calling appointment forever; dropped a misleading appointmentId check (appointment POST returns no id). v10.7.0: bundle extractor upgraded v13→v15 (vFinal) — RJ live-scan now decodes the obfuscated dg-epay UUID (RC4+base64+rotation, UV-1..UV-13) that v13 could not; slot-id + dg-epay + 27 endpoints byte-verified from bundle. v10.6.3: FIX post-verify upload flow — stale hardcoded endpoints refreshed to current bundle (over-view-v412, upload-file-v453, file_confirmation-and_slot-status, auth/v4-sign_in, verify-Signin_Otp, verify_otp_v5) so upload/overview/confirm work standalone even before any dynamic sync. v10.6.2: A_E endpoint-cache sync from the always-on Go bot (GET http://127.0.0.1:8080/api/endpointCache) and falls back to endpoint-cache-server.js (:8798) — no extra window needed; override with localStorage rj_epcache_url. v10.6.1: A_E syncs endpoints (fam/slotId/payId/reserveSeg) from local folder cache. v10.6.0: FIX initiate 403 — dg-epay/initiate now sends the site's security headers (x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta) that the WAF requires; sec-state now live-captured (not hardcoded) so it survives rotation; payId rewrite regex lenient for typo'd UUIDs. v10.5.9: FIX reserve CORS/403 — the action segment is reserve_slot (underscore) in this bundle, RJ was hardcoding reserve-slot (hyphen). Now dynamic + separator-tolerant (reserve[_-]slot), captured from bundle/traffic, default reserve_slot. v10.5.8: reserve handles status=FULL with fast-retry. v10.5.7: full-auto for muf1m85x bundle; sitekey stable 0x4AAAAAACghKkJHL1t7UkuZ
 // @author       RJ SLOT
 // @match        https://appointment.ivacbd.com/*
 // @match        https://appointment-dev-ivacbd-v2.dgi-rnd.com
@@ -355,7 +355,7 @@ function getTagFromUrl(url) {
 H2.preWarm();
 
 // ==================== API CONFIG ====================
-const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/v4-sign_in";
+const API_SIGNIN_V2 = "https://api.ivacbd.com/iams/api/v1/auth/sign-in_v5";
 const X_SEC_NAV_STATE     = '80d51dc5-af20-46fa-a7bb-e6a8f3f80065';
 const X_SEC_RUNTIME_STATE = 'v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a';
 // Prefer the LIVE value captured from the site's real traffic (RJ_DYN.headers) — these security
@@ -366,13 +366,13 @@ function _vReqMeta()      { try { return (RJ_DYN.headers && RJ_DYN.headers['x-v-
 const API_SIGNUP    = "https://api.ivacbd.com/iams/api/v1/auth/signup";
 const API_SIGNUP_CONSENT = "https://api.ivacbd.com/iams/api/v1/auth/signup/consent";
 const API_SIGNUP_STATUS  = "https://api.ivacbd.com/iams/api/v1/auth/signup/status";
-const PAYMENT_METHOD_ID = '20218968-2226-4e28-861f-465bb28337e6';   // fixed fallback (extracted from current bundle via extract_fetch, 2026-08-27)
+const PAYMENT_METHOD_ID = '1c228961-2324-3s28-861h-465sb28327b3';   // fixed fallback (extracted from current bundle via extract_fetch, 2026-08-27)
 const PAYMENT_METHOD_ID_KEY = 'rj_payment_method_id';
 const API_FORGOT    = "https://api.ivacbd.com/iams/api/v1/forgot-password/sendOtp";
-const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/verify-Signin_Otp";
+const API_VERIFY    = "https://api.ivacbd.com/iams/api/v1/otp/v5_verify_Signin_Otp";
 const API_RESERVE   = "https://api.ivacbd.com/iams/api/v1/slots/reserveSlot";
 const API_BOOK      = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config";
-const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file_confirmation-and_slot-status";
+const API_SLOT_STATUS = "https://api.ivacbd.com/iams/api/v1/file/file_confirmation_and-slot_status";
 const API_REFERRER  = "https://appointment.ivacbd.com/";
 const API_SMS_SERVER = "https://duttauzzal.shop/sms.php";
 const API_EMAIL_SERVER = "https://duttauzzal.shop/email.php";   // email OTP fetcher (catch-all inbox reader)
@@ -389,7 +389,7 @@ function rjPersistDyn() { try { localStorage.setItem(RJ_DYN_KEY, JSON.stringify(
 // Reserve action segment: the last path part of /slots/<uuid>/<here>. IVAC ships it as reserve_slot
 // or reserve-slot and can scramble the separator on redeploy. Resolve it dynamically (captured from
 // the bundle / real traffic) and default to the current literal so a mismatch never causes a 403/CORS.
-function getReserveSeg() { try { return RJ_DYN.reserveSeg || 'reserve_slot'; } catch (e) { return 'reserve_slot'; } }
+function getReserveSeg() { try { return RJ_DYN.reserveSeg || 'reserve-slot'; } catch (e) { return 'reserve-slot'; } }
 const RJ_RESERVE_SEG_RE = /\/slots\/([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})\/(reserve[_-]?slot)/i;
 
 function rjRewriteUrl(url) {
@@ -452,8 +452,8 @@ function rjApplyDynHeaders(url, init) {
 const RJ_EP_FAMILIES = [
     { code: '/auth/v2-sign-in',                         re: /\/auth\/[a-z0-9_-]*sign[-_]?in[a-z0-9_-]*/i },
     { code: '/file/upload_file_v2',                     re: /\/file\/upload[-_]?file[a-z0-9_-]*/i },
-    { code: '/otp/verify-otp',                          re: /\/otp\/verify[-_]?otp[a-z0-9_-]*/i },
-    { code: '/otp/verifySigninOtp',                     re: /\/otp\/verify[-_]?signin[-_]?otp[a-z0-9_-]*/i },
+    { code: '/otp/verify-otp',                          re: /\/otp\/[a-z0-9_-]*verify[-_]?otp[a-z0-9_-]*/i },
+    { code: '/otp/verifySigninOtp',                     re: /\/otp\/[a-z0-9_-]*verify[-_]?signin[-_]?otp[a-z0-9_-]*/i },
     { code: '/otp/signupOtp',                           re: /\/otp\/signup[-_]?otp[a-z0-9_-]*/i },
     { code: '/appointment/get-booking-config',          re: /\/appointment\/get[-_]?booking[-_]?config[a-z0-9_-]*/i },
     { code: '/appointment/appointment-booking-config',  re: /\/appointment\/appointment[-_]?booking[-_]?config[a-z0-9_-]*/i },
@@ -3990,7 +3990,7 @@ function _auDetectCenterFromFiles() {
 
 async function _auFetchOverview() {
     try {
-        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v412", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+        const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over_view-v5", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
         let body = null; try { body = await r.json(); } catch (e) {}
         const ok = !!(r && r.status >= 200 && r.status < 300 && body);
         return { ok, data: (body && body.data) || [] };
@@ -5838,7 +5838,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         const fileInput = document.getElementById(fileInputId);
         const file = (fileInput?.files?.length > 0) ? fileInput.files[0] : (rjSavedUploads[fileInputId] || null);
         if (!file) { logStatus(`❌ ${label}: no file selected`, 'r'); return false; }   // never upload an empty part
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file-v453", tag: 'upload', state: 'pending', note: `${label}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/upload-file_v5", tag: 'upload', state: 'pending', note: `${label}` });
 
         for (let attempt = 1; attempt <= UPLOAD_MAX_TRIES; attempt++) {
             let uploadEntry;
@@ -5848,7 +5848,7 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
             logStatus(`📄 Uploading ${label}${attempt > 1 ? ` (try ${attempt}/${UPLOAD_MAX_TRIES})` : ''}…`, 'y');
             try {
                 const r = await sendMultipartUpload(
-                    "https://api.ivacbd.com/iams/api/v1/file/upload-file-v453",
+                    "https://api.ivacbd.com/iams/api/v1/file/upload-file_v5",
                     { 'accept': 'application/json, text/plain, */*', 'authorization': `Bearer ${sessionState.accessToken}`, 'cache-control': 'no-cache, no-store, must-revalidate', 'pragma': 'no-cache', 'x-sec-runtime-state': _runtimeState(), 'x-token': uploadToken },
                     file, { isPrimary: String(isPrimary) }
                 );
@@ -5938,9 +5938,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
     document.getElementById('ivac-btn-file-checking')?.addEventListener('click', async function() {
         if (!sessionState.accessToken) { logStatus('❌ No active session', 'r'); return; }
         logStatus('📋 Checking file overview…', 'y');
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over-view-v412", tag: 'upload', state: 'pending' });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/file/over_view-v5", tag: 'upload', state: 'pending' });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over-view-v412", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/file/over_view-v5", { method: 'POST', headers: { 'accept': 'application/json', 'authorization': `Bearer ${sessionState.accessToken}`, 'x-device-id': getDeviceId() }, referrer: API_REFERRER, body: null });
             let body = null; try { body = await r.json(); } catch(e) { body = null; }
             // successFlag is unreliable (server sends true even on failure). A real OTP-send is 2xx AND returns a requestId.
             const ok = !!(r && r.status >= 200 && r.status < 300 && body && (body.statusCode === undefined || (body.statusCode >= 200 && body.statusCode < 300)));
@@ -6084,9 +6084,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         if (!otp) { suMsg('ivac-msg-mobile', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-mobile', '❌ Invalid OTP', 'r'); return; } if (!phone) { suMsg('ivac-msg-mobile', '❌ Enter mobile first', 'r'); return; } if (!signupState.mobileRequestId) { suMsg('ivac-msg-mobile', '❌ No requestId — click Mobile first', 'r'); return; }
         suMsg('ivac-msg-mobile', '⏳ Verifying mobile OTP…', 'y'); logStatus('🔓 Verifying mobile OTP…', 'y');
         // NEW system: verify does NOT need a captcha token (real traffic shows no x-token on verify-otp-v2).
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/v5_verify-otp", tag: 'signup', state: 'pending', note: `verify-mobile ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/v5_verify-otp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.mobileRequestId, phone: phone, code: otp, otpChannel: "PHONE" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
             // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
@@ -6126,9 +6126,9 @@ refreshProxyPicker(); refreshProxyStatusLine(); updateActiveProxyGlobal();
         if (!otp) { suMsg('ivac-msg-email', '❌ Enter OTP first', 'r'); return; } if (!/^\d{4,8}$/.test(otp)) { suMsg('ivac-msg-email', '❌ Invalid OTP', 'r'); return; } if (!email) { suMsg('ivac-msg-email', '❌ Enter email first', 'r'); return; } if (!signupState.emailRequestId) { suMsg('ivac-msg-email', '❌ No requestId — click Email first', 'r'); return; }
         suMsg('ivac-msg-email', '⏳ Verifying email OTP…', 'y'); logStatus('🔓 Verifying email OTP…', 'y');
         // NEW system: verify does NOT need a captcha token.
-        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
+        const logId = netLogAdd({ method: 'POST', url: "https://api.ivacbd.com/iams/api/v1/otp/v5_verify-otp", tag: 'signup', state: 'pending', note: `verify-email ${otp}` });
         try {
-            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/verify_otp_v5", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
+            const r = await H2.fetchH2("https://api.ivacbd.com/iams/api/v1/otp/v5_verify-otp", { method: 'POST', headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json' }, referrer: "https://appointment.ivacbd.com/", body: JSON.stringify({ requestId: signupState.emailRequestId, email: email, code: otp, otpChannel: "EMAIL" }) });
             let body = null; try { body = await r.json(); } catch(e) {}
             // STRICT: server returns successFlag:true EVEN for a wrong OTP (statusCode 400, data.verified:false).
             // So successFlag is useless here — the ONLY truth is data.verified === true (with a 2xx statusCode).
@@ -7015,7 +7015,7 @@ function getReserveAppointmentId() {
 }
 
 const RESERVE_SLOT_ID_KEY = 'rj_reserve_slot_id';
-const RESERVE_SLOT_ID_FIXED = '54ea9f13-f1e2-4cea-9e18-f525e8242ccf';   // fixed reserve slot id
+const RESERVE_SLOT_ID_FIXED = '539fd5i2-27a9-4928-a103-278583e830bs';   // fixed reserve slot id
 function _cleanUuid(v) { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(v || '')); return m ? m[1] : (String(v || '').trim()); }
 function getReserveSlotId() {
     const inp = document.getElementById('ivac-reserve-slot-id');
