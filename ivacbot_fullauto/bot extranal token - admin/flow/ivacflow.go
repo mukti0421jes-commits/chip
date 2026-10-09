@@ -26,6 +26,7 @@ type ivacflowSnapshot struct {
 		ExtractedAt  string            `json:"extractedAt"`
 		APIBase      string            `json:"apiBase"`
 		Endpoints    map[string]string `json:"endpoints"`
+		AllEndpoints []string          `json:"allEndpoints"` // every path ivacflow saw, incl. ones it did not categorize under a friendly key
 		SlotID       string            `json:"slotId"`
 		DgepayUUID   string            `json:"dgepayUuid"`
 		InitiatePath string            `json:"initiatePath"`
@@ -153,6 +154,14 @@ func ParseIvacflow(raw []byte) (*Imported, error) {
 		imp.Families[code] = stripAPIPrefix(lit)
 	}
 
+	// ivacflow sometimes LISTS an endpoint in allEndpoints but does NOT categorize
+	// it under a friendly key in `endpoints` — the OTP-verify endpoint
+	// ("/otp/v5_verify_Signin_Otp") is the known case. Fill any family the bot needs
+	// that is still missing, by matching the family's own tokens against allEndpoints.
+	// Version/separator/case-proof, so a future rename flows through with no code
+	// change. Never overwrites a value that `endpoints` already supplied.
+	fillFamiliesFromAll(imp.Families, s.Config.AllEndpoints)
+
 	// Cross-check the two ids against the full URLs ivacflow also records — a
 	// recorded URL is the strongest evidence either tool produces.
 	if u := s.Config.Endpoints["reserveSlot"]; u != "" {
@@ -224,6 +233,121 @@ func ParseIvacflow(raw []byte) (*Imported, error) {
 		}
 	}
 	return imp, nil
+}
+
+// fillFamiliesFromAll fills any ivacflow family code the bot needs that `endpoints`
+// did not supply, by finding the best-matching path in allEndpoints. Matching is by
+// TOKEN SET of the last path segment (camelCase + separators split, version tokens
+// like "v5" dropped, case-folded), so "/otp/verifySigninOtp" matches
+// "/otp/v5_verify_Signin_Otp" whatever the separators or version. The best match is
+// the candidate in the same first-segment group whose token set contains all of the
+// family's tokens and is smallest (so "verifyOtp" does not grab the longer
+// "verify_Signin_Otp"). Existing families are never overwritten.
+func fillFamiliesFromAll(fam map[string]string, all []string) {
+	if fam == nil || len(all) == 0 {
+		return
+	}
+	for _, code := range ivacflowEndpointKeys {
+		if fam[code] != "" {
+			continue
+		}
+		grp := firstSeg(code)
+		want := endpointTokens(lastSeg(code))
+		if len(want) == 0 {
+			continue
+		}
+		best, bestLen := "", 1<<30
+		for _, p := range all {
+			if firstSeg(p) != grp {
+				continue
+			}
+			have := endpointTokens(lastSeg(p))
+			if !tokensSubset(want, have) {
+				continue
+			}
+			if len(have) < bestLen {
+				best, bestLen = p, len(have)
+			}
+		}
+		if best != "" {
+			fam[code] = stripAPIPrefix(best)
+		}
+	}
+}
+
+func firstSeg(p string) string {
+	p = stripAPIPrefix(p)
+	p = strings.TrimPrefix(p, "/")
+	if i := strings.IndexByte(p, '/'); i >= 0 {
+		return strings.ToLower(p[:i])
+	}
+	return strings.ToLower(p)
+}
+
+func lastSeg(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	p = strings.TrimRight(p, "/")
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// endpointTokens splits a segment into lowercase word tokens on separators AND
+// camelCase boundaries, dropping version tokens ("v5", "v321").
+func endpointTokens(s string) map[string]bool {
+	out := map[string]bool{}
+	cur := make([]byte, 0, len(s))
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		t := string(cur)
+		cur = cur[:0]
+		if isVersionTok(t) {
+			return
+		}
+		out[t] = true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_' || c == '-' || c == ' ' || c == '.' || c == '/':
+			flush()
+		case c >= 'A' && c <= 'Z':
+			if i > 0 {
+				flush()
+			}
+			cur = append(cur, c-'A'+'a')
+		default:
+			cur = append(cur, c)
+		}
+	}
+	flush()
+	return out
+}
+
+func isVersionTok(t string) bool {
+	if len(t) < 2 || t[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func tokensSubset(want, have map[string]bool) bool {
+	for t := range want {
+		if !have[t] {
+			return false
+		}
+	}
+	return true
 }
 
 // stripAPIPrefix removes a leading /iams/api/v<N> so an endpoint literal is the

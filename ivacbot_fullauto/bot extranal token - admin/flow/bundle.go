@@ -96,7 +96,7 @@ func DownloadBundles(f Fetcher, urls []string) (string, []string) {
 		chunks = append(chunks, t)
 		combined.WriteString("\n")
 		combined.WriteString(t)
-		if strings.Contains(t, "secret:") || strings.Contains(t, "reserve-slot") || strings.Contains(t, "sign-in") {
+		if strings.Contains(t, "secret:") || strings.Contains(t, "reserve-slot") || strings.Contains(t, "reserve_slot") || strings.Contains(t, "sign-in") {
 			break
 		}
 	}

@@ -30,7 +30,24 @@ var (
 	importedSaved time.Time      // when the active capture was imported
 	ivacflowCfg   *flow.Imported // ivacflow snapshot (pushed or imported)
 	ivacflowAt    time.Time
+	// ivacflowVersion increments on every ivacflow push (see bumpIvacflowVersion).
+	// The #1 cipher-fail PAUSE uses it to tell a NEW correct-cipher push apart from
+	// the same (already-tried) one: a signin loop that failed for a cipher reason
+	// pauses and only resumes when this number moves past the version it last tried.
+	ivacflowVersion uint64
 )
+
+// bumpIvacflowVersion marks that a fresh ivacflow snapshot was stored. MUST be
+// called while holding importMu (write-locked), right after ivacflowCfg is set.
+func bumpIvacflowVersion() { ivacflowVersion++ }
+
+// ivacflowSnapshot returns the current ivacflow config and its version together,
+// atomically. version 0 with a nil cfg means nothing has been pushed yet.
+func ivacflowSnapshot() (*flow.Imported, uint64) {
+	importMu.RLock()
+	defer importMu.RUnlock()
+	return ivacflowCfg, ivacflowVersion
+}
 
 // getImportedConfig returns the active RJ SLOT capture (nil when none).
 func getImportedConfig() *flow.Imported {
@@ -216,6 +233,7 @@ func handleImportCaptured(w http.ResponseWriter, r *http.Request) {
 	importMu.Lock()
 	if imp.Origin == flow.SrcIvacflow {
 		ivacflowCfg, ivacflowAt = imp, time.Now()
+		bumpIvacflowVersion()
 	} else {
 		importedCfg, importedSaved = imp, time.Now()
 	}

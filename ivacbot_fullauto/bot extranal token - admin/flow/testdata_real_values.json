@@ -1,0 +1,393 @@
+{
+  "config": {
+    "extractedAt": "2026-10-08T09:12:44.187Z",
+    "apiBase": "https://api.ivacbd.com/iams/api/v1",
+    "endpoints": {
+      "signin": "/auth/sign-in",
+      "signup": "/auth/signup",
+      "signupConsent": "/auth/signup/consent",
+      "signupStatus": "/auth/signup/status",
+      "signupOtp": "/otp/signupOtp",
+      "getBookingConfig": "/appointment/get-booking-config",
+      "bookingConfig": "/appointment/appointment-booking-config",
+      "paymentAmount": "/file/payment-amount",
+      "uploadFile": "/iams/api/v1/file/upload-file_v5",
+      "fileConfirmation": "/iams/api/v1/file/file_confirmation_and-slot_status",
+      "overView": "/iams/api/v1/file/over_view-v5",
+      "reserveSlot": "/iams/api/v1/slots/539fd5i2-27a9-4928-a103-278583e830bs/reserve-slot",
+      "paymentInitiate": "/iams/api/v1/payment/1c228961-2324-3s28-861h-465sb28327b3/dg_epay/initiate"
+    },
+    "slotId": "539fd5i2-27a9-4928-a103-278583e830bs",
+    "dgepayUuid": "1c228961-2324-3s28-861h-465sb28327b3",
+    "initiatePath": "/payment/1c228961-2324-3s28-861h-465sb28327b3/dg-epay/initiate",
+    "allEndpoints": [
+      "/appointment/appointment-booking-config",
+      "/appointment/blocked",
+      "/appointment/confirm-payment",
+      "/appointment/continue-payment",
+      "/appointment/declaration",
+      "/appointment/declaration-not-allowed",
+      "/appointment/file-upload",
+      "/appointment/get-booking-config",
+      "/appointment/mission",
+      "/appointment/notice",
+      "/appointment/time-slot",
+      "/appointment/waiting",
+      "/auth/sign-in_v5",
+      "/auth/signup",
+      "/auth/signup/consent",
+      "/auth/signup/status",
+      "/file/delete",
+      "/file/file_confirmation_and-slot_status",
+      "/file/over_view-v5",
+      "/file/payment-amount",
+      "/file/upload-file_v5",
+      "/forgot-password/resend",
+      "/forgot-password/set-password",
+      "/forgot-password/verify",
+      "/high-commissions/by-id",
+      "/invoice/all-by-user",
+      "/otp/signupOtp",
+      "/otp/v5_verify-otp",
+      "/otp/v5_verify_Signin_Otp",
+      "/payment/cancel",
+      "/payment/fail",
+      "/profile/edit",
+      "/profile/sendOtp",
+      "/profile/verifyAndUpdate",
+      "/slots/539fd5i2-27a9-4928-a103-278583e830bs/reserve-slot"
+    ],
+    "apiBaseNote": "default (not plaintext in bundle; this base is stable)",
+    "ciphers": {
+      "roles": [
+        {
+          "role": "Signin",
+          "version": "",
+          "algo": "CELLULAR",
+          "skip": 7,
+          "len": 27,
+          "key": "A&8O4&15I>p40<2KQU6x0R:PYbfg6z$TG_0U6_37O!v62`4QWA8d2X>VEhlm8f*Z",
+          "output": "1.F-NFgK5DNB8izYgYkNF8HXCXvq0zZsCtwLyZoT3AOqqHEiCe2j9-LqezL4wL"
+        },
+        {
+          "role": "Reserve",
+          "version": "",
+          "algo": "CELLULAR",
+          "skip": 7,
+          "len": 27,
+          "key": "A&8O4&15I>p40<2KQU6x0R:PYbfg6z$TG_0U6_37O!v62`4QWA8d2X>VEhlm8f*Z",
+          "output": "1.EZSYq5BIW2yPVtpFWaWGyReAIrLONK5Ko45cf6rSJbwCFLWgTRU-r4MjpR0O"
+        }
+      ],
+      "code": "// cipher.js — AUTO-GENERATED (headless: সাইটের নিজের cipher থেকে).\n// key/skip/length সাইটের live ডাক থেকে; algorithm known-list-এর সাথে মিলিয়ে যাচাই।\n\nconst Charset = \"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_\";\n\nfunction charsetIndex(ch) { return Charset.indexOf(ch); }\n\n// Signin cipher (CELLULAR) — headless-captured key\nconst SigninKey = \"A&8O4&15I>p40<2KQU6x0R:PYbfg6z$TG_0U6_37O!v62`4QWA8d2X>VEhlm8f*Z\";\nconst SigninSkip = 7;\nconst SigninEncryptLen = 27;\nfunction ProcessTokenSignin(token) { return cryptCellular(token, SigninKey, SigninSkip, SigninEncryptLen, true); }\nfunction ReverseTokenSignin(token) { return cryptCellular(token, SigninKey, SigninSkip, SigninEncryptLen, false); }\n\n// Reserve cipher (CELLULAR) — headless-captured key\nconst ReserveKey = \"A&8O4&15I>p40<2KQU6x0R:PYbfg6z$TG_0U6_37O!v62`4QWA8d2X>VEhlm8f*Z\";\nconst ReserveSkip = 7;\nconst ReserveEncryptLen = 27;\nfunction ProcessTokenReserve(token) { return cryptCellular(token, ReserveKey, ReserveSkip, ReserveEncryptLen, true); }\nfunction ReverseTokenReserve(token) { return cryptCellular(token, ReserveKey, ReserveSkip, ReserveEncryptLen, false); }\n\n\n// ---- Router ----\nfunction encryptToken(rawToken, purpose) {\n  if (purpose === \"Signin\") return ProcessTokenSignin(rawToken);\n  if (purpose === \"Reserve\") return ProcessTokenReserve(rawToken);\n  return rawToken;\n}\nfunction decryptToken(rawToken, purpose) {\n  if (purpose === \"Signin\") return ReverseTokenSignin(rawToken);\n  if (purpose === \"Reserve\") return ReverseTokenReserve(rawToken);\n  return rawToken;\n}\n\n\n// shared driver for additive-shift algorithms\nfunction additiveShift(token, key, skip, encryptLen, encrypt, genShifts) {\n  if (!token) return token;\n  const p = Math.max(0, Math.min(skip, token.length));\n  const a = Math.max(0, Math.min(encryptLen, token.length - p));\n  if (a === 0) return token;\n  const mid = token.slice(p, p + a).split(\"\");\n  const shifts = genShifts(key, mid.length), n = Charset.length;\n  for (let i = 0; i < mid.length; i++) { const x = charsetIndex(mid[i]); if (x === -1) continue; mid[i] = encrypt ? Charset[(x + shifts[i]) % n] : Charset[((x - shifts[i]) % n + n) % n]; }\n  return token.slice(0, p) + mid.join(\"\") + token.slice(p + a);\n}\n\n// ---- Rule-30 cellular-automaton additive-shift cipher ----\nfunction generateShiftsCellular(key, length) {\n  let cur = new Uint8Array(64);\n  for (let i = 0; i < key.length; i++) cur[i % 64] ^= (key.charCodeAt(i) & 1);\n  cur[32] = 1;\n  const shifts = [];\n  for (let s = 0; s < length; s++) {\n    const nx = new Uint8Array(64); let v = 0;\n    for (let d = 0; d < 64; d++) { const L = cur[(d + 63) % 64], C = cur[d], R = cur[(d + 1) % 64]; nx[d] = (30 >> ((L << 2) | (C << 1) | R)) & 1; if (d < 6) v = (v << 1) | nx[d]; }\n    cur = nx; shifts.push(v % Charset.length);\n  }\n  return shifts;\n}\nfunction cryptCellular(token, key, skip, encryptLen, encrypt) { return additiveShift(token, key, skip, encryptLen, encrypt, generateShiftsCellular); }\n\nif (typeof module !== \"undefined\") {\n  module.exports = { Charset, SigninKey, SigninSkip, SigninEncryptLen, ProcessTokenSignin, ReverseTokenSignin, ReserveKey, ReserveSkip, ReserveEncryptLen, ProcessTokenReserve, ReverseTokenReserve, encryptToken, decryptToken };\n}\n",
+      "verified": "2/2"
+    },
+    "tokenMap": [
+      {
+        "step": "signin",
+        "field": "c",
+        "encrypted": true,
+        "path": "/iams/api/v1/auth/sign-in_v5"
+      },
+      {
+        "step": "reserve",
+        "field": "c",
+        "encrypted": true,
+        "path": "/iams/api/v1/slots/539fd5i2-27a9-4928-a103-278583e830bs/reserve-slot"
+      },
+      {
+        "step": "initiate",
+        "field": "x-token",
+        "encrypted": false,
+        "path": "/iams/api/v1/payment/1c228961-2324-3s28-861h-465sb28327b3/dg_epay/initiate"
+      }
+    ],
+    "dgepayUuidSource": "flow-capture",
+    "initiatePathSource": "flow-capture"
+  },
+  "template": [
+    {
+      "name": "POST AUTH/SIGN-IN_V5",
+      "method": "POST",
+      "path": "/iams/api/v1/auth/sign-in_v5",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "x-sec-navigation-state": "{{ivac:navState}}"
+      },
+      "body": {
+        "phone": "{{ivac:phone}}",
+        "password": "{{ivac:password}}",
+        "c": "{{ivac:c}}"
+      },
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST OTP/V5_VERIFY_SIGNIN_OTP",
+      "method": "POST",
+      "path": "/iams/api/v1/otp/v5_verify_Signin_Otp",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": {
+        "requestId": "{{ivac:requestId}}",
+        "phone": "{{ivac:phone}}",
+        "code": "111111",
+        "otpChannel": "PHONE"
+      },
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "GET FILE/FILE_CONFIRMATION_AND-SLOT_STATUS",
+      "method": "GET",
+      "path": "/iams/api/v1/file/file_confirmation_and-slot_status",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST APPOINTMENT",
+      "method": "POST",
+      "path": "/iams/api/v1/appointment",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST FILE/OVER_VIEW-V5",
+      "method": "POST",
+      "path": "/iams/api/v1/file/over_view-v5",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "GET HIGH-COMMISSIONS/BY-ID",
+      "method": "GET",
+      "path": "/iams/api/v1/high-commissions/by-id?id=COM-MOCK-001",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST APPOINTMENT/APPOINTMENT-BOOKING-CONFIG",
+      "method": "POST",
+      "path": "/iams/api/v1/appointment/appointment-booking-config",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": {
+        "mission": "Dhaka",
+        "ivacCenter": "{{ivac:ivacCenter}}"
+      },
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "GET APPOINTMENT/GET-BOOKING-CONFIG",
+      "method": "GET",
+      "path": "/iams/api/v1/appointment/get-booking-config",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST 539FD5I2-27A9-4928-A103-278583E830BS/RESERVE-SLOT",
+      "method": "POST",
+      "path": "/iams/api/v1/slots/539fd5i2-27a9-4928-a103-278583e830bs/reserve-slot",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "x-v-request-meta": "{{ivac:reqMeta}}"
+      },
+      "body": {
+        "c": "MOCK_CAOT6sL",
+        "appointmentDate": "{{ivac:appointmentDate}}"
+      },
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "GET FILE/PAYMENT-AMOUNT",
+      "method": "GET",
+      "path": "/iams/api/v1/file/payment-amount",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+      },
+      "body": null,
+      "note": "",
+      "probed": true
+    },
+    {
+      "name": "POST DG_EPAY/INITIATE",
+      "method": "POST",
+      "path": "/iams/api/v1/payment/1c228961-2324-3s28-861h-465sb28327b3/dg_epay/initiate",
+      "found": true,
+      "source": "live-capture",
+      "headers": {
+        "accept": "application/json, text/plain, */*",
+        "authorization": "Bearer {{ivac:token}}",
+        "cache-control": "no-cache, no-store, must-revalidate",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+        "sec-ch-ua": "\"HeadlessChrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "x-token": "{{ivac:captcha}}"
+      },
+      "body": {
+        "appointmentId": "{{ivac:appointmentId}}"
+      },
+      "note": "",
+      "probed": true
+    }
+  ],
+  "allEndpoints": [
+    "/appointment/appointment-booking-config",
+    "/appointment/blocked",
+    "/appointment/confirm-payment",
+    "/appointment/continue-payment",
+    "/appointment/declaration",
+    "/appointment/declaration-not-allowed",
+    "/appointment/file-upload",
+    "/appointment/get-booking-config",
+    "/appointment/mission",
+    "/appointment/notice",
+    "/appointment/time-slot",
+    "/appointment/waiting",
+    "/auth/sign-in_v5",
+    "/auth/signup",
+    "/auth/signup/consent",
+    "/auth/signup/status",
+    "/file/delete",
+    "/file/file_confirmation_and-slot_status",
+    "/file/over_view-v5",
+    "/file/payment-amount",
+    "/file/upload-file_v5",
+    "/forgot-password/resend",
+    "/forgot-password/set-password",
+    "/forgot-password/verify",
+    "/high-commissions/by-id",
+    "/invoice/all-by-user",
+    "/otp/signupOtp",
+    "/otp/v5_verify-otp",
+    "/otp/v5_verify_Signin_Otp",
+    "/payment/cancel",
+    "/payment/fail",
+    "/profile/edit",
+    "/profile/sendOtp",
+    "/profile/verifyAndUpdate",
+    "/slots/539fd5i2-27a9-4928-a103-278583e830bs/reserve-slot"
+  ],
+  "bundleName": "muz358li-SUslH98Q.js",
+  "at": "10/8/2026, 3:13:11 PM"
+}

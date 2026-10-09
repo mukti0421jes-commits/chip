@@ -34,10 +34,6 @@ const (
 	API_BOOKING_CONFIG   = "https://api.ivacbd.com/iams/api/v1/appointment/get-booking-config"
 	API_SLOT_STATUS_URL  = "https://api.ivacbd.com/iams/api/v1/file/file-confirmation-and-slot-status"
 
-	CAPTCHA_LOGIN_URL   = "https://thirdeyesms.shop/captcha-external/rumon-login-captcha.php"
-	CAPTCHA_RESERVE_URL = "https://thirdeyesms.shop/captcha-external/rumon-reserve-captcha.php"
-	CAPTCHA_SECRET      = "rumon98u8x8f31y3"
-
 	WEBSITE_URL = "https://appointment.ivacbd.com"
 
 	CONFIG_FILE       = "config.json"
@@ -213,6 +209,14 @@ type Config struct {
 	TokenExpiry          int                 `json:"tokenExpiry"`
 	SingleRetryEnabled   bool                `json:"singleRetryEnabled"`
 	ParallelRetryEnabled bool                `json:"parallelRetryEnabled"`
+	// ProxyRotate is the dashboard "P_rotate" toggle. ON → the Full Auto flow rotates an
+	// instance's proxy (round-robin) after 3 consecutive proxy faults; OFF (default) → no
+	// rotation, each instance keeps its assigned proxy. Operator-controlled.
+	ProxyRotate bool `json:"proxyRotate"`
+	// PortalPublicURL is the PUBLIC base URL users reach the portal at (e.g.
+	// http://rjslothub.duckdns.org:8080). The admin sets it so the "Login link to share"
+	// shows the shareable URL instead of the admin's own localhost (seen via the tunnel).
+	PortalPublicURL string `json:"portalPublicUrl"`
 
 	// ── Frontend-controlled step retry (RJ SLOT JS parity) ──
 	// FlowSingle ON  → a failed step retries after its per-step delay.
@@ -1877,7 +1881,7 @@ func (c *IVACClient) rotateRoutingResources() {
 // ==================== EXTERNAL CAPTCHA FUNCTIONS ====================
 
 // getLoginCaptchaToken now routes through the captcha QUEUE + the provider you
-// selected in the dashboard (rumon / CapSolver / CapMonster / 2Captcha / ...).
+// selected in the dashboard (relay / CapSolver / CapMonster / 2Captcha / ...).
 // It returns a ready token instantly from the queue, else solves one.
 func getLoginCaptchaToken() (string, error) {
 	if raw, ok := captchaMgr.NextRaw("Signin"); ok {
@@ -3251,7 +3255,7 @@ func (c *IVACClient) Login(loginPhone, password string) error {
 func (c *IVACClient) loginOnce(loginPhone, password string) error {
 	token, err := c.getInstanceToken(TokenTypeLogin)
 	if err != nil {
-		// Legacy rumon token unavailable — fall back to the captcha QUEUE.
+		// Legacy per-instance token unavailable — fall back to the captcha QUEUE.
 		if captchaMgr.queueLen("Signin") > 0 {
 			c.log("ℹ️ Legacy token failed — using pre-solved token from queue")
 			token = ""
@@ -3630,7 +3634,7 @@ func (c *IVACClient) reserveSlotWithRetry() (string, string, error) {
 func (c *IVACClient) reserveSlotOnce() (string, string, error) {
 	token, err := c.getInstanceToken(TokenTypeReserve)
 	if err != nil {
-		// Legacy rumon token unavailable — fall back to the captcha QUEUE.
+		// Legacy per-instance token unavailable — fall back to the captcha QUEUE.
 		if captchaMgr.queueLen("Reserve") > 0 {
 			c.log("ℹ️ Legacy token failed — using pre-solved token from queue")
 			token = ""
@@ -4456,6 +4460,21 @@ func getInstances(w http.ResponseWriter, r *http.Request) {
 			"step":            inst.Data.Step,
 			"otp":             inst.Data.OTP,
 			"waitingOtp":      inst.Data.WaitingOTP,
+			// sessionSecsLeft = REAL remaining session time (seconds), decoded from the
+			// live access token's JWT `exp` claim — NOT a hardcoded 15-min guess. -1 means
+			// no live session (never signed in, or the resume session expired / was cleared);
+			// 0 means the token is past its exp. The dashboard's Time column renders it.
+			"sessionSecsLeft": func() int64 {
+				s := getFlowSession(inst.Data.ID)
+				if s == nil || s.AccessToken == "" {
+					return -1
+				}
+				_, secs, okJWT := buildAuthStorage(s.AccessToken, s.RequestID, inst.Data.LoginPhone)
+				if !okJWT {
+					return -1
+				}
+				return secs
+			}(),
 			"reservationId":   inst.Data.ReservationID,
 			"appointmentDate": inst.Data.AppointmentDate,
 			"paymentUrl":      inst.Data.PaymentURL,
@@ -4762,6 +4781,7 @@ func toggleAllHandler(w http.ResponseWriter, r *http.Request) {
 
 			for _, inst := range all {
 				inst.mu.Lock()
+				id := inst.Data.ID
 				if inst.cancel != nil {
 					inst.cancel()
 				}
@@ -4769,6 +4789,11 @@ func toggleAllHandler(w http.ResponseWriter, r *http.Request) {
 				inst.Data.Step = "STOPPED"
 				inst.Data.PausedStep = ""
 				inst.mu.Unlock()
+				// Also cancel any running RJ SLOT Full Auto pipeline for this instance.
+				// It runs off the runner's own stop (r.Stop via faStops), NOT inst.cancel,
+				// so without this Stop All only relabels the row while the pipeline keeps
+				// running. r.Stop cancels in-flight HTTP + sleeps, so this is instant.
+				stopFullAuto(id)
 			}
 			saveInstancesToFile()
 		}()
@@ -4785,13 +4810,22 @@ func toggleAllHandler(w http.ResponseWriter, r *http.Request) {
 
 			for _, inst := range all {
 				inst.mu.Lock()
+				id := inst.Data.ID
+				paused := false
 				if inst.cancel != nil && inst.Data.Status == "RUNNING" {
 					inst.cancel()
 					inst.Data.Status = "PAUSED"
 					inst.Data.Step = "PAUSED"
 					inst.Data.PausedStep = inst.Data.Step
+					paused = true
 				}
 				inst.mu.Unlock()
+				// A running instance may be driven by the RJ SLOT Full Auto pipeline,
+				// which stops via r.Stop (faStops), not inst.cancel — cancel it too so
+				// Pause All takes effect instantly instead of leaving the pipeline live.
+				if paused {
+					stopFullAuto(id)
+				}
 			}
 			saveInstancesToFile()
 		}()
@@ -4986,6 +5020,56 @@ func handleSlotMonitor(w http.ResponseWriter, r *http.Request) {
 		configMu.RUnlock()
 		json.NewEncoder(w).Encode(map[string]bool{"enabled": enabled})
 	}
+}
+
+// proxyRotateEnabled reports whether the dashboard "P_rotate" toggle is ON.
+func proxyRotateEnabled() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return globalConfig.ProxyRotate
+}
+
+// handleProxyRotate is the "P_rotate" toggle: POST {enabled} turns round-robin proxy
+// rotation on/off (persisted); GET returns the current state.
+func handleProxyRotate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "POST" {
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		configMu.Lock()
+		globalConfig.ProxyRotate = req.Enabled
+		configMu.Unlock()
+		saveConfig()
+		if req.Enabled {
+			fmt.Println("🔄 [Proxy] P_rotate ON — round-robin rotation (3 faults → next proxy)")
+		} else {
+			fmt.Println("⏹ [Proxy] P_rotate OFF — no rotation (each instance keeps its proxy)")
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"enabled": proxyRotateEnabled()})
+}
+
+// handlePortalPublicURL gets/sets the public base URL for the user-portal share link.
+// POST {url} saves it (trailing slash trimmed); GET returns it.
+func handlePortalPublicURL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "POST" {
+		var in struct {
+			URL string `json:"url"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		u := strings.TrimRight(strings.TrimSpace(in.URL), "/")
+		configMu.Lock()
+		globalConfig.PortalPublicURL = u
+		configMu.Unlock()
+		saveConfig()
+	}
+	configMu.RLock()
+	u := globalConfig.PortalPublicURL
+	configMu.RUnlock()
+	json.NewEncoder(w).Encode(map[string]string{"url": u})
 }
 
 func handleSlotStatus(w http.ResponseWriter, r *http.Request) {
@@ -5674,13 +5758,18 @@ func handleSelectedInstances(w http.ResponseWriter, r *http.Request) {
 
 			case "pause":
 				inst.mu.Lock()
+				paused := false
 				if inst.cancel != nil && inst.Data.Status == "RUNNING" {
 					inst.cancel()
 					inst.Data.Status = "PAUSED"
 					inst.Data.Step = "PAUSED"
 					inst.Data.PausedStep = inst.Data.Step
+					paused = true
 				}
 				inst.mu.Unlock()
+				if paused {
+					stopFullAuto(id) // also cancel any running RJ SLOT Full Auto (instant)
+				}
 
 			case "resume":
 				inst.mu.Lock()
@@ -5796,13 +5885,24 @@ func handleSaveAppointmentID(w http.ResponseWriter, r *http.Request) {
 // adminOnly guards an endpoint so only a logged-in admin session may call it.
 // Regular users (and anyone without a valid session) get 403. This protects the
 // admin API from being hit directly by URL, independent of the dashboard UI.
+// adminAccessOK reports whether a request may use ADMIN powers: it must carry a
+// valid admin session AND arrive over loopback (127.0.0.1). The admin reaches the bot
+// through the SSH tunnel (-L 8080:localhost:8080), so admin requests originate from
+// loopback on the VPS; a request from the public internet (e.g. the DuckDNS link) is
+// NOT loopback, so even correct admin credentials cannot grant admin from outside.
+// NOTE: this assumes NO reverse proxy in front of the bot (a proxy would make every
+// request look like loopback). With Caddy/nginx later, gate admin a different way.
+func adminAccessOK(r *http.Request) bool {
+	u, ok := portalSessionUser(r)
+	return ok && u.Role == "admin" && isLoopback(r)
+}
+
 func adminOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u, ok := portalSessionUser(r)
-		if !ok || u.Role != "admin" {
+		if !adminAccessOK(r) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":"admin only — please log in as admin"}`))
+			_, _ = w.Write([]byte(`{"error":"admin only — available from the local console (tunnel) only"}`))
 			return
 		}
 		h(w, r)
@@ -5819,8 +5919,11 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound) // not logged in → login page
 		return
 	}
-	if u.Role != "admin" {
-		http.Redirect(w, r, "/portal", http.StatusFound) // regular user → their portal only
+	// The admin dashboard is served ONLY to an admin arriving over loopback (the SSH
+	// tunnel). A regular user — or anyone hitting the public DuckDNS link — is sent to
+	// the user portal, so the admin UI never loads from the public internet.
+	if u.Role != "admin" || !isLoopback(r) {
+		http.Redirect(w, r, "/portal", http.StatusFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
@@ -5899,7 +6002,7 @@ func getDashboardHTML() string {
         .nav-icon { font-size: 18px; width: 24px; }
         .nav-label { font-weight: 500; font-size: 13px; }
 
-        .main-content { margin-left: 260px; padding: 24px 32px; min-height: 100vh; background: #0a0e17; }
+        .main-content { margin-left: 260px; padding: 24px 32px; height: 100vh; overflow: hidden; display: flex; flex-direction: column; background: #0a0e17; }
 
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
         .stat-card { 
@@ -6011,6 +6114,10 @@ func getDashboardHTML() string {
             border: 1px solid rgba(45, 212, 191, 0.05);
         }
         table { width: 100%; border-collapse: collapse; }
+        /* FREEZE the top controls: only the instances list scrolls. The container
+           gets the remaining viewport height and its own vertical scroll; the table
+           head (th, position:sticky) stays pinned while the rows move. */
+        #instancesScroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
         .instances-table { min-width: 1600px; }
         .config-table { min-width: 800px; }
         .single-retry-table { min-width: 600px; }
@@ -6312,30 +6419,12 @@ func getDashboardHTML() string {
         .mode-indicator.retry-enabled { background: rgba(251, 191, 36, 0.08); color: #fbbf24; }
 
         .tab-content { display: none; animation: fadeIn 0.3s ease; }
-        .tab-content.active { display: block; }
-        /* ── Overview page (multi-page nav landing) ── */
-        .nav-badge { margin-left:auto; background:rgba(34,211,238,.16); color:#67e8f9; font-size:11px; font-weight:700; padding:1px 8px; border-radius:999px; min-width:18px; text-align:center; }
-        .nav-badge:empty { display:none; }
-        .ov-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:18px; }
-        .ov-card { display:flex; align-items:center; gap:14px; padding:18px 20px; background:linear-gradient(135deg,rgba(13,21,37,.85),rgba(13,21,37,.55)); border:1px solid rgba(45,212,191,.12); border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.18); }
-        .ov-card .ov-ic { font-size:26px; line-height:1; }
-        .ov-card .ov-num { font-size:30px; font-weight:800; color:#e2e8f0; line-height:1.1; }
-        .ov-card .ov-lbl { font-size:12px; color:#8b93a7; font-weight:600; margin-top:2px; }
-        .ov-run { border-color:rgba(56,189,248,.28); }
-        .ov-done { border-color:rgba(52,211,153,.28); }
-        .ov-fail { border-color:rgba(248,113,113,.28); }
-        .ov-pay { border-color:rgba(251,191,36,.28); }
-        .ov-otp { border-color:rgba(129,140,248,.28); }
-        .ov-panels { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
-        .ov-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid rgba(148,163,184,.08); }
-        .ov-row:last-child { border-bottom:none; }
-        .ov-name { color:#38bdf8; font-weight:600; }
-        .ov-sub { color:#64748b; font-size:11px; }
-        /* ── Instances filter bar ── */
-        .filter-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0 10px; padding:8px 12px; background:rgba(13,21,37,.55); border:1px solid rgba(45,212,191,.10); border-radius:10px; }
-        .filter-bar input[type=text], .filter-bar select { font-size:12px; padding:6px 9px; border-radius:7px; border:1px solid #2b3a52; background:#0d1424; color:#e2e8f0; }
-        .filter-bar input[type=text] { min-width:200px; }
-        .privacy-toggle { margin-left:auto; display:flex; align-items:center; gap:6px; color:#94a3b8; font-size:12px; font-weight:600; cursor:pointer; padding:4px 10px; border:1px solid rgba(129,140,248,.25); border-radius:8px; }
+        /* active tab fills the space under the frozen top bars and scrolls INTERNALLY,
+           so the page itself never scrolls (the top stays put). */
+        .tab-content.active { display: block; flex: 1 1 auto; min-height: 0; overflow: auto; }
+        /* the Instances tab is itself a column: its own action/bulk bars stay frozen and
+           ONLY the table list (#instancesScroll) scrolls. */
+        #tab-instances.active { display: flex; flex-direction: column; overflow: hidden; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         @media (max-width: 1024px) { 
@@ -6471,8 +6560,7 @@ func getDashboardHTML() string {
         </p>
     </div>
     <div class="sidebar-nav">
-        <div class="nav-item active" data-tab="overview"><span class="nav-icon">🏠</span><span class="nav-label">Overview</span></div>
-        <div class="nav-item" data-tab="instances"><span class="nav-icon">📋</span><span class="nav-label">Instances</span><span id="navBadgeInstances" class="nav-badge"></span></div>
+        <div class="nav-item active" data-tab="instances"><span class="nav-icon">📋</span><span class="nav-label">Instances</span></div>
         <div class="nav-item" data-tab="config"><span class="nav-icon">⚙️</span><span class="nav-label">Configuration</span></div>
         <div class="nav-item" data-tab="parallel"><span class="nav-icon">⚡</span><span class="nav-label">Parallel Config</span></div>
         <div class="nav-item" data-tab="proxies"><span class="nav-icon">🌐</span><span class="nav-label">Proxies</span></div>
@@ -6501,6 +6589,9 @@ func getDashboardHTML() string {
         <label class="switch"><input type="checkbox" id="slotMonitorSwitch" onchange="toggleSlotMonitor(this.checked)"><span class="slider"></span></label>
         <div class="slot-status" style="margin-left:14px;"><span class="slot-label" title="CapSolver (API) + Encryption ON">C_token</span><label class="switch" style="margin-left:6px;"><input type="checkbox" id="cTokenSwitch" onchange="setTokenMode('capsolver')"><span class="slider"></span></label></div>
         <div class="slot-status" style="margin-left:10px;"><span class="slot-label" title="Token Relay (local farm, port 8787)">R_token</span><label class="switch" style="margin-left:6px;"><input type="checkbox" id="eTokenSwitch" onchange="setTokenMode('relay')"><span class="slider"></span></label></div>
+        <div class="slot-status" style="margin-left:10px;" title="Farm/relay live: kotogulo browser token pathacche, koto fresh token pool e ache, ar bot koto token nilo"><span id="frontFarmStatus" style="font-weight:700;font-size:12px;color:#64748b;">🌾 —</span></div>
+        <div class="slot-status" style="margin-left:14px;" title="P_rotate: ON hole proxy round-robin rotation on (3 ta error por next proxy); OFF hole prottek instance nijer proxy dhore rakhbe"><span class="slot-label">P_rotate</span><label class="switch" style="margin-left:6px;"><input type="checkbox" id="proxyRotateSwitch" onchange="toggleProxyRotate(this.checked)"><span class="slider"></span></label></div>
+        <div style="margin-left:auto;" title="Live date & clock"><span id="liveClock" style="display:inline-block;font-weight:800;font-size:32px;color:#7dd3fc;font-family:Consolas,monospace;letter-spacing:.6px;background:rgba(13,21,37,0.75);border:1px solid rgba(45,212,191,0.30);border-radius:12px;padding:10px 20px;box-shadow:0 4px 16px rgba(0,0,0,.45);white-space:nowrap;">📅 — 🕐 —</span></div>
 
         <!-- FLOW RETRY CONTROL (RJ SLOT parity: Single / per-step delays / Auto) -->
         <div class="slot-status" style="margin-left:14px;gap:6px;flex-wrap:wrap;align-items:flex-end;" title="Single: retry a failed step after its delay. Auto: continue to next step after a step succeeds; the AUTO box is the delay between steps.">
@@ -6542,30 +6633,8 @@ func getDashboardHTML() string {
         </div>
     </div>
     
-    <!-- TAB: OVERVIEW -->
-    <div id="tab-overview" class="tab-content active">
-        <div class="ov-grid">
-            <div class="ov-card"><div class="ov-ic">📊</div><div class="ov-meta"><div class="ov-num" id="ovTotal">0</div><div class="ov-lbl">Total Accounts</div></div></div>
-            <div class="ov-card ov-run"><div class="ov-ic">▶️</div><div class="ov-meta"><div class="ov-num" id="ovRunning">0</div><div class="ov-lbl">Running</div></div></div>
-            <div class="ov-card ov-done"><div class="ov-ic">✅</div><div class="ov-meta"><div class="ov-num" id="ovCompleted">0</div><div class="ov-lbl">Completed</div></div></div>
-            <div class="ov-card ov-fail"><div class="ov-ic">❌</div><div class="ov-meta"><div class="ov-num" id="ovFailed">0</div><div class="ov-lbl">Failed</div></div></div>
-            <div class="ov-card ov-pay"><div class="ov-ic">💳</div><div class="ov-meta"><div class="ov-num" id="ovPayReady">0</div><div class="ov-lbl">Payment Ready</div></div></div>
-            <div class="ov-card ov-otp"><div class="ov-ic">⏳</div><div class="ov-meta"><div class="ov-num" id="ovWaitOtp">0</div><div class="ov-lbl">Waiting OTP</div></div></div>
-        </div>
-        <div class="ov-panels">
-            <div class="config-panel ov-panel">
-                <h3>🕒 Recent Activity</h3>
-                <div id="ovRecent" style="font-size:13px;color:#94a3b8;">No activity yet.</div>
-            </div>
-            <div class="config-panel ov-panel">
-                <h3>💳 Payment Ready</h3>
-                <div id="ovPayList" style="font-size:13px;color:#94a3b8;">None yet.</div>
-            </div>
-        </div>
-    </div>
-
     <!-- TAB: INSTANCES -->
-    <div id="tab-instances" class="tab-content">
+    <div id="tab-instances" class="tab-content active">
         <div class="add-form">
             <span style="color:#8b93a7;font-size:13px;font-weight:600;">📁 Entries & files are added from <b style="color:#22d3ee;">File Manager</b>. Control instances here:</span>
             <span style="display:inline-flex;align-items:center;gap:6px;">
@@ -6581,9 +6650,14 @@ func getDashboardHTML() string {
                 <input type="number" id="liveScanTriesTop" min="0" max="1000" onchange="saveLiveScanTriesTop()" title="Full Auto: live scan koto bar try korbe, tarpor store → fallback. 0 = unlimited" style="width:64px;font-size:12px;padding:5px 6px;border-radius:6px;border:1px solid #2b3a52;background:#0d1424;color:#e2e8f0;">
                 <span id="liveScanTriesTopStatus" style="color:#64748b;font-size:10px;"></span>
             </span>
-            <button class="btn btn-primary" onclick="fullAutoAll()" style="font-weight:800;">⚡ Full Auto All</button>
+            <button id="fullAutoAllBtn" class="btn btn-primary" onclick="fullAutoAllToggle()" style="font-weight:800;">⚡ Full Auto All</button>
+            <button id="playAllBtn" class="btn btn-primary" onclick="playAllToggle()" style="font-weight:800;background:linear-gradient(135deg,#0ea5e9,#22c55e);" title="Last-good cache (store kora encryption + endpoints) diye sob instance chalu — live scan bad, sorasori cache theke">▶️ Play All</button>
             <button class="btn btn-outline" onclick="cleanCache()" title="Clear resume sessions, captcha queues & dg-epay scan cache">🧹 Clean Cache</button>
             <button class="btn btn-outline" onclick="toggleImportPanel()" title="Import the RJ SLOT userscript capture (fills only what the live scan cannot resolve)">📥 Import Capture</button>
+            <button class="btn btn-outline" onclick="exportBackup()" title="Sob entry + tader PDF ek zip e export (backup)">⬇️ Export Backup</button>
+            <button class="btn btn-outline" onclick="document.getElementById('backupFile').click()" title="Age export kora zip theke entry + PDF ek clicke restore">⬆️ Import Backup</button>
+            <input type="file" id="backupFile" accept=".zip" style="display:none" onchange="importBackup(this)">
+
             <button class="btn btn-outline" onclick="changeAdminPassword()" title="Change the admin login password">🔑 Password</button>
             <button class="btn btn-outline" onclick="refresh()">🔄 Refresh</button>
         </div>
@@ -6613,32 +6687,12 @@ func getDashboardHTML() string {
             </label>
         </div>
         
-        <div class="filter-bar">
-            <input type="text" id="fltSearch" placeholder="🔍 Search name / phone…" oninput="applyInstanceFilters()">
-            <select id="fltMission" onchange="applyInstanceFilters()">
-                <option value="">All missions</option>
-                <option>Dhaka</option><option>Chittagong</option><option>Rajshahi</option><option>Sylhet</option><option>Khulna</option><option>Jashore</option>
-            </select>
-            <select id="fltVisa" onchange="applyInstanceFilters()">
-                <option value="">All visa types</option>
-                <option>Medical</option><option>Tourist</option><option>Student</option><option>Business</option><option>Entry</option><option>Double Entry</option>
-            </select>
-            <select id="fltStatus" onchange="applyInstanceFilters()">
-                <option value="">All status</option>
-                <option value="RUNNING">Running</option><option value="COMPLETED">Completed</option><option value="FAILED">Failed</option><option value="IDLE">Idle/Stopped</option>
-            </select>
-            <span id="fltCount" style="color:#64748b;font-size:11px;"></span>
-            <button class="btn btn-outline btn-sm" onclick="clearInstanceFilters()" style="margin-left:6px;">✖ Clear</button>
-            <label class="privacy-toggle" title="Phone/email mask kore rakhe (screen-share er somoy)">
-                <input type="checkbox" id="privacyModeChk" onchange="togglePrivacyMode()"> 🕶️ Privacy Mode
-            </label>
-        </div>
-        <div class="table-container">
+        <div class="table-container" id="instancesScroll">
             <table class="instances-table"><thead>
                 <th class="checkbox-col"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll()"></th>
-                <th>ID</th><th>Client</th><th>Phone</th><th>Password</th><th>Type</th><th>Step</th><th>OTP</th>
-                <th>Device ID</th><th>Appointment ID</th><th>RID</th><th>Endpoint</th><th>Status</th>
-                <th>Payment Url</th><th>Last Log</th><th>Action</th>
+                <th>ID</th><th>Client</th><th>Session</th><th>Time</th><th>Phone</th><th>Password</th><th>Type</th><th>Step</th><th>OTP</th>
+                <th>Appointment ID</th><th>RID</th><th>Endpoint</th><th>Status</th>
+                <th>Payment Url</th><th>Action</th>
             </thead><tbody id="tableBody"></tbody>
             </table>
         </div>
@@ -6648,12 +6702,11 @@ func getDashboardHTML() string {
     <div id="tab-config" class="tab-content">
         <div class="config-panel"><h3>🔑 External Captcha Configuration</h3>
             <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:16px;border-left:3px solid #2dd4bf;">
-                <strong style="color:#2dd4bf;">💡 External Captcha APIs:</strong><br>
-                <span style="color:#94a3b8;font-size:13px;">Login: <code style="color:#38bdf8;">https://thirdeyesms.shop/captcha-external/rumon-login-captcha.php</code></span><br>
-                <span style="color:#94a3b8;font-size:13px;">Reserve: <code style="color:#38bdf8;">https://thirdeyesms.shop/captcha-external/rumon-reserve-captcha.php</code></span>
+                <strong style="color:#2dd4bf;">💡 Captcha sources:</strong><br>
+                <span style="color:#94a3b8;font-size:13px;">Token Relay (local farm) + API solvers (CapSolver / CapMonster / 2Captcha / YesCaptcha). Auto-failover switches between the relay and a keyed API automatically.</span>
             </div>
         </div>
-        
+
         <div class="config-panel"><h3>🔍 Live Scan Control (Full Auto)</h3>
             <div style="background:rgba(45,212,191,0.03);padding:12px 16px;border-radius:10px;margin-bottom:14px;border-left:3px solid #38bdf8;">
                 <span style="color:#94a3b8;font-size:13px;">Full Auto All click korle live bundle scan <strong style="color:#7dd3fc;">koto bar try</strong> korbe. Ei koto bar-er moddhe na pele loop theme jabe → <strong style="color:#7dd3fc;">store</strong> (endpoint-cache / last-good) theke auto flow shuru hobe; store faka thakle <strong style="color:#7dd3fc;">built-in fallback</strong> diye (signin → initiate, All). <strong style="color:#fbbf24;">0 = unlimited</strong> (jotokkhon na pai / Stop).</span>
@@ -6830,9 +6883,9 @@ func getDashboardHTML() string {
             <textarea id="cipherScript" rows="7" style="width:100%;font-family:monospace;font-size:11px;background:rgba(13,21,37,0.6);border:1px solid rgba(45,212,191,0.08);border-radius:8px;color:#c4b5fd;padding:10px;" placeholder="cipher.js script..."></textarea>
         </div>
         <div class="config-panel">
-            <h3>🧩 Captcha Solver + Queue <span id="captchaQueueBadge" class="enabled-by-default-badge">signin 0 | reserve 0</span></h3>
+            <h3>🧩 Captcha Solver + Queue <span id="captchaQueueBadge" class="enabled-by-default-badge">pool 0</span></h3>
             <div style="background:rgba(129,140,248,0.03);padding:12px 16px;border-radius:10px;margin-bottom:12px;border-left:3px solid #818cf8;color:#94a3b8;font-size:12px;">
-                Queue keeps Signin & Reserve tokens pre-solved + pre-encrypted (4-min lifetime, reuse, invalid -> new). rumon + CapMonster/CapSolver/2Captcha/YesCaptcha.
+                Queue keeps the pool pre-solved + pre-encrypted (3-min lifetime → auto-removed when expired, gap auto-refilled in parallel). Token Relay + CapMonster/CapSolver/2Captcha/YesCaptcha.
             </div>
             <div class="config-group"><label>Provider:</label>
                 <select id="captchaProvider" onchange="onCaptchaProviderChange()">
@@ -6845,13 +6898,34 @@ func getDashboardHTML() string {
             </div>
             <div class="config-group"><label>Relay URL:</label><input type="text" id="captchaRelayUrl" placeholder="http://127.0.0.1:8787" style="flex:1;max-width:360px;"></div>
             <div class="config-group"><label>API Key:</label><input type="text" id="captchaKey" placeholder="provider API key" style="flex:1;max-width:360px;"></div>
-            <div class="config-group"><label>Queue size (each):</label><input type="number" id="captchaQueueSize" value="3" min="1" max="10" style="max-width:120px;"></div>
+            <div class="config-group"><label>Queue size (pool):</label><input type="number" id="captchaQueueSize" value="10" min="1" style="max-width:120px;"> <span style="color:#64748b;font-size:11px;">← eto token SOBSOMOY ready thakbe (no limit, ja diben tai). Pool bhorbe 20 ta kore solve kore (batch).</span></div>
+            <div style="background:rgba(251,191,36,0.06);padding:10px 14px;border-radius:10px;margin:4px 0 12px;border-left:3px solid #fbbf24;color:#fcd34d;font-size:12px;">
+                ⚠ Captcha solving is OFF by default — the bot runs 24/7, so it solves NOTHING (no API balance used) until you press <b>START</b>. Press <b>START</b> before running instances, <b>STOP</b> when done.
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+                <button class="btn btn-sm" id="captchaStartBtn" onclick="captchaToggle(true)" style="background:#16a34a;color:#fff;font-weight:700;">▶ Captcha START</button>
+                <button class="btn btn-sm" id="captchaStopBtn" onclick="captchaToggle(false)" style="background:#dc2626;color:#fff;font-weight:700;">⏹ Captcha STOP</button>
+                <span id="captchaState" style="font-weight:800;padding:4px 12px;border-radius:999px;">—</span>
+            </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
                 <button class="btn btn-primary btn-sm" onclick="saveCaptchaConfig()">💾 Save</button>
                 <button class="btn btn-info btn-sm" onclick="testCaptcha()">🧪 Test Solve</button>
                 <button class="btn btn-outline btn-sm" onclick="loadCaptchaQueue()">🔄 Refresh Queue</button>
             </div>
-            <div id="captchaQueueInfo" style="margin-top:10px;color:#2dd4bf;font-weight:600;">Ready — Signin: 0 | Reserve: 0</div>
+            <div id="captchaQueueInfo" style="margin-top:10px;color:#2dd4bf;font-weight:600;">Ready — Token pool: 0</div>
+        </div>
+
+        <div class="config-panel">
+            <h3>🖥️ Server Console <span id="consoleState" style="font-size:11px;color:#64748b;font-weight:600;">live</span></h3>
+            <div style="background:rgba(129,140,248,0.03);padding:10px 14px;border-radius:10px;margin-bottom:10px;border-left:3px solid #818cf8;color:#94a3b8;font-size:12px;">
+                VPS-e terminal nei — tai bot-er SOB console output (captcha pool, ivacflow cipher/endpoint push, scan, failover) ekhane live dekha jay. Local machine-er promt-er moto.
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                <label style="color:#94a3b8;font-size:12px;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="consoleAutoscroll" checked> Auto-scroll</label>
+                <button class="btn btn-outline btn-sm" onclick="clearConsoleView()">🧹 Clear view</button>
+                <span id="consoleCount" style="color:#64748b;font-size:11px;">0 lines</span>
+            </div>
+            <pre id="serverConsole" style="height:320px;overflow:auto;background:#0b1225;border:1px solid rgba(129,140,248,0.12);border-radius:8px;padding:12px;margin:0;font-family:monospace;font-size:11px;line-height:1.5;color:#cbd5e1;white-space:pre-wrap;word-break:break-word;"></pre>
         </div>
 
         <div class="config-panel">
@@ -7016,13 +7090,8 @@ function toggleSidebar() {
 function showTab(tabName) { 
     document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); }); 
     document.querySelectorAll('.nav-item').forEach(function(b) { b.classList.remove('active'); }); 
-    document.getElementById('tab-' + tabName).classList.add('active');
-    document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active');
-    // Overview is a clean read-only landing — hide the instances control bars there.
-    var sg=document.querySelector('.stats-grid'), sm=document.querySelector('.slot-monitor-bar');
-    var showBars = (tabName !== 'overview');
-    if(sg) sg.style.display = showBars ? '' : 'none';
-    if(sm) sm.style.display = showBars ? '' : 'none';
+    document.getElementById('tab-' + tabName).classList.add('active'); 
+    document.querySelector('.nav-item[data-tab="' + tabName + '"]').classList.add('active'); 
     if (tabName === 'config') { loadConfig(); loadRoutingStatus(); loadSingleHitConfig(); loadSingleHitRetryConfig(); loadEncryptToggle(); loadLiveScanTries(); }
     if (tabName === 'parallel') { loadTraditionalParallelConfig(); loadParallelRetryConfig(); } 
     if (tabName === 'proxies') loadProxies(); 
@@ -7053,7 +7122,18 @@ function getStepBadge(step) {
         'PAYMENT_READY': 'Pay', 'COMPLETED': 'Done', 'FAILED': 'Failed', 'STOPPED': 'Stopped', 
         'PAUSED': 'Paused', 'RESUMING': 'Resuming' 
     }; 
-    return '<span class="step-badge ' + cls + '">' + (labels[step] || step || 'Ready') + '</span>'; 
+    // Known step → short label. Unknown/long step (e.g. a live "reserve try date …"
+    // line) → show ONLY the date, so the Step cell never grows into a long line that
+    // makes the table jitter. No date found → a short trimmed text.
+    var shown;
+    if (labels[step]) {
+        shown = labels[step];
+    } else {
+        var s = step || 'Ready';
+        var dm = s.match(/(\d{4}-\d{2}-\d{2})|(\d{2}[-\/]\d{2}[-\/]\d{4})/);
+        shown = dm ? ('📅 ' + dm[0]) : (s.length > 16 ? s.slice(0, 16) + '…' : s);
+    }
+    return '<span class="step-badge ' + cls + '">' + shown + '</span>';
 }
 
 function getStatusBadge(code) { 
@@ -7283,72 +7363,41 @@ function saveEncryptToggle() {
         else { if(s) s.textContent='❌ save failed'; }
       }).catch(function(){ var s=document.getElementById('encToggleStatus'); if(s) s.textContent='❌ save failed'; });
 }
-function ovEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
-// ── Instances filters + Privacy Mode (front-end only) ──
-var privacyMode = false;
-try { privacyMode = localStorage.getItem('ivacPrivacy')==='1'; } catch(e){}
-function maskPhone(p){ p=String(p||''); if(!privacyMode||p.length<4) return p; return p.slice(0,3)+'••••'+p.slice(-2); }
-function maskName(n){ n=String(n||''); if(!privacyMode||n.length<2||n==='-') return n; return n.slice(0,1)+'•••'; }
-function instancePassesFilter(inst){
-    var q=(document.getElementById('fltSearch')||{}).value; q=(q||'').trim().toLowerCase();
-    var m=(document.getElementById('fltMission')||{}).value||'';
-    var v=(document.getElementById('fltVisa')||{}).value||'';
-    var s=(document.getElementById('fltStatus')||{}).value||'';
-    var typ=((inst.type||'')+' '+(inst.highCom||'')+' '+(inst.visaType||'')).toLowerCase();
-    if(m && typ.indexOf(m.toLowerCase())<0) return false;
-    if(v && typ.indexOf(v.toLowerCase())<0) return false;
-    if(s){
-        var st=(inst.status||'').toUpperCase();
-        if(s==='IDLE'){ if(st==='RUNNING'||st==='COMPLETED'||st==='FAILED') return false; }
-        else if(st!==s) return false;
+// fmtSessionTime renders the Time column from a REMAINING-seconds value.
+//   -1 / null  → "—"      (no live session: never signed in, or resume session gone)
+//    0 or less → "expired"
+//    > 0       → mm:ss (green > 5m, amber > 1m, red under 1m)
+function fmtSessionTime(secs) {
+    if (secs === -1 || secs === null || typeof secs === 'undefined') {
+        return '<span style="color:#64748b;" title="no live session — press Start to sign in">—</span>';
     }
-    if(q){
-        var hay=((inst.clientName||'')+' '+(inst.loginPhone||'')+' '+(inst.otpPhone||'')).toLowerCase();
-        if(hay.indexOf(q)<0) return false;
+    if (secs <= 0) {
+        return '<span style="color:#ef4444;font-weight:600;" title="session expired — press Start to relogin">expired</span>';
     }
-    return true;
+    var m = Math.floor(secs / 60), s = secs % 60;
+    var txt = m + ':' + (s < 10 ? '0' + s : s);
+    var col = secs > 300 ? '#22c55e' : (secs > 60 ? '#f59e0b' : '#ef4444');
+    return '<span style="color:' + col + ';font-weight:600;font-variant-numeric:tabular-nums;" title="remaining session time">' + txt + '</span>';
 }
-function applyInstanceFilters(){ refresh(); }
-function clearInstanceFilters(){
-    ['fltSearch','fltMission','fltVisa','fltStatus'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
-    refresh();
-}
-function togglePrivacyMode(){
-    privacyMode = !!(document.getElementById('privacyModeChk')||{}).checked;
-    try { localStorage.setItem('ivacPrivacy', privacyMode?'1':'0'); } catch(e){}
-    refresh();
-}
-function renderOverview(list, data){
-    list = list || [];
-    var payReady=0, waitOtp=0;
-    list.forEach(function(x){
-        if(x.paymentUrl) payReady++;
-        if(x.step==='WAITING_OTP' || (x.waitingOtp && !x.otp)) waitOtp++;
-    });
-    var set=function(id,v){ var el=document.getElementById(id); if(el) el.innerText=v; };
-    set('ovTotal', (data&&data.total!=null)?data.total:list.length);
-    set('ovRunning', (data&&data.running!=null)?data.running:'0');
-    set('ovCompleted', (data&&data.completed!=null)?data.completed:'0');
-    set('ovFailed', (data&&data.failed!=null)?data.failed:'0');
-    set('ovPayReady', payReady);
-    set('ovWaitOtp', waitOtp);
-    var nb=document.getElementById('navBadgeInstances'); if(nb) nb.innerText=list.length? list.length:'';
-    // Recent activity: latest instances that have a lastLog, newest id first.
-    var recent=list.filter(function(x){return x.lastLog;}).sort(function(a,b){return b.id-a.id;}).slice(0,8);
-    var rc=document.getElementById('ovRecent');
-    if(rc){ rc.innerHTML = recent.length? recent.map(function(x){
-        return '<div class="ov-row"><span><span class="ov-name">'+ovEsc(maskName(x.clientName||("#"+x.id)))+'</span> <span class="ov-sub">'+ovEsc(x.step||'')+'</span></span><span class="ov-sub">'+ovEsc((x.lastLog||'').slice(0,60))+'</span></div>';
-    }).join('') : 'No activity yet.'; }
-    // Payment-ready list
-    var pr=list.filter(function(x){return x.paymentUrl;}).sort(function(a,b){return a.id-b.id;});
-    var pl=document.getElementById('ovPayList');
-    if(pl){ pl.innerHTML = pr.length? pr.map(function(x){
-        return '<div class="ov-row"><span class="ov-name">'+ovEsc(maskName(x.clientName||("#"+x.id)))+'</span><a href="'+ovEsc(x.paymentUrl)+'" target="_blank" class="btn-pay" style="padding:2px 10px;">💳 Pay</a></div>';
-    }).join('') : 'None yet.'; }
+// tickSessionTimes counts the Time cells down every second between table refreshes.
+// Each cell carries the server's authoritative data-secs + the data-anchor (ms) at
+// which it was read; remaining = data-secs - elapsed-since-anchor. The 5s refresh
+// re-anchors with a fresh server value, so drift self-corrects.
+function tickSessionTimes() {
+    var cells = document.getElementsByClassName('session-time-cell');
+    for (var i = 0; i < cells.length; i++) {
+        var c = cells[i];
+        var base = parseInt(c.getAttribute('data-secs'), 10);
+        if (isNaN(base) || base === -1) { c.innerHTML = fmtSessionTime(-1); continue; }
+        var anchor = parseInt(c.getAttribute('data-anchor'), 10) || Date.now();
+        var rem = base - Math.floor((Date.now() - anchor) / 1000);
+        if (rem < 0) rem = 0;
+        c.innerHTML = fmtSessionTime(rem);
+    }
 }
 function refresh() {
     fetch('/api/instances').then(function(r) { return r.json(); }).then(function(data) {
-        document.getElementById('totalCount').innerText = data.total; 
+        document.getElementById('totalCount').innerText = data.total;
         document.getElementById('runningCount').innerText = data.running; 
         document.getElementById('failedCount').innerText = data.failed; 
         document.getElementById('completedCount').innerText = data.completed; 
@@ -7358,17 +7407,23 @@ function refresh() {
         });
         
         instancesDataCache = sortedInstances;
-        renderOverview(sortedInstances, data);
         autoFillInvoiceTrxId(sortedInstances);
         var tbody = document.getElementById('tableBody');
+        // PRESERVE the input the user is actively typing in (OTP / appointment id):
+        // this table is fully re-rendered on every auto-refresh, which otherwise wipes
+        // a half-typed OTP and yanks the cursor to another instance. Capture the focused
+        // field now and restore its value + focus + caret after the rebuild below.
+        var focusedField = null;
+        var _ae = document.activeElement;
+        if (_ae && _ae.tagName === 'INPUT' && _ae.id &&
+            (_ae.id.indexOf('otp_input_') === 0 || _ae.id.indexOf('appointment_input_') === 0)) {
+            focusedField = { id: _ae.id, value: _ae.value, start: _ae.selectionStart, end: _ae.selectionEnd };
+        }
         tbody.innerHTML = '';
-
-        var visibleInstances = sortedInstances.filter(instancePassesFilter);
-        var fc=document.getElementById('fltCount');
-        if(fc) fc.textContent = (visibleInstances.length===sortedInstances.length) ? (sortedInstances.length+' shown') : (visibleInstances.length+' / '+sortedInstances.length+' shown');
-        visibleInstances.forEach(function(inst) {
-            var row = tbody.insertRow(); 
-            row.className = 'instance-row'; 
+        
+        sortedInstances.forEach(function(inst, idx) {
+            var row = tbody.insertRow();
+            row.className = 'instance-row';
             row.id = 'instance-row-' + inst.id;
             
             var cb = document.createElement('input'); 
@@ -7382,72 +7437,95 @@ function refresh() {
                     else selectedInstances.delete(id); 
                 }; 
             })(inst.id); 
-            row.insertCell(0).appendChild(cb); 
-            row.insertCell(1).innerHTML = '<b style="color:#38bdf8;">#' + inst.id + '</b>'; 
-            row.insertCell(2).innerHTML = '<span class="client-name">' + maskName(inst.clientName || '-') + '</span>';
-            row.insertCell(3).innerHTML = maskPhone(inst.loginPhone) + '<br><small style="color:#64748b;">' + maskPhone(inst.otpPhone || '') + '</small>';
-            
-            var passwordCell = row.insertCell(4); 
-            passwordCell.className = 'password-cell'; 
-            passwordCell.id = 'password_cell_' + inst.id; 
-            passwordCell.setAttribute('data-password', inst.password || ''); 
-            passwordCell.innerHTML = '•••••••• <span class="password-toggle" onclick="event.stopPropagation();togglePassword(' + inst.id + ')">👁️</span>'; 
-            
-            row.insertCell(5).innerHTML = inst.type || (inst.highCom + ' - ' + inst.visaType); 
-            row.insertCell(6).innerHTML = getStepBadge(inst.step); 
-            
+            row.insertCell(-1).appendChild(cb);
+            // ID = simple serial 1,2,3… (real instance id kept in the tooltip + used internally)
+            row.insertCell(-1).innerHTML = '<b style="color:#38bdf8;" title="instance #' + inst.id + '">' + (idx + 1) + '</b>';
+            row.insertCell(-1).innerHTML = '<span class="client-name">' + (inst.clientName || '-') + '</span>';
+            row.insertCell(-1).innerHTML = '<button class="btn btn-outline btn-sm" title="Copy Session — login in another browser" onclick="copySession(' + inst.id + ')" style="padding:4px 8px;">📋</button>';
+            // Time = REAL remaining session time (from the live access-token JWT exp, sent
+            // as sessionSecsLeft). A 1s tick (tickSessionTimes) counts it down smoothly
+            // between the 5s table refreshes; each refresh re-anchors with the server value.
+            var _ssl = (typeof inst.sessionSecsLeft === 'number') ? inst.sessionSecsLeft : -1;
+            var timeCell = row.insertCell(-1);
+            timeCell.className = 'session-time-cell';
+            timeCell.id = 'sesstime_' + inst.id;
+            timeCell.setAttribute('data-secs', _ssl);
+            timeCell.setAttribute('data-anchor', Date.now());
+            timeCell.innerHTML = fmtSessionTime(_ssl);
+            row.insertCell(-1).innerHTML = inst.loginPhone + '<br><small style="color:#64748b;">' + (inst.otpPhone || '') + '</small>';
+
+            var passwordCell = row.insertCell(-1);
+            passwordCell.className = 'password-cell';
+            passwordCell.id = 'password_cell_' + inst.id;
+            passwordCell.setAttribute('data-password', inst.password || '');
+            passwordCell.innerHTML = '•••••••• <span class="password-toggle" onclick="event.stopPropagation();togglePassword(' + inst.id + ')">👁️</span>';
+
+            row.insertCell(-1).innerHTML = inst.type || (inst.highCom + ' - ' + inst.visaType);
+            row.insertCell(-1).innerHTML = getStepBadge(inst.step);
+
+            var otpCell = row.insertCell(-1);
             if (inst.step === 'WAITING_OTP' || (inst.waitingOtp && !inst.otp)) {
-                row.insertCell(7).innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric"><span class="waiting-otp-badge">⏳ Waiting</span></div>';
-                setTimeout(function() { 
-                    var inp = document.getElementById('otp_input_' + inst.id); 
-                    if (inp) { 
-                        inp.focus(); 
-                        inp.oninput = function(e) { 
-                            var val = e.target.value.replace(/[^0-9]/g, ''); 
-                            if (val.length === 6) submitManualOTP(inst.id, val); 
-                        }; 
-                    } 
-                }, 100); 
-            } else if (inst.otp) { 
-                // An OTP is held — but it may be the PREVIOUS session's code that the
-                // poller picked off sms.php. Always offer a way to drop it and type a
-                // fresh one; clearing also blacklists it so it cannot come straight back.
-                row.insertCell(7).innerHTML =
+                // keep whatever the user had already typed in THIS box across refreshes
+                var _otpVal = (focusedField && focusedField.id === 'otp_input_' + inst.id) ? focusedField.value : '';
+                otpCell.innerHTML = '<div class="manual-otp-container"><input type="text" class="manual-otp-input" id="otp_input_' + inst.id + '" placeholder="OTP" maxlength="6" inputmode="numeric" value="' + _otpVal + '"><span class="waiting-otp-badge">⏳ Waiting</span></div>';
+                (function(id) {
+                    setTimeout(function() {
+                        var inp = document.getElementById('otp_input_' + id);
+                        if (inp) {
+                            inp.oninput = function(e) {
+                                var val = e.target.value.replace(/[^0-9]/g, '');
+                                e.target.value = val;
+                                if (val.length === 6) submitManualOTP(id, val);
+                            };
+                        }
+                    }, 0);
+                })(inst.id);
+            } else if (inst.otp) {
+                otpCell.innerHTML =
                     '<div class="manual-otp-container"><span class="otp-display">' + inst.otp + '</span>' +
                     '<button class="btn btn-danger btn-sm" title="Ei OTP muche notun ekta type korun" ' +
                     'onclick="clearInstanceOTP(' + inst.id + ')" style="padding:2px 7px;margin-left:5px;">✖</button></div>';
-            } else { 
-                row.insertCell(7).innerHTML = '-'; 
-            } 
-            
-            row.insertCell(8).innerHTML = '<span class="device-id-badge">' + (inst.deviceId || '-') + '</span>'; 
-            row.insertCell(9).innerHTML = '<div class="appointment-container"><input type="text" class="appointment-input" id="appointment_input_' + inst.id + '" placeholder="Appointment ID" value="' + (inst.appointmentId || '') + '"><button class="btn btn-primary btn-sm" onclick="saveAppointmentID(' + inst.id + ')">💾 Save</button></div>'; 
-            row.insertCell(10).innerHTML = '<small style="color:#64748b;">' + (inst.reservationId ? inst.reservationId.substring(0, 8) + '...' : '-') + '<br>' + (inst.appointmentDate || '') + '</small>'; 
-            row.insertCell(11).innerHTML = '<span class="endpoint-name">' + (inst.endpoint || '-') + '</span>' + (inst.requestId ? '<br><span class="request-id">' + inst.requestId.substring(0, 12) + '...</span>' : ''); 
-            row.insertCell(12).innerHTML = inst.statusCode ? getStatusBadge(inst.statusCode) : '-';
-            // Host IP + Proxy IP columns removed from the table (proxy is used
-            // internally and is visible in the per-instance log, not needed here).
-
-            if (inst.paymentUrl) {
-                row.insertCell(13).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button></div></div>';
             } else {
-                row.insertCell(13).innerHTML = '-';
+                otpCell.innerHTML = '-';
             }
 
-            row.insertCell(14).innerHTML = '<span style="color:#64748b;font-size:11px;">' + (inst.lastLog || '-') + '</span>';
-            
+            // Device ID column removed from the UI — still captured/used internally.
+            row.insertCell(-1).innerHTML = '<div class="appointment-container"><input type="text" class="appointment-input" id="appointment_input_' + inst.id + '" placeholder="Appointment ID" value="' + (inst.appointmentId || '') + '"><button class="btn btn-primary btn-sm" title="Save Appointment ID" onclick="saveAppointmentID(' + inst.id + ')" style="padding:6px 9px;">💾</button></div>';
+            // RID shown as READABLE text (full, selectable) — like the appointment id box
+            row.insertCell(-1).innerHTML = inst.reservationId ? '<input type="text" class="appointment-input" readonly value="' + inst.reservationId + '" title="Reservation ID" onclick="this.select()" style="color:#7dd3fc;min-width:150px;">' : '<span style="color:#64748b;">-</span>';
+            row.insertCell(-1).innerHTML = '<span class="endpoint-name">' + (inst.endpoint || '-') + '</span>' + (inst.requestId ? '<br><span class="request-id">' + inst.requestId.substring(0, 12) + '...</span>' : '');
+            row.insertCell(-1).innerHTML = inst.statusCode ? getStatusBadge(inst.statusCode) : '-';
+
+            if (inst.paymentUrl) {
+                row.insertCell(-1).innerHTML = '<div class="payment-cell"><span class="payment-url">' + inst.paymentUrl.substring(0, 40) + '...</span><div><a href="' + inst.paymentUrl + '" target="_blank" class="btn-pay">💳 Pay</a><button class="btn btn-outline btn-sm" onclick="copyToClipboard(\'' + inst.paymentUrl + '\')">📋 Copy</button></div></div>';
+            } else {
+                row.insertCell(-1).innerHTML = '-';
+            }
+            // Last Log column removed from the UI — computed internally, visible in the per-instance log (📋).
+
             var actionHtml = '';
             // Full Auto is the only run path now (simple Start/Resume removed — they
             // drove the old routing engine, not the RJ SLOT Full Auto pipeline).
             if (inst.status !== 'RUNNING')
-                actionHtml += '<button class="btn btn-primary btn-sm" title="RJ SLOT Full Auto" onclick="fullAutoInstance(' + inst.id + ')" style="font-weight:800;">⚡ Full Auto</button> ';
+                actionHtml += '<button class="btn btn-primary btn-sm" title="Start — RJ SLOT Full Auto" onclick="fullAutoInstance(' + inst.id + ')" style="padding:6px 11px;font-size:15px;line-height:1;">▶</button> ';
             if (inst.status === 'RUNNING')
-                actionHtml += '<button class="btn btn-danger btn-sm" onclick="stopInstance(' + inst.id + ')">⏹️</button> ';
+                actionHtml += '<button class="btn btn-danger btn-sm" title="Stop" onclick="stopInstance(' + inst.id + ')" style="padding:6px 11px;font-size:15px;line-height:1;">⏹</button> ';
             actionHtml += '<button class="btn btn-outline btn-sm" onclick="showLogs(' + inst.id + ')">📋</button> <button class="btn btn-outline btn-sm" onclick="openEditModal(' + JSON.stringify(inst).replace(/'/g, "\\'") + ')">✏️</button> <button class="btn btn-outline btn-sm" onclick="deleteInstance(' + inst.id + ')">🗑️</button>';
-            row.insertCell(15).innerHTML = actionHtml;
-        }); 
-        
-        if (data.slotMonitorEnabled !== undefined) { 
+            row.insertCell(-1).innerHTML = actionHtml;
+        });
+
+        // restore the field the user was typing in before this refresh rebuilt the table,
+        // so a half-typed OTP (or appointment id) and the cursor position survive.
+        if (focusedField) {
+            var _fi = document.getElementById(focusedField.id);
+            if (_fi) {
+                _fi.value = focusedField.value;
+                _fi.focus();
+                try { _fi.setSelectionRange(focusedField.start, focusedField.end); } catch (e) {}
+            }
+        }
+
+        if (data.slotMonitorEnabled !== undefined) {
             var sw = document.getElementById('slotMonitorSwitch'); 
             if (sw) { 
                 sw.checked = data.slotMonitorEnabled; 
@@ -7469,9 +7547,14 @@ function startInstance(id) {
 function loadManualIds(){
     fetch('/api/manualIds').then(function(r){return r.json();}).then(function(d){
         var s=document.getElementById('manualSlotId'), g=document.getElementById('manualDgepayId'), h=document.getElementById('manualIdsHint');
+        // Boxes always show the id in use, auto: the last persisted detected value at
+        // startup, then OVERWRITTEN live whenever a fresh scan / ivacflow push resolves a
+        // new slot/dg-epay (detectedSlotId/detectedDgepayId update → box updates). A value
+        // the USER types is an override and takes priority over the detected display. The
+        // field is skipped while the user is actively editing it (document.activeElement).
         if(s && document.activeElement!==s) s.value = d.overrideSlotId || d.detectedSlotId || '';
         if(g && document.activeElement!==g) g.value = d.overrideDgepayId || d.detectedDgepayId || '';
-        if(h){ var parts=[]; if(d.detectedSlotId) parts.push('slot ✓'); if(d.detectedDgepayId) parts.push('dg-epay ✓'); h.textContent = parts.length? ('detected: '+parts.join(' ')) : ''; }
+        if(h){ var parts=[]; if(d.detectedSlotId) parts.push('slot ✓'); if(d.detectedDgepayId) parts.push('dg-epay ✓'); h.textContent = parts.length? ('auto-detected (live scan / ivacflow): '+parts.join(' ')) : ''; }
     }).catch(function(){});
 }
 function saveManualIds(){
@@ -7506,6 +7589,29 @@ function toggleImportPanel(){
     var show = p.style.display==='none';
     p.style.display = show ? 'block' : 'none';
     if(show) loadImportState();
+}
+
+// ── Entry backup: export all entries + their PDFs to one zip, import it back ──
+function exportBackup(){
+    showToast('⬇️ Backup toiri hocche…','info');
+    // a plain navigation triggers the file download (server sets Content-Disposition)
+    window.location.href = '/api/exportBackup';
+    setTimeout(function(){ showToast('⬇️ ivac-backup.zip download shuru holo','success'); }, 800);
+}
+function importBackup(input){
+    var f = input.files && input.files[0];
+    if(!f){ return; }
+    if(!confirm('Import backup "'+f.name+'"?\n\nEr entry gulo (ID milale) replace hobe, notun gulo add hobe, PDF restore hobe. Baki entry thakbe.')) { input.value=''; return; }
+    var fd = new FormData();
+    fd.append('backup', f);
+    showToast('⬆️ Import hocche… ('+Math.round(f.size/1048576)+' MB)','info');
+    fetch('/api/importBackup',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+        if(!res.ok){ showToast('Import failed: '+(res.error||'?'),'error'); input.value=''; return; }
+        showToast('✅ Restore: '+res.added+' added, '+res.replaced+' replaced, '+res.pdf+' PDF'+(res.skipped?(' ('+res.skipped+' skipped)'):''),'success');
+        input.value='';
+        if(typeof loadEntries==='function') loadEntries();
+        refresh();
+    }).catch(function(){ showToast('Import failed','error'); input.value=''; });
 }
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
@@ -7550,12 +7656,29 @@ function applyImport(){
     var raw=document.getElementById('importJson').value;
     if(!raw.trim()) return;
     if(!confirm('Apply korbo?\n\nEi man gulo SHUDHU tokhoni babohar hobe jokhon live scan segulo resolve korte pare na.')) return;
+    var btn=document.getElementById('importApplyBtn');
+    if(btn){ btn.disabled=true; btn.textContent='⏳ Applying…'; }
     fetch('/api/importCaptured?apply=1',{method:'POST',body:raw}).then(function(r){return r.json();}).then(function(res){
-        if(res.error){ showToast('Apply failed: '+res.error,'error'); return; }
-        renderPreview(res.preview||{});
-        showToast('📥 Capture applied — porer run e gap gulo bhorat hobe','success');
-        loadConfigSources();
-    }).catch(function(){ showToast('Apply failed','error'); });
+        if(res.error){
+            showToast('Apply failed: '+res.error,'error');
+            if(btn){ btn.disabled=false; btn.textContent='✅ Apply'; }
+            return;
+        }
+        // SUCCESS: clear, persist a visible confirmation, and CLOSE the panel so the
+        // user knows it took. The source bar keeps a lasting "📥 capture" proof, and a
+        // toast states plainly that this data will fill the gaps on the next run.
+        var sum = (res.preview && res.preview.summary) ? res.preview.summary : '';
+        showToast('✅ Capture saved'+(sum?': '+sum:'')+' — porer run e live scan ja resolve korte parbe na, sekhane ei man bhorat hobe','success');
+        loadConfigSources();   // source bar → 📥 capture: <summary> (thaake, dekha jaay)
+        loadImportState();     // "Active: ..." line refresh
+        document.getElementById('importJson').value='';   // consumed — clear the box
+        if(btn){ btn.textContent='✅ Apply'; }             // stays disabled until a fresh Preview
+        var p=document.getElementById('importPanel');
+        if(p) p.style.display='none';                      // close the container
+    }).catch(function(){
+        showToast('Apply failed','error');
+        if(btn){ btn.disabled=false; btn.textContent='✅ Apply'; }
+    });
 }
 
 function loadImportState(){
@@ -7603,7 +7726,7 @@ function loadConfigSources(){
 }
 
 function cleanCache(){
-    if(!confirm('Clean cache?\n\nEta clear korbe:\n• Resume sessions (stop→start)\n• Pre-solved captcha queues\n• dg-epay scan cache\n• OTP (table cell, input box o cholti flow)\n• Sob instance-er log + network log\n\nInstance gulo thakbe — sudhu tader cache clear hobe.')) return;
+    if(!confirm('Clean cache?\n\nEta clear korbe (INSTANCE bade SOB cache):\n• Resume sessions (stop→start)\n• Pre-solved captcha queues\n• dg-epay scan cache\n• last-good (cipher+endpoint cache)\n• endpoint-cache (autocheck push)\n• ivacflow config + captured config\n• OTP (table cell, input box o cholti flow)\n• Sob instance-er log + network log\n\nInstance / entry / PDF thakbe — sudhu cache clear hobe.')) return;
     fetch('/api/cleanCache',{method:'POST'}).then(function(r){return r.json();}).then(function(res){
         // wipe the OTP still sitting in any on-screen input, and the cached logs
         // behind the log modal, so nothing stale is left in the UI either.
@@ -7616,19 +7739,103 @@ function cleanCache(){
     }).catch(function(){ showToast('Clean cache failed','error'); });
 }
 
-function fullAutoAll() {
+// ── Full Auto All / Play All — toggle start↔stop on the SAME button ──────────
+// fullAutoActive/playActive track which of the two mass-run buttons is armed.
+// Full Auto All = live scan flow; Play All = cache-only (last-good) flow.
+// Pressing an armed button stops ALL running instances (instant) and disarms.
+var fullAutoActive = false, playActive = false;
+// PLAY_IDLE_BG is Play All's normal (idle) gradient; STOP_BG is the red used while a
+// button is armed as a stop. Idle Full Auto All uses its CSS default (empty bg).
+var STOP_BG = 'linear-gradient(135deg,#ef4444,#b91c1c)';
+var PLAY_IDLE_BG = 'linear-gradient(135deg,#0ea5e9,#22c55e)';
+function setMassBtn(id, armed, idleLabel, runLabel, idleBg) {
+    var b = document.getElementById(id); if (!b) return;
+    b.innerHTML = armed ? runLabel : idleLabel;
+    // colour: armed = red (stop), idle = its own normal background.
+    // NOTE: .btn-primary sets background with !important in the stylesheet, so a plain
+    // inline style cannot override it — we MUST use setProperty(..., 'important') for
+    // the inline rule to win (inline !important beats stylesheet !important).
+    if (armed) {
+        b.style.setProperty('background', STOP_BG, 'important');
+    } else if (idleBg) {
+        b.style.setProperty('background', idleBg, 'important');
+    } else {
+        b.style.removeProperty('background'); // revert to the .btn-primary look
+    }
+}
+// massStartTimers holds the pending staggered-start setTimeout ids. Stop MUST clear
+// them: otherwise start timers scheduled but not yet fired keep launching instances
+// AFTER the stop, so "Full Stop All" looked like it did nothing. cancelMassStart()
+// drops every pending start so a stop is final.
+var massStartTimers = [];
+function cancelMassStart() {
+    massStartTimers.forEach(function(t){ clearTimeout(t); });
+    massStartTimers = [];
+}
+function stopAllRunning(cb) {
+    cancelMassStart(); // kill any not-yet-fired staggered starts FIRST
+    fetch('/api/toggleAll', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'stop' }) })
+      .then(function(){ if (cb) cb(); }).catch(function(){ if (cb) cb(); });
+}
+// startAllInstances runs Full Auto for every idle instance. cacheOnly=true forces
+// the last-good cache flow (no live scan) — the Play All path.
+function startAllInstances(cacheOnly) {
+    var list = (instancesDataCache || []).filter(function(i){ return i.status !== 'RUNNING'; });
+    if (!list.length) { showToast('No idle instances to run', 'warning'); return 0; }
+    var q = cacheOnly ? '&cacheOnly=1' : '';
+    cancelMassStart(); // clear any leftover timers from a previous run
+    list.forEach(function(inst, idx) {
+        var t = setTimeout(function() {
+            fetch('/api/fullAuto?id=' + inst.id + q, { method: 'POST' }).then(function(r){ return r.json(); }).catch(function(){});
+        }, idx * 800); // stagger 0.8s so signin/scan don't all fire at once
+        massStartTimers.push(t);
+    });
+    return list.length;
+}
+function fullAutoAllToggle() {
+    if (fullAutoActive) {   // armed → stop everything
+        stopAllRunning(function(){ refresh(); });
+        fullAutoActive = false; playActive = false;
+        setMassBtn('fullAutoAllBtn', false, '⚡ Full Auto All', '⏹️ Full Stop All', '');
+        setMassBtn('playAllBtn', false, '▶️ Play All', '⏹️ Stop All', PLAY_IDLE_BG);
+        showToast('⏹️ Full stop — sob instance thamano holo', 'success');
+        setTimeout(refresh, 1200);
+        return;
+    }
     var list = (instancesDataCache || []).filter(function(i){ return i.status !== 'RUNNING'; });
     if (!list.length) { showToast('No idle instances to run', 'warning'); return; }
-    if (!confirm('Run RJ SLOT Full Auto for ALL ' + list.length + ' instance(s)?')) return;
-    var n = 0;
-    list.forEach(function(inst, idx) {
-        setTimeout(function() {
-            fetch('/api/fullAuto?id=' + inst.id, { method: 'POST' }).then(function(r){ return r.json(); }).then(function(){ n++; });
-        }, idx * 800); // stagger 0.8s so signin/scan don't all fire at once
-    });
-    showToast('⚡ Full Auto started for ' + list.length + ' instance(s)', 'success');
-    setTimeout(refresh, 1500);
+    if (!confirm('Run RJ SLOT Full Auto (live scan) for ALL ' + list.length + ' instance(s)?')) return;
+    var n = startAllInstances(false);
+    if (n > 0) {
+        fullAutoActive = true;
+        setMassBtn('fullAutoAllBtn', true, '⚡ Full Auto All', '⏹️ Full Stop All', '');
+        showToast('⚡ Full Auto started for ' + n + ' instance(s)', 'success');
+        setTimeout(refresh, 1500);
+    }
 }
+function playAllToggle() {
+    if (playActive) {   // armed → stop everything
+        stopAllRunning(function(){ refresh(); });
+        playActive = false; fullAutoActive = false;
+        setMassBtn('playAllBtn', false, '▶️ Play All', '⏹️ Stop All', PLAY_IDLE_BG);
+        setMassBtn('fullAutoAllBtn', false, '⚡ Full Auto All', '⏹️ Full Stop All', '');
+        showToast('⏹️ Stop — sob instance thamano holo', 'success');
+        setTimeout(refresh, 1200);
+        return;
+    }
+    var list = (instancesDataCache || []).filter(function(i){ return i.status !== 'RUNNING'; });
+    if (!list.length) { showToast('No idle instances to run', 'warning'); return; }
+    if (!confirm('Play All — last-good CACHE (store kora encryption + endpoints) diye ' + list.length + ' instance chalu?\n(live scan hobe na — sorasori cache theke)')) return;
+    var n = startAllInstances(true);
+    if (n > 0) {
+        playActive = true;
+        setMassBtn('playAllBtn', true, '▶️ Play All', '⏹️ Stop All', PLAY_IDLE_BG);
+        showToast('▶️ Play All (cache) started for ' + n + ' instance(s)', 'success');
+        setTimeout(refresh, 1500);
+    }
+}
+// backward-compat: old callers of fullAutoAll() still work (live scan mass run).
+function fullAutoAll() { fullAutoAllToggle(); }
 
 function fullAutoInstance(id) {
     if (!confirm('Run RJ SLOT Full Auto for instance #' + id + '?\n(scan → signin → OTP → verify → upload → book → reserve → initiate)')) return;
@@ -8570,8 +8777,32 @@ function refreshRoutingStatus() {
     showToast('🔄 Routing status refreshed', 'info');
 }
 
-function copyToClipboard(text) { 
-    navigator.clipboard.writeText(text).then(function() { showToast('Copied!', 'success'); }); 
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(function() { showToast('Copied!', 'success'); });
+}
+
+// Copy Session: fetch this instance's live session snippet (admin cookie auth)
+// and copy it to the clipboard so it can be pasted into another browser's
+// console — or into the IVAC Session Login extension's Paste tab.
+function copySession(id) {
+    fetch('/api/sessionSnippet?id=' + id)
+        .then(function(r) {
+            if (r.status === 404) { showToast('No live session — sign this instance in first', 'error'); return null; }
+            if (r.status === 403) { showToast('Admin only', 'error'); return null; }
+            if (!r.ok) { showToast('Copy failed (' + r.status + ')', 'error'); return null; }
+            return r.json();
+        })
+        .then(function(d) {
+            if (!d || !d.snippet) return;
+            var mins = Math.max(0, Math.floor((d.expiresIn || 0) / 60));
+            navigator.clipboard.writeText(d.snippet).then(function() {
+                showToast('🔑 Session copied — valid ~' + mins + ' min. Paste in other browser.', 'success');
+            }, function() {
+                showToast('Clipboard blocked — copy manually from console', 'error');
+                console.log(d.snippet);
+            });
+        })
+        .catch(function() { showToast('Copy failed', 'error'); });
 }
 
 function connectWebSocket() { 
@@ -8617,8 +8848,6 @@ loadSingleHitRetryConfig();
 loadTraditionalParallelConfig();
 loadParallelRetryConfig();
 loadLiveScanTriesTop();
-(function(){ var pm=document.getElementById('privacyModeChk'); if(pm) pm.checked=privacyMode; })();
-showTab('overview'); // set initial landing state (hides instances control bars)
 updateTokenStatistics();
 
 setInterval(function() {
@@ -8651,13 +8880,34 @@ function clearCipher(){ if(!confirm('Clear cipher? Tokens will be sent RAW until
 
 // ===== Captcha panel =====
 var captchaCfgCache = {keys:{}};
-function loadCaptchaConfig(){ fetch('/api/captchaConfig').then(function(r){return r.json();}).then(function(c){ captchaCfgCache=c; var p=document.getElementById('captchaProvider'); if(p) p.value=c.provider||'rumon'; var qs=document.getElementById('captchaQueueSize'); if(qs) qs.value=c.queueSize||3; var k=document.getElementById('captchaKey'); if(k) k.value=(c.keys&&c.keys[c.provider])||''; var ru=document.getElementById('captchaRelayUrl'); if(ru) ru.value=c.relayUrl||'http://127.0.0.1:8787'; }).catch(function(){}); }
+function loadCaptchaConfig(){ fetch('/api/captchaConfig').then(function(r){return r.json();}).then(function(c){ captchaCfgCache=c; var p=document.getElementById('captchaProvider'); if(p) p.value=c.provider||'relay'; var qs=document.getElementById('captchaQueueSize'); if(qs) qs.value=c.queueSize||10; var k=document.getElementById('captchaKey'); if(k) k.value=(c.keys&&c.keys[c.provider])||''; var ru=document.getElementById('captchaRelayUrl'); if(ru) ru.value=c.relayUrl||'http://127.0.0.1:8787'; }).catch(function(){}); }
 function onCaptchaProviderChange(){ var prov=document.getElementById('captchaProvider').value; var k=document.getElementById('captchaKey'); if(k) k.value=(captchaCfgCache.keys&&captchaCfgCache.keys[prov])||''; }
-function saveCaptchaConfig(){ var prov=document.getElementById('captchaProvider').value; var key=document.getElementById('captchaKey').value; var size=parseInt(document.getElementById('captchaQueueSize').value)||3; var ruEl=document.getElementById('captchaRelayUrl'); var relayUrl=ruEl?ruEl.value:''; var keys={}; keys[prov]=key; fetch('/api/captchaConfig',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:prov,keys:keys,queueSize:size,relayUrl:relayUrl})}).then(function(r){return r.json();}).then(function(c){ captchaCfgCache=c; showToast('Captcha config saved ('+prov+')','success'); loadCaptchaQueue(); }); }
+function saveCaptchaConfig(){ var prov=document.getElementById('captchaProvider').value; var key=document.getElementById('captchaKey').value; var size=parseInt(document.getElementById("captchaQueueSize").value)||10; var ruEl=document.getElementById('captchaRelayUrl'); var relayUrl=ruEl?ruEl.value:''; var keys={}; keys[prov]=key; fetch('/api/captchaConfig',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:prov,keys:keys,queueSize:size,relayUrl:relayUrl})}).then(function(r){return r.json();}).then(function(c){ captchaCfgCache=c; showToast('Captcha config saved ('+prov+')','success'); loadCaptchaQueue(); }); }
 function testCaptcha(){ showToast('Testing solve...','info'); fetch('/api/captchaTest?purpose=Signin').then(function(r){return r.json();}).then(function(d){ if(d.ok){ showToast('Solve OK ('+d.provider+'), token len '+(d.rawToken?d.rawToken.length:0),'success'); } else { showToast('Solve FAIL: '+d.error,'error'); } }); }
-function loadCaptchaQueue(){ fetch('/api/captchaQueue').then(function(r){return r.json();}).then(function(q){ var info=document.getElementById('captchaQueueInfo'); if(info) info.textContent='Ready — Signin: '+q.signin+' | Reserve: '+q.reserve+'  (provider: '+q.provider+')'; var b=document.getElementById('captchaQueueBadge'); if(b) b.textContent='signin '+q.signin+' | reserve '+q.reserve; }).catch(function(){}); }
+function loadCaptchaQueue(){ fetch('/api/captchaQueue').then(function(r){return r.json();}).then(function(q){ var pool=(q.pool!=null?q.pool:q.signin); var relay=''; var badgeExtra=''; if(q.provider==='relay'){ if(q.relayOK){ relay=' | 🌾 Farm: '+q.relayBrowsers+' browser, '+q.relayFresh+' fresh (pushed '+q.relayPushed+' / pulled '+q.relayPulled+')'; badgeExtra=' · 🌾'+q.relayBrowsers+'br '+q.relayFresh+'tk'; } else { relay=' | ⚠ relay/farm off (8787 unreachable)'; badgeExtra=' · 🌾✗'; } } var info=document.getElementById('captchaQueueInfo'); if(info) info.textContent='Ready — Token pool: '+pool+' (ek shared pool, provider: '+q.provider+')'+relay; var b=document.getElementById('captchaQueueBadge'); if(b) b.textContent='pool '+pool+badgeExtra;
+    // front-page (Instances) live farm/relay pill
+    var f=document.getElementById('frontFarmStatus');
+    if(f){ if(q.provider==='relay'){ if(q.relayOK){ f.textContent='🌾 '+q.relayBrowsers+' browser · '+q.relayFresh+' fresh · pool '+pool; f.style.color=(q.relayFresh>0?'#4ade80':'#fbbf24'); } else { f.textContent='🌾 relay/farm off (8787)'; f.style.color='#fca5a5'; } } else { if(!q.enabled){ f.textContent='🎫 captcha STOPPED (0 token)'; f.style.color='#fca5a5'; } else { f.textContent='🎫 '+pool+'/'+(q.size||0)+' token ready ('+q.provider+', 3-min life)'; f.style.color=(pool>0?'#4ade80':'#fbbf24'); } } }
+    // master switch state pill (Captcha START/STOP)
+    var st=document.getElementById('captchaState');
+    if(st){ if(q.enabled){ st.textContent='🟢 RUNNING'; st.style.background='rgba(22,163,74,0.18)'; st.style.color='#4ade80'; } else { st.textContent='🔴 STOPPED (balance safe)'; st.style.background='rgba(220,38,38,0.15)'; st.style.color='#fca5a5'; } }
+  }).catch(function(){}); }
+function captchaToggle(on){ fetch('/api/captchaToggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})}).then(function(r){return r.json();}).then(function(d){ showToast(d.enabled?'▶ Captcha STARTED — token solve cholbe':'⏹ Captcha STOPPED — solve bondho, pool clear','success'); loadCaptchaQueue(); }).catch(function(){ showToast('Captcha toggle failed','error'); }); }
 setInterval(loadCaptchaQueue, 3000);
+// ===== Server Console live tail =====
+var consoleSeq=0;
+function loadConsole(){ var el=document.getElementById('serverConsole'); if(!el) return; fetch('/api/console?since='+consoleSeq).then(function(r){return r.json();}).then(function(d){ if(!d||!d.lines) return; if(d.lines.length){ var txt=''; for(var i=0;i<d.lines.length;i++){ txt+='['+d.lines[i].t+'] '+d.lines[i].msg+'\n'; } el.textContent+=txt; consoleSeq=d.seq; var cc=document.getElementById('consoleCount'); if(cc) cc.textContent=(el.textContent.split('\n').length-1)+' lines'; var as=document.getElementById('consoleAutoscroll'); if(as&&as.checked){ el.scrollTop=el.scrollHeight; } } }).catch(function(){}); }
+function clearConsoleView(){ var el=document.getElementById('serverConsole'); if(el) el.textContent=''; var cc=document.getElementById('consoleCount'); if(cc) cc.textContent='0 lines'; }
+setInterval(loadConsole, 2000); loadConsole();
+// ===== P_rotate (proxy round-robin rotation) toggle =====
+function toggleProxyRotate(on){ fetch('/api/proxyRotate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})}).then(function(r){return r.json();}).then(function(d){ var sw=document.getElementById('proxyRotateSwitch'); if(sw) sw.checked=!!d.enabled; showToast(d.enabled?'🔄 P_rotate ON — proxy rotation chalu (3 error por next proxy)':'⏹ P_rotate OFF — rotation bondho','success'); }).catch(function(){ showToast('P_rotate toggle failed','error'); }); }
+function loadProxyRotate(){ fetch('/api/proxyRotate').then(function(r){return r.json();}).then(function(d){ var sw=document.getElementById('proxyRotateSwitch'); if(sw) sw.checked=!!d.enabled; }).catch(function(){}); }
+loadProxyRotate();
 loadCipherStatus(); loadCaptchaConfig(); loadCaptchaQueue();
+// live date + clock in the top bar
+function tickClock(){ var el=document.getElementById('liveClock'); if(!el) return; var d=new Date(); var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; var p=function(n){return (n<10?'0':'')+n;}; el.textContent='📅 '+d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+days[d.getDay()]+'  🕐 '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }
+setInterval(tickClock, 1000); tickClock();
+setInterval(tickSessionTimes, 1000);
 // ===== C_token / E_token quick provider+mode toggles (top bar) =====
 function setTokenMode(which){
     var c=document.getElementById('cTokenSwitch'), e=document.getElementById('eTokenSwitch');
@@ -8826,6 +9076,8 @@ func main() {
 	http.HandleFunc("/api/singleHitRetryConfig", adminOnly(handleSingleHitRetryConfig))
 	http.HandleFunc("/api/singleRetryMode", adminOnly(handleSingleRetryMode))
 	http.HandleFunc("/api/slotMonitor", adminOnly(handleSlotMonitor))
+	http.HandleFunc("/api/proxyRotate", adminOnly(handleProxyRotate))
+	http.HandleFunc("/api/portalPublicUrl", adminOnly(handlePortalPublicURL))
 	http.HandleFunc("/api/slotStatus", adminOnly(handleSlotStatus))
 	http.HandleFunc("/api/slotStatusDetailed", adminOnly(handleSlotStatusDetailed))
 	http.HandleFunc("/api/logs", adminOnly(handleGetLogs))
@@ -8852,6 +9104,8 @@ func main() {
 	http.HandleFunc("/api/cleanCache", adminOnly(handleCleanCache))
 	http.HandleFunc("/api/scanEvent", adminOnly(handleScanEvent))
 	http.HandleFunc("/api/importCaptured", adminOnly(handleImportCaptured))
+	http.HandleFunc("/api/exportBackup", adminOnly(handleExportBackup)) // entries + PDFs → one zip
+	http.HandleFunc("/api/importBackup", adminOnly(handleImportBackup)) // one-click restore from that zip
 	http.HandleFunc("/api/clearImport", adminOnly(handleClearImport))
 	http.HandleFunc("/api/configSources", adminOnly(handleConfigSources))
 	// ivacflow pushes its snapshot here. The handler itself enforces loopback-only
@@ -8861,10 +9115,16 @@ func main() {
 	http.HandleFunc("/api/liveScanTries", adminOnly(handleLiveScanTries))
 	http.HandleFunc("/api/endpointCachePush", handleEndpointCachePush)
 	http.HandleFunc("/api/endpointCacheStatus", adminOnly(handleEndpointCacheStatus))
+	http.HandleFunc("/api/endpointCache", handleEndpointCacheServe)
 	http.HandleFunc("/api/ivacflowPush", handleIvacflowPush)
 	http.HandleFunc("/api/ivacflowStatus", adminOnly(handleIvacflowStatus))
 	http.HandleFunc("/api/clearIvacflow", adminOnly(handleClearIvacflow))
 	http.HandleFunc("/api/clearOTP", adminOnly(handleClearInstanceOTP))
+	// Copy-Session / browser-extension login: READ-ONLY, guarded internally
+	// (admin cookie OR extension key). Never mutates bot state.
+	http.HandleFunc("/api/sessionList", handleSessionList)
+	http.HandleFunc("/api/sessionSnippet", handleSessionSnippet)
+	http.HandleFunc("/api/sessionName", handleSessionName) // phone → Client name (badge)
 
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════╗")
@@ -8904,6 +9164,8 @@ func main() {
 	fmt.Println("")
 
 	// ===== integrated modules: cipher + captcha queue =====
+	startConsoleCapture() // tee all console output into the dashboard "Server Console" panel
+	http.HandleFunc("/api/console", adminOnly(handleConsole)) // server log — admin/tunnel only
 	InitCipher()
 	RegisterCipherRoutes()
 	go StartCipherWatcher(5)
@@ -8912,6 +9174,7 @@ func main() {
 	RegisterCaptchaRoutes()
 	go StartCaptchaQueue()
 	LoadOrCreateIvacflowToken() // shared secret ivacflow authenticates its push with
+	LoadOrCreateSessionExtKey() // key the Copy-Session browser extension authenticates with
 	LoadCapturedConfig()      // restore a previously imported RJ SLOT capture (safety net)
 	LoadIvacflowConfig()      // restore the last snapshot ivacflow pushed
 	LoadEndpointCacheStore()  // restore the last .endpoint-cache.json pushed from autocheck

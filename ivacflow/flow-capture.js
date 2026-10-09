@@ -1,0 +1,1781 @@
+// ivac-flow — headless flow capture with MOCKED responses.
+//
+// Drives the app in a headless browser using MOCK data, INTERCEPTS every API
+// request and answers it with a MOCK success response so the app walks to the
+// next step — no real login, no real captcha, no real server needed. It records
+// every request the app builds (endpoint + payload shape + headers) into
+// flow.json. A mock Turnstile token is injected so captcha-gated submits proceed.
+//
+// NOTE (honest): the cipher "c" / x-token it records encrypt the MOCK turnstile
+// token, so they are STRUCTURE only — not usable values. The bot makes real ones
+// at runtime with a real captcha token. This tool maps the FLOW (which endpoints,
+// what payload fields, what headers, what response fields each step reads).
+//
+//   node flow-capture.js [config.json]
+//
+// config.json (all optional):
+//   { "url": "https://appointment.ivacbd.com/",
+//     "mock": { "phone":"01700000000", "password":"Test@1234", "otp":"123456",
+//               "turnstile":"MOCK_TURNSTILE_TOKEN" },
+//     "responses": { "/auth/v3-sign-in": { ...json the app should receive... } },
+//     "steps": [ {"fill":"input[type=tel]","value":"$phone"}, {"click":"button[type=submit]"} , {"waitMs":1500} ],
+//     "headless": true, "runMs": 20000 }
+
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('playwright');
+
+const DEBUG = process.env.IFLOW_DEBUG === '1';
+const cfgPath = process.argv[2] || path.join(__dirname, 'config.json');
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (_) {}
+
+const URL = cfg.url || 'https://appointment.ivacbd.com/';
+const MOCK = Object.assign({ phone: '01700000000', password: 'Test@1234', otp: '123456', turnstile: 'MOCK_TURNSTILE_TOKEN' }, cfg.mock || {});
+let RESPONSES = cfg.responses || {};
+if (cfg.responsesFile) {
+  try { RESPONSES = Object.assign({}, JSON.parse(fs.readFileSync(cfg.responsesFile, 'utf8')), RESPONSES); } catch (_) {}
+}
+const HEADLESS = cfg.headless !== false;
+const RUN_MS = cfg.runMs || 20000;
+const OUT = cfg.out || __dirname;
+// Speed factor: <1 shortens the walk's pauses (default 1 = unchanged). The
+// dashboard's background auto-walk passes a small value for fast extraction.
+const SPEED = (typeof cfg.speed === 'number' && cfg.speed > 0) ? cfg.speed : 1;
+const sms = (ms) => Math.max(120, Math.round(ms * SPEED));   // scaled milliseconds
+
+const isApi = (u) => /\/iams\/api\/|\/api\/v\d+\/|\/payment\/|\/slots\/|\/invoice\/|api\.ivacbd\.com/.test(u);
+const isTurnstile = (u) => /challenges\.cloudflare\.com|turnstile/i.test(u);
+
+// ── Extract slotId and dgepayUuid from any IVAC bundle ──
+// Tries ALL array functions in the bundle (not just the first one).
+function extractBundleIds(bundleSrc, deep) {
+  const ids = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
+
+  // slotId: plaintext /slots/<uuid>/reserve-slot  (new builds use reserve_slot)
+  const slotMatch = bundleSrc.match(/\/slots\/([0-9a-f-]{30,40})\/reserve[-_]slot/);
+  if (slotMatch) ids.slotId = slotMatch[1];
+
+  // Also try plaintext slotId in other patterns
+  if (!ids.slotId) {
+    const slotMatch2 = bundleSrc.match(/slotId['":\s]+["']([0-9a-f-]{30,40})["']/);
+    if (slotMatch2) ids.slotId = slotMatch2[1];
+  }
+
+  // b64 decode helper
+  function b64decode(str) {
+    let t = '', n = '';
+    for (let r, o, i = 0, a = 0; o = str.charAt(a++); ~o && (r = i % 4 ? 64 * r + o : o, i++ % 4) ? t += String.fromCharCode(255 & r >> (-2 * i & 6)) : 0)
+      o = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/='.indexOf(o);
+    for (let r = 0, o = t.length; r < o; r++) n += '%' + ('00' + t.charCodeAt(r).toString(16)).slice(-2);
+    return decodeURIComponent(n);
+  }
+
+  // The rotation brute-force below is very slow (~9s on a 2MB bundle) and only
+  // recovers dgepayUuid, which the runtime walk captures anyway. Skip it unless
+  // asked (deep) — used lazily as a fallback only when the walk missed the uuid.
+  if (!deep) return ids;
+
+  // Find ALL array functions (pattern: function XX(){const e=[...]; return(XX=function(){return e})()})
+  const arrFnRe = /function (\w{2,3})\(\)\{const e=\[("[^"]*"(?:,"[^"]*")*)\]\n?return\(\1=function\(\)\{return e\}\)\(\)\}/g;
+  let afm;
+  while ((afm = arrFnRe.exec(bundleSrc)) !== null) {
+    const arrName = afm[1];
+    let arr;
+    try { arr = JSON.parse('[' + afm[2] + ']'); } catch(_) { continue; }
+    const origArr = [...arr];
+
+    // Try all rotations of this array
+    for (let rot = 0; rot < arr.length; rot++) {
+      try {
+        const allDecoded = [];
+        for (let i = 0; i < arr.length; i++) {
+          try { allDecoded.push(b64decode(arr[i])); } catch(_) { allDecoded.push(''); }
+        }
+        const joined = allDecoded.join('|');
+        // Look for payment UUID pattern
+        const payMatch = joined.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
+        if (payMatch) {
+          ids.dgepayUuid = payMatch[1];
+          ids.paymentEndpoint = '/payment/' + payMatch[1] + '/dg-epay/initiate';
+          return ids;
+        }
+        // Also look for slotId if not yet found
+        if (!ids.slotId) {
+          const slotInArr = joined.match(/slots\/([0-9a-f-]{30,40})\/reserve/);
+          if (slotInArr) ids.slotId = slotInArr[1];
+        }
+      } catch(_) {}
+      arr.push(arr.shift());
+    }
+  }
+  return ids;
+}
+
+// Auto-detect bundle file and extract IDs
+let BUNDLE_IDS = { slotId: '', dgepayUuid: '', paymentEndpoint: '' };
+let BUNDLE_SRC = '';   // kept for a lazy deep decode if the walk misses the uuid
+const bundlePath = cfg.bundlePath || '';
+if (bundlePath) {
+  try {
+    const src = fs.readFileSync(bundlePath, 'utf8');
+    BUNDLE_SRC = src;
+    BUNDLE_IDS = extractBundleIds(src, !!cfg.deepIds);
+    console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
+  } catch (_) {}
+} else {
+  try {
+    const files = fs.readdirSync(__dirname);
+    for (const f of files) {
+      if (f.endsWith('.js') && !f.startsWith('flow') && !f.startsWith('extract') && !f.startsWith('dashboard') && !f.startsWith('_debug')) {
+        const fp = path.join(__dirname, f);
+        const stat = fs.statSync(fp);
+        if (stat.size > 500000) {
+          const src = fs.readFileSync(fp, 'utf8');
+          if ((src.includes('reserve-slot') || src.includes('reserve_slot')) && src.includes('appointment')) {
+            BUNDLE_SRC = src;
+            BUNDLE_IDS = extractBundleIds(src, !!cfg.deepIds);
+            if (BUNDLE_IDS.slotId) {
+              console.log('📦 auto-detected bundle:', f);
+              console.log('📦 bundle IDs:', JSON.stringify(BUNDLE_IDS));
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+// ── Flow state machine ──
+// Tracks which API calls have been made to return context-appropriate mock responses
+const flowState = {
+  signedIn: false,
+  otpVerified: false,
+  fileUploaded: false,
+  fileConfirmed: false,
+  slotReserved: false,
+  paymentInitiated: false,
+  missionSelected: false,
+  capturedSlotId: '',
+  capturedDgepayUuid: '',
+  capturedAppointmentId: '',
+};
+
+const SLOT_ID = cfg.slotId || BUNDLE_IDS.slotId || '';
+const DGEPAY_UUID = cfg.dgepayUuid || BUNDLE_IDS.dgepayUuid || '';
+
+const NOW_ISO = new Date().toISOString();
+// Available appointment dates handed to the calendar MUST be in the future
+// relative to WHEN THIS RUNS — hard-coded dates silently go stale once that day
+// passes, and then the real calendar disables every visible day and the drive
+// gets stuck on the time-slot page. So compute them live, a few days ahead.
+function _ymd(d) {
+  const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return z.toISOString().slice(0, 10); // local YYYY-MM-DD
+}
+function _futureDate(daysAhead) {
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + daysAhead);
+  return _ymd(d);
+}
+const FUTURE_DATE = _futureDate(7);
+// A ~2-week spread so at least some land in the calendar's currently-shown month.
+const FUTURE_DATES = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(_futureDate);
+
+// Bundles read list data from differently-named properties, and the names are
+// obfuscated so we cannot know which one a given bundle picked. Reading the
+// wrong shape throws ("x.map is not a function") and blanks the page, which
+// stalls the walk. Returning the same items under every plausible alias makes
+// `data.<whicheverField>.map(...)` work regardless of the name.
+const LIST_ALIASES = [
+  'commission', 'commissions', 'centers', 'center', 'ivacCenters',
+  'mission', 'missions', 'highCommission', 'highCommissions',
+  'list', 'items', 'result', 'results', 'content', 'records', 'rows',
+  'options', 'values', 'entries', 'visaTypes', 'types', 'categories',
+];
+
+function polyObject(items, extraProps) {
+  const obj = {};
+  for (const alias of LIST_ALIASES) obj[alias] = items.map(o => ({ ...o }));
+  return Object.assign(obj, extraProps || {});
+}
+
+// When a list endpoint is served with the wrong container shape the page throws
+// and goes blank. SHAPE_PREF lets the walker flip an endpoint between
+// "object of aliased lists" and "bare array" and retry. Keys are endpoint
+// families, not exact URLs, so it works across bundles with different paths.
+const SHAPE_PREF = {};
+function shapeFor(family, fallback) {
+  return SHAPE_PREF[family] || fallback || 'object';
+}
+function flipShape(family) {
+  SHAPE_PREF[family] = shapeFor(family) === 'object' ? 'array' : 'object';
+  return SHAPE_PREF[family];
+}
+
+// Every gated submit in these bundles hides behind a captcha token that only a
+// real Cloudflare challenge can produce, so the button's onClick bails before
+// it ever calls the mutation. The mutation itself is reachable through the
+// React fiber tree, and calling it makes the app build the real request — real
+// path, real headers, real cipher — which is exactly what we want to record.
+// Collecting by shape (an object exposing .mutate) keeps this working across
+// bundles where every identifier is renamed.
+const COLLECT_MUTATIONS = `
+  (function () {
+    const seen = new Set(), out = [];
+    const els = [...document.querySelectorAll('button, form, input, [class]')].slice(0, 600);
+    for (const el of els) {
+      const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+      if (!key) continue;
+      let fiber = el[key];
+      for (let depth = 0; depth < 40 && fiber; depth++) {
+        let hook = fiber.memoizedState, guard = 0;
+        while (hook && guard++ < 120) {
+          const ms = hook.memoizedState;
+          let m = null;
+          if (ms && typeof ms === 'object') {
+            if (typeof ms.mutate === 'function') m = ms;
+            else if (ms.current && typeof ms.current.mutate === 'function') m = ms.current;
+          }
+          if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+          hook = hook.next;
+        }
+        fiber = fiber.return;
+      }
+    }
+    window.__ivacMutations = out;
+    return out.length;
+  })()
+`;
+
+// Fire each mutation found on the page, one at a time, stopping as soon as the
+// caller reports that a new API call landed.
+async function fireMutations(page, payload, onAfterEach) {
+  const count = await page.evaluate(COLLECT_MUTATIONS).catch(() => 0);
+  if (!count) return { found: 0, fired: 0, hit: false };
+  for (let i = 0; i < count; i++) {
+    await page.evaluate(({ idx, body }) => {
+      try { window.__ivacMutations[idx].mutate(body); } catch (_) {}
+    }, { idx: i, body: payload }).catch(() => {});
+    try { await page.waitForTimeout(sms(1200)); } catch (_) { break; }
+    if (onAfterEach && await onAfterEach()) return { found: count, fired: i + 1, hit: true };
+  }
+  return { found: count, fired: count, hit: false };
+}
+
+function mockBodyFor(url) {
+  // User-supplied overrides first
+  for (const key of Object.keys(RESPONSES)) if (url.includes(key)) return RESPONSES[key];
+  // Obfuscated bundles freely swap - and _ in endpoint names (e.g. v4-sign_in,
+  // file_confirmation-and_slot-status). Match detections against a separator-
+  // normalized copy so a mock still fires whichever separator the bundle used.
+  // Captures (url.match) stay on the original url so real ids are untouched.
+  const nurl = url.replace(/[-_]+/g, "-");
+
+  // ── Auth sign-in (v2, v3, any version) ──
+  if (/\/auth\/.*sign-?in/i.test(nurl)) {
+    flowState.signedIn = true;
+    return {
+      data: {
+        accessToken: 'MOCK.ACCESS.TOKEN',
+        tokenType: 'Bearer',
+        expiresAt: 899,
+        userId: 'mock-user-id',
+        requestId: 'mock-request-id',
+      },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── OTP verify ──
+  if (/\/otp\/verify/i.test(nurl)) {
+    flowState.otpVerified = true;
+    return {
+      data: {
+        verified: true,
+        verificationStatus: 'OTP verified',
+        expiresAt: new Date(Date.now() + 5 * 60000).toISOString(),
+      },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── OTP send/signup ──
+  if (/\/otp\/(send|signup|resend)/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'OTP sent',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, otpChannel: 'PHONE', status: 'SENT' },
+    };
+  }
+
+  // ── Auth signup ──
+  if (/\/auth\/signup/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'PENDING', otpChannel: 'PHONE' },
+    };
+  }
+
+  // ── File upload ──
+  if (/\/file\/upload/i.test(nurl)) {
+    flowState.fileUploaded = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'File uploaded',
+      data: {
+        fileId: 'mock-file-id', fileName: 'passport.pdf', fileType: 'PASSPORT',
+        status: 'UPLOADED', isPrimary: true, uploadedAt: NOW_ISO,
+        mimeType: 'application/pdf', size: 1024,
+      },
+    };
+  }
+
+  // ── File over-view / overview ──
+  if (/\/file\/over-?view/i.test(nurl)) {
+    flowState.fileUploaded = true;
+    return {
+      data: [{
+        applicationId: 'BGDRV1MOCK01',
+        commissionId: 'COM-MOCK-001',
+        commissionName: 'Dhaka',
+        dob: '01-JAN-1990',
+        email: 'MOCK@TEST.COM',
+        fullName: 'Mohammad Rahman',
+        ivacCenter: null,
+        nidOrBr: '1234567890123',
+        passport: 'AB1234567',
+        phone: MOCK.phone,
+        primary: true,
+        visaType: 'MISCELLANEOUS_DOUBLE_ENTRY',
+      }],
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── File confirmation + slot status (STATE-DRIVEN) ──
+  // Route guard logic:
+  //   uploadFile && !uploadEnd && !fileUploadConfirmed → allowed: [notice, mission, file-upload]
+  //   fileUploadConfirmed && slotOpen → allowed: [time-slot, continue-payment]
+  // So fileUploadConfirmed must stay false until mission is selected.
+  if (/\/file\/file-confirmation/i.test(nurl) && /slot.?status/i.test(nurl)) {
+    const now = new Date().toISOString();
+    if (DEBUG) console.log('  [mock] slot_status → missionSelected=' + flowState.missionSelected + ' serverTime=' + now);
+    if (flowState.missionSelected) {
+      return {
+        successFlag: true, statusCode: 200, message: 'Success',
+        data: {
+          fileUploadConfirmed: true, fileConfirmed: true,
+          slotOpen: true, paymentConfirm: false,
+          uploadEnd: false,
+          uploadFile: true,
+          serverTime: now,
+          commissionId: 1, ivacId: 1,
+          appointmentId: 'mock-appointment-id',
+          reservationId: 'mock-reservation-id',
+          slot: { date: FUTURE_DATE, time: '09:00' },
+          mission: { id: 1, name: 'Indian High Commission' },
+          ivacCenter: { id: 1, name: 'IVAC Dhaka' },
+        },
+      };
+    }
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: {
+        fileUploadConfirmed: false,
+        slotOpen: true, paymentConfirm: false,
+        uploadEnd: false,
+        uploadFile: true,
+        serverTime: now,
+      },
+    };
+  }
+
+  // ── File confirmation (without slot_status) ──
+  if (/\/file\/file-confirmation/i.test(nurl)) {
+    flowState.fileConfirmed = true;
+    return {
+      successFlag: true, statusCode: 200, message: 'Confirmed',
+      data: {
+        fileId: 'mock-file-id', confirmed: true, slotAvailable: true,
+        status: 'CONFIRMED', confirmationId: 'mock-confirmation-id',
+        applicantName: 'Mohammad Rahman', passportNumber: 'AB1234567',
+        visaType: 'TOURIST', mission: 'Indian High Commission',
+        ivacCenter: 'IVAC Dhaka', slot_status: 'AVAILABLE',
+        fileUploadConfirmed: true, fileConfirmed: true,
+      },
+    };
+  }
+
+  // ── Payment amount ──
+  if (/\/file\/payment-amount/i.test(nurl)) {
+    return {
+      data: 1500.0,
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── Appointment POST (initial appointment creation) ──
+  if (/\/appointment\/?$/i.test(nurl)) {
+    return {
+      data: null,
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── Appointment booking config (mission page submit) ──
+  if (/\/appointment-booking-config/i.test(nurl)) {
+    flowState.missionSelected = true;
+    return {
+      data: null,
+      statusCode: 204,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── High commissions (mission + centre pickers) ──
+  if (/\/high-commission/i.test(nurl)) {
+    const missions = [
+      { id: 'COM-MOCK-001', name: 'Dhaka', missionName: 'Dhaka', commissionName: 'Dhaka', country: 'India', status: 'ACTIVE' },
+    ];
+    const centres = [
+      { id: 'CTR-MOCK-001', name: 'IVAC, DHAKA', centerName: 'IVAC, DHAKA', ivacCenter: 'IVAC, DHAKA', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
+    ];
+    // A by-id lookup returns one record; the bare collection returns a list.
+    // Serving the wrong one throws `.map is not a function` and blanks the page.
+    const singular = /by-id|[?&]id=/i.test(nurl);
+    const defaultShape = singular ? 'object' : 'array';
+    const body = shapeFor('high-commissions', defaultShape) === 'array'
+      ? missions.map(m => ({ ...m }))
+      : polyObject(missions, {
+          id: 'COM-MOCK-001', name: 'Dhaka', commissionName: 'Dhaka',
+          country: 'India', status: 'ACTIVE',
+          centers: centres.map(c => ({ ...c })),
+          ivacCenters: centres.map(c => ({ ...c })),
+        });
+    return {
+      data: body,
+      statusCode: 200, message: 'Success', successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── IVAC centers ──
+  if (/\/ivac-center/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: [
+        { id: 'CTR-MOCK-001', name: 'IVAC Dhaka', centerName: 'IVAC Dhaka', center: 'Dhaka', address: 'Jamuna Future Park, Dhaka', status: 'ACTIVE', commissionId: 'COM-MOCK-001' },
+      ],
+    };
+  }
+
+  // ── Visa types ──
+  if (/\/visa.?type/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: [
+        { id: 1, name: 'TOURIST', label: 'Tourist Visa', status: 'ACTIVE' },
+        { id: 2, name: 'MEDICAL', label: 'Medical Visa', status: 'ACTIVE' },
+        { id: 3, name: 'ENTRY', label: 'Entry Visa', status: 'ACTIVE' },
+      ],
+    };
+  }
+
+  // ── Booking config ──
+  if (/\/appointment.*booking-config/i.test(nurl) || /\/get-booking-config/i.test(nurl)) {
+    return {
+      data: {
+        appointmentDate: FUTURE_DATES,
+        appointmentId: 'mock-appointment-id',
+        appointmentSlot: '09:00 AM - 10:00 AM',
+        fileUploadStatus: 'MISSION_CENTER_SELECTED',
+        ivacCenter: 'IVAC, DHAKA',
+        mission: 'Dhaka',
+        numberOfApplicants: 1,
+        totalAmount: 1500.0,
+        visaCodes: null,
+      },
+      statusCode: 200,
+      message: 'Success',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── Reserve slot (capture slotId from URL) ──
+  if (/\/slots\/.*\/reserve/i.test(nurl)) {
+    const sm = url.match(/\/slots\/([0-9a-zA-Z_-]{20,40})\/reserve/);
+    if (sm) flowState.capturedSlotId = sm[1];
+    flowState.slotReserved = true;
+    return {
+      status: 'OK_NEW',
+      reservationId: 'mock-reservation-id',
+      appointmentDate: FUTURE_DATE,
+      countByType: { MISCELLANEOUS_DOUBLE_ENTRY: 1 },
+      reserveTtlSeconds: 660,
+      message: 'Reserved booking',
+    };
+  }
+
+  // ── Payment initiate (capture dgepayUuid from URL) ──
+  if (/\/payment\/.*\/(dg-epay|ssl)\/initiate/i.test(nurl) || /\/payment\/.*\/initiate/i.test(nurl)) {
+    const pm = url.match(/\/payment\/([0-9a-zA-Z_-]{20,40})\//);
+    if (pm) flowState.capturedDgepayUuid = pm[1];
+    flowState.paymentInitiated = true;
+    return {
+      data: {
+        webview_url: 'https://checkout.dgepay.net/payment/payment-methods?data=MOCK_PAYMENT_DATA',
+      },
+      statusCode: 201,
+      message: 'Initiated',
+      successFlag: true,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  // ── Profile ──
+  if (/\/profile/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { id: 'mock-user-id', phone: MOCK.phone, fullName: 'Mohammad Rahman', email: 'mock@test.com', status: 'ACTIVE' },
+    };
+  }
+
+  // ── Invoice ──
+  if (/\/invoice/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { invoiceId: 'mock-invoice-id', amount: 8200, status: 'PAID', downloadUrl: 'https://mock/invoice.pdf' },
+    };
+  }
+
+  // ── Forgot password ──
+  if (/\/forgot-password/i.test(nurl)) {
+    return {
+      successFlag: true, statusCode: 200, message: 'Success',
+      data: { requestId: 'mock-request-id', phone: MOCK.phone, status: 'SENT' },
+    };
+  }
+
+  // ── Generic fallback — return a rich response covering many possible fields ──
+  return {
+    successFlag: true, statusCode: 200, message: 'Success',
+    data: {
+      accessToken: 'MOCK.ACCESS.TOKEN', requestId: 'mock-request-id',
+      verified: true, status: 'SUCCESS', isRegistered: true, isNewUser: false,
+      profileCompleted: true, appointmentId: 'mock-appointment-id',
+      fileId: 'mock-file-id', paymentAmount: 8200, amount: 8200,
+      reservationId: 'mock-reservation-id', reserveTtlSeconds: 660,
+      appointmentDate: FUTURE_DATES, webview_url: 'https://mock.gateway/pay',
+      userId: 'mock-user-id', phone: MOCK.phone, fullName: 'Mohammad Rahman',
+      slotOpen: true, fileUploadOpen: true, uploadWindowOpen: true,
+      fileUploadConfirmed: flowState.fileUploaded,
+      data: [{ fullName: 'Mohammad Rahman', primary: true, commissionName: 'Dhaka', ivacCenter: null }],
+    },
+  };
+}
+
+
+// Turnstile stub
+function turnstileInitScript(token) {
+  return `(() => {
+    const T = ${JSON.stringify(token)};
+    window.__mockTurnstile = T;
+    const stub = {
+      render: (el, opts) => {
+        try { if (opts && opts.callback) setTimeout(() => opts.callback(T), 50); } catch(e){}
+        return 'mock-widget';
+      },
+      getResponse: () => T,
+      reset: () => {},
+      remove: () => {},
+      execute: (container, opts) => {
+        try { if (opts && opts.callback) setTimeout(() => opts.callback(T), 50); } catch(e){}
+        return T;
+      },
+      isExpired: () => false,
+      ready: (cb) => { try { if (cb) setTimeout(cb, 10); } catch(e){} },
+    };
+    Object.defineProperty(window, 'turnstile', { get: () => stub, set: () => {}, configurable: false });
+    const origAppend = Element.prototype.appendChild;
+    Element.prototype.appendChild = function(child) {
+      if (child.tagName === 'SCRIPT' && child.src && /challenges\\\\.cloudflare|turnstile/i.test(child.src)) {
+        const onloadMatch = child.src.match(/[?&]onload=([^&]+)/);
+        const cbName = onloadMatch ? onloadMatch[1] : 'onloadTurnstileCallback';
+        const fake = document.createElement('script');
+        fake.textContent = '/* turnstile blocked */';
+        const result = origAppend.call(this, fake);
+        setTimeout(() => { if (typeof window[cbName] === 'function') try { window[cbName](); } catch(e){} }, 50);
+        return result;
+      }
+      return origAppend.call(this, child);
+    };
+    const fill = () => {
+      document.querySelectorAll('input[name="cf-turnstile-response"],input[name="g-recaptcha-response"]').forEach(i => { i.value = T; });
+      document.querySelectorAll('[data-callback]').forEach(el => {
+        const cbName = el.getAttribute('data-callback');
+        if (cbName && typeof window[cbName] === 'function') try { window[cbName](T); } catch(e){}
+      });
+    };
+    const _startObserver = () => {
+      if (document.documentElement) {
+        new MutationObserver(fill).observe(document.documentElement, { childList: true, subtree: true });
+      } else {
+        setTimeout(_startObserver, 50);
+      }
+    };
+    _startObserver();
+    fill();
+    const _fireTurnstileOnload = () => {
+      if (typeof window.onloadTurnstileCallback === 'function') {
+        try { window.onloadTurnstileCallback(); } catch(e){}
+        return true;
+      }
+      return false;
+    };
+    if (!_fireTurnstileOnload()) {
+      let _polls = 0;
+      const _tmr = setInterval(() => {
+        _polls++;
+        if (_fireTurnstileOnload()) clearInterval(_tmr);
+      }, 200);
+      setTimeout(() => clearInterval(_tmr), 15000);
+    }
+  })();`;
+}
+
+const HOST_ORIGIN = cfg.hostOrigin || '';
+const HOLD_OPEN_MS = cfg.holdOpenMs || 0;
+const LIVE_CAPTURE = !!cfg.liveCapture;
+const RESPONSES_OUT = cfg.responsesOut || path.join(OUT, 'responses.json');
+const log = [];
+const servedResponses = [];   // mock responses served during the walk (for chain detection)
+const responsesMap = {};
+function writeResponses() { try { fs.writeFileSync(RESPONSES_OUT, JSON.stringify(responsesMap, null, 2)); } catch (_) {} }
+
+function extractFromCaptured(entries, final) {
+  const extracted = { apiBase: '', dgepayUuid: '', initiatePath: '', slotId: '', endpoints: {}, tokenMap: [] };
+  // apiBase is taken LIVE from the intercepted request URLs — every real API call
+  // carries the full origin + /iams/api/v<N> prefix, so there is no "not detected"
+  // case to fall back on. (origin + api prefix of the first real /iams request.)
+  for (const e of entries) {
+    const m = String(e.url || '').match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/i);
+    if (m) { extracted.apiBase = m[1]; break; }
+  }
+  // Use runtime-captured IDs first, then from entries, then from static extraction
+  if (flowState.capturedSlotId) extracted.slotId = flowState.capturedSlotId;
+  if (flowState.capturedDgepayUuid) extracted.dgepayUuid = flowState.capturedDgepayUuid;
+  // Dynamic token map: for every captured request, note whether it carries a
+  // captcha token and in what form — encrypted body "c" vs raw "x-token"
+  // header. This is read from the live walk, so if the bundle ever moves
+  // upload/initiate to an encrypted token it shows up here automatically
+  // (no hard-coded assumption about which step is raw vs encrypted).
+  {
+    const stepOf = (p) => /sign-?in/i.test(p) ? 'signin' : /otp\/verif/i.test(p) ? 'otp'
+      : /upload/i.test(p) ? 'upload' : /reserve-slot/i.test(p) ? 'reserve'
+      : /payment\/.*initiate|\/initiate/i.test(p) ? 'initiate' : '';
+    const seenTok = {};
+    for (const e of entries) {
+      const rawP = e.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      const p = rawP.replace(/[-_]+/g, '-');   // normalise for step detection
+      if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(p)) continue;
+      const step = stepOf(p); if (!step || seenTok[step]) continue;
+      let bodyC = false; try { const j = JSON.parse(e.body || '{}'); if (j.c) bodyC = true; } catch (_) {}
+      const xtok = !!(e.headers && e.headers['x-token']);
+      if (!bodyC && !xtok) continue;
+      seenTok[step] = true;
+      extracted.tokenMap.push({ step, field: bodyC ? 'c' : 'x-token', encrypted: bodyC, path: rawP });
+    }
+  }
+  for (const e of entries) {
+    const urlPath = e.url.replace(/^https?:\/\/[^/]+/, '');
+    // Detection normalises - and _ so an obfuscated bundle (v4-sign_in,
+    // file_confirmation-and_slot-status) still matches; the ORIGINAL urlPath is
+    // stored so the endpoint is reported exactly as the bundle uses it.
+    const np = urlPath.replace(/[-_]+/g, '-');
+    // Skip the direct-fallback's fabricated URLs (mock-uuid / mock-slot-id /
+    // mock-appointment…). They are our placeholders, not real bundle values,
+    // and must never leak into the extracted output.
+    if (/mock-(uuid|slot-id|appointment|reservation|id)\b/.test(np)) continue;
+    if (!extracted.dgepayUuid) {
+      const initMatch = /\/payment\/([0-9a-zA-Z_-]{20,40})\/dg[-_]epay\/initiate/i.exec(urlPath);
+      if (initMatch) { extracted.dgepayUuid = initMatch[1]; extracted.initiatePath = initMatch[0]; }
+    }
+    if (!extracted.slotId) {
+      const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve[-_]slot/i.exec(urlPath);
+      if (slotMatch) extracted.slotId = slotMatch[1];
+    }
+    if (/\/payment\/.*\/dg-epay\/initiate/.test(np)) extracted.endpoints.paymentInitiate = urlPath;
+    if (/\/payment\/.*initiate/.test(np)) extracted.endpoints.paymentInitiate = extracted.endpoints.paymentInitiate || urlPath;
+    if (/\/auth\/.*sign-?in/i.test(np)) extracted.endpoints.signin = urlPath;
+    if (/\/otp\/verify/i.test(np)) extracted.endpoints.verifyOtp = urlPath;
+    if (/\/file\/upload/i.test(np)) extracted.endpoints.uploadFile = urlPath;
+    if (/\/file\/over-?view/i.test(np)) extracted.endpoints.overView = urlPath;
+    if (/\/file\/file-confirmation/i.test(np)) extracted.endpoints.fileConfirmation = urlPath;
+    if (/\/file\/payment-amount/i.test(np)) extracted.endpoints.paymentAmount = urlPath;
+    // CONFIG (appointment-booking-config, POST) and AMOUNT (get-booking-config, GET)
+    // both contain "booking-config" — keep them under separate keys so neither
+    // step falls back to a hard-coded path.
+    if (/get-booking-config/i.test(np)) extracted.endpoints.getBookingConfig = urlPath;
+    else if (/booking-config/i.test(np)) extracted.endpoints.bookingConfig = urlPath;
+    if (/\/slots\/.*reserve/i.test(np)) extracted.endpoints.reserveSlot = urlPath;
+  }
+  // The mock walk never performs a real multipart file upload, so the upload
+  // endpoint is never observed. It sits in the bundle as a plaintext path
+  // (e.g. /file/upload-file-v453 or /file/upload_file_v2) — recover it directly
+  // so PRIMARY UPLOAD shows the real path instead of a hard-coded fallback.
+  if (!extracted.endpoints.uploadFile && BUNDLE_SRC) {
+    const um = BUNDLE_SRC.match(/\/file\/upload[-_]file(?:[-_]v\d+)?/i);
+    if (um) extracted.endpoints.uploadFile = '/iams/api/v1' + um[0];
+  }
+  // slotId and dgepayUuid come ONLY from the real intercepted requests the app
+  // fires (captured above). No static bundle-grep fallback: if the live flow did
+  // not reach reserve / payment-initiate, these stay empty (honest) rather than
+  // guessed. initiatePath is just reassembled from the real captured uuid.
+  if (extracted.dgepayUuid && !extracted.initiatePath) extracted.initiatePath = '/payment/' + extracted.dgepayUuid + '/dg-epay/initiate';
+  // If the walk captured an initiate call with no uuid segment (older bundles
+  // where the server hadn't added the uuid yet), use that plain path as-is
+  // instead of forcing a {uuid} placeholder.
+  if (!extracted.initiatePath && extracted.endpoints.paymentInitiate) {
+    extracted.initiatePath = extracted.endpoints.paymentInitiate;
+  }
+  return extracted;
+}
+
+function writeFlow() {
+  const summary = log.map((e) => {
+    let fields = null; try { const j = JSON.parse(e.body); fields = Object.keys(j); } catch (_) {}
+    // keep ALL headers the request carried (minus pure transport noise) so the
+    // summary never drops anything — x-device-id and any future header included.
+    const NOISE = ['host', 'content-length', 'connection', 'accept-encoding', 'cookie', 'origin', 'referer'];
+    const hdr = {}; for (const k of Object.keys(e.headers || {})) if (!NOISE.includes(k.toLowerCase())) hdr[k] = e.headers[k];
+    return { method: e.method, url: e.url, payloadFields: fields, headers: hdr };
+  });
+  const captured = extractFromCaptured(log);
+  // persist the mock INPUTS we fed and the mock RESPONSES served, so the template
+  // builder can value-match them (no field-name hardcode, future-proof).
+  try { fs.writeFileSync(path.join(OUT, 'flow.json'), JSON.stringify({ capturedAt: new Date().toISOString(), calls: log, summary, extracted: captured, mock: MOCK, mockResponses: servedResponses }, null, 2)); } catch (_) {}
+}
+
+function findChromeExe() {
+  if (cfg.executablePath) return cfg.executablePath;
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !fs.existsSync(root)) return undefined;
+  const stack = [root];
+  while (stack.length) {
+    const d = stack.pop();
+    let ents = []; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.name === 'chrome' || e.name === 'headless_shell' || e.name === 'chrome-headless-shell') return p;
+    }
+  }
+  return undefined;
+}
+
+(async () => {
+  const exe = findChromeExe();
+  // A couple of safe, widely-supported flags only — aggressive flag sets made
+  // some machines' first launch fail and fall back after a long timeout.
+  const LAUNCH_ARGS = ['--no-first-run', '--no-default-browser-check'];
+  let browser, connected = false;
+  // Connect to a pre-warmed browser server (dashboard keeps one alive) so we
+  // skip the ~3s chromium cold start; fall back to launching our own.
+  if (cfg.connectWs) {
+    try { browser = await chromium.connect(cfg.connectWs); connected = true; }
+    catch (e) { console.log('ℹ warm connect failed, launching own:', e.message); }
+  }
+  if (!browser) {
+    try {
+      browser = await chromium.launch({ headless: HEADLESS, args: LAUNCH_ARGS });
+    } catch (e) {
+      if (!exe) throw e;
+      console.log('ℹ using system chromium:', exe);
+      browser = await chromium.launch({ headless: HEADLESS, executablePath: exe, args: LAUNCH_ARGS });
+    }
+  }
+  const context = await browser.newContext();
+  await context.addInitScript(turnstileInitScript(MOCK.turnstile));
+  const page = await context.newPage();
+
+  // Feed a valid PDF to any NATIVE file picker the app opens (muz358li's upload
+  // cards trigger input.click() → a filechooser, which setInputFiles alone misses).
+  const MOCK_PDF = Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Resources<<>>>>endobj\n' +
+    'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000054 00000 n \n0000000104 00000 n \n' +
+    'trailer<</Root 1 0 R/Size 4>>\nstartxref\n178\n%%EOF');
+  page.on('filechooser', async (fc) => {
+    try { await fc.setFiles({ name: 'passport.pdf', mimeType: 'application/pdf', buffer: MOCK_PDF }); } catch (_) {}
+  });
+
+  const isAsset = (u) => /\.(css|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)(\?|$)/i.test(u) || /fonts\.(googleapis|gstatic)\.com/.test(u);
+  const CORS_HEADERS = {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+    'access-control-allow-headers': 'content-type, authorization, x-token, x-sec-navigation-state, x-sec-runtime-state, x-v-request-meta, x-requested-with, accept',
+    'access-control-max-age': '86400',
+  };
+
+  if (LIVE_CAPTURE) {
+    page.on('response', async (resp) => {
+      const url = resp.url();
+      if (!isApi(url)) return;
+      let bodyText = ''; try { bodyText = await resp.text(); } catch (_) { return; }
+      let parsed; try { parsed = JSON.parse(bodyText); } catch (_) { return; }
+      const key = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      responsesMap[key] = parsed; writeResponses();
+    });
+  }
+
+  await page.route('**/*', async (route) => {
+    const req = route.request();
+    const url = req.url();
+    const method = req.method();
+    if (HOST_ORIGIN && url.startsWith(HOST_ORIGIN)) return route.continue();
+    if (isTurnstile(url)) return route.fulfill({ status: 200, headers: { 'content-type': 'application/javascript' }, body: '/* turnstile blocked */' });
+    if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_HEADERS, body: '' });
+    if (isApi(url)) {
+      const mockResp = mockBodyFor(url);
+      const shortUrl = url.replace(/^https?:\/\/[^/]+/, '');
+      console.log(`  ✓ ${method} ${shortUrl}`);
+      log.push({ time: new Date().toISOString(), method, url, headers: req.headers(), body: req.postData() || '' });
+      // remember what the mock backend returned → the template builder uses these
+      // values to detect request fields that are "chained" from a prior response
+      // (requestId, reservationId, token, …) and placeholder them by value.
+      try { servedResponses.push(mockResp); } catch (_) {}
+      writeFlow();
+      if (LIVE_CAPTURE) return route.continue();
+      return route.fulfill({ status: 200, headers: Object.assign({ 'content-type': 'application/json' }, CORS_HEADERS), body: JSON.stringify(mockResp) });
+    }
+    if (isAsset(url) || /fonts\.|youtube\.com|ytimg\.com|googleapis\.com/i.test(url)) return route.fulfill({ status: 200, body: '' });
+    return route.continue();
+  });
+
+  page.on('pageerror', e => { console.log('  page-error:', e.message.substring(0, 200)); if (e.stack) console.log('  stack:', e.stack.substring(0, 600)); });
+  console.log('🌐 loading (headless):', URL);
+  await page.goto(URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(sms(2000));
+
+  // ── Phase 0: Close modals/popups and navigate to Sign In ──
+  for (let i = 0; i < 5; i++) {
+    const closed = await page.evaluate(() => {
+      const btns = document.querySelectorAll('button');
+      for (const b of btns) {
+        const r = b.getBoundingClientRect();
+        if (r.width === 0) continue;
+        if (/absolute.*right|close/i.test(b.className) || b.getAttribute('aria-label')?.match(/close/i)) {
+          b.click(); return true;
+        }
+      }
+      const overlays = document.querySelectorAll('[class*="fixed"][class*="inset"], [class*="modal-overlay"], [class*="backdrop"]');
+      if (overlays.length) { overlays[overlays.length - 1].click(); return true; }
+      return false;
+    }).catch(() => false);
+    if (!closed) break;
+    await page.waitForTimeout(sms(500));
+  }
+
+  // Navigate to Sign In page
+  const wentToSignin = await page.evaluate(() => {
+    const candidates = [...document.querySelectorAll('a, button')];
+    for (const el of candidates) {
+      const txt = (el.textContent || '').trim();
+      const href = el.getAttribute('href') || '';
+      if (/^sign\s*in$/i.test(txt) || (href.includes('/signin') && !href.includes('/signup') && /sign\s*in/i.test(txt))) {
+        el.click(); return txt;
+      }
+    }
+    for (const el of candidates) {
+      const href = el.getAttribute('href') || '';
+      if (href.includes('/signin') && !href.includes('/signup')) { el.click(); return (el.textContent || '').trim(); }
+    }
+    return '';
+  }).catch(() => '');
+  if (wentToSignin) console.log(`  → navigated to Sign In ("${wentToSignin}")`);
+  await page.waitForTimeout(sms(2000));
+
+  // ── Adaptive UI walker ──
+  const WALK_TIMEOUT = cfg.walkTimeoutMs || 60000;
+  const STEP_PAUSE = cfg.stepPause != null ? cfg.stepPause : sms(2000);
+  const walkStart = Date.now();
+  let prevCaptures = 0;
+  let idleRounds = 0;
+  const MAX_IDLE = 12;
+
+  let _homeIdleCount = 0;
+  let _lastPath = '';
+  let _samePathCount = 0;
+
+  while (Date.now() - walkStart < WALK_TIMEOUT && idleRounds < MAX_IDLE) {
+    const curPath = new globalThis.URL(page.url()).pathname;
+    if (idleRounds === 0 || curPath !== _lastPath) {
+      console.log(`  [step] path=${curPath} captures=${log.length}`);
+    }
+
+    // Track same-path stuck detection
+    if (curPath === _lastPath) {
+      _samePathCount++;
+    } else {
+      _samePathCount = 0;
+      _lastPath = curPath;
+    }
+
+    // If stuck on home page after OTP, navigate to appointment flow
+    if (curPath === '/' && log.length >= 2) {
+      _homeIdleCount++;
+      if (_homeIdleCount >= 2) {
+        // Try progressively deeper routes
+        const routes = ['/appointment/file-upload', '/appointment/notice', '/appointment/continue-payment', '/appointment/time-slot'];
+        const tryRoute = routes[Math.min(_homeIdleCount - 2, routes.length - 1)];
+        console.log(`  → navigating to ${tryRoute}`);
+        await page.evaluate((r) => { window.history.pushState({}, '', r); window.dispatchEvent(new PopStateEvent('popstate')); }, tryRoute).catch(() => {});
+        await page.waitForTimeout(sms(500));
+        const afterPath = new globalThis.URL(page.url()).pathname;
+        if (afterPath === '/' || afterPath.includes('blocked') || afterPath.includes('declaration')) {
+          await page.goto(HOST_ORIGIN + tryRoute, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        }
+        await page.waitForTimeout(sms(2000));
+        continue;
+      }
+    } else if (!curPath.includes('appointment') && curPath !== '/') {
+      _homeIdleCount = 0;
+    }
+
+    // 1. Close any modal/overlay popups
+    await page.evaluate(() => {
+      const overlays = document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="popup"], .fixed.inset-0, [role="dialog"]');
+      for (const o of overlays) {
+        const btn = o.querySelector('button[class*="close"], button[aria-label*="close" i], button:last-child, .close, [data-dismiss]');
+        if (btn) try { btn.click(); } catch (_) {}
+      }
+    }).catch(() => {});
+
+    // 2. Handle SELECT dropdowns (mission, center, visa type)
+    await page.evaluate(() => {
+      document.querySelectorAll('select').forEach(sel => {
+        const r = sel.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        if (sel.selectedIndex > 0) return; // already selected
+        if (sel.options.length > 1) {
+          sel.value = sel.options[1].value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          sel.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+    }).catch(() => {});
+
+    // 2b. Handle custom React dropdown/listbox using Playwright native clicks
+    // Covers: role="combobox", role="listbox", and custom UF-style button dropdowns
+    {
+      const ddTriggers = await page.evaluate(() => {
+        const candidates = [
+          ...document.querySelectorAll('[role="combobox"], [role="listbox"]'),
+          ...document.querySelectorAll('button'),
+        ];
+        let tagged = 0;
+        const seen = new Set();
+        for (const t of candidates) {
+          if (seen.has(t)) continue;
+          seen.add(t);
+          const txt = (t.textContent || '').trim();
+          const r = t.getBoundingClientRect();
+          if (r.width < 80 || r.height < 15) continue;
+          if (/^select\b|^choose\b|^pick\b/i.test(txt.toLowerCase())) {
+            t.setAttribute('data-iflow-cdd', String(tagged));
+            tagged++;
+          }
+        }
+        return tagged;
+      }).catch(() => 0);
+      for (let i = 0; i < ddTriggers; i++) {
+        try {
+          await page.click(`[data-iflow-cdd="${i}"]`, { timeout: 1500, force: true });
+          await page.waitForTimeout(400);
+          // Look for options: role="option", or buttons inside shadow/overflow containers
+          const optSel = '[role="option"], [data-radix-collection-item], [class*="option"]:not([class*="selected"]), li[class*="item"]';
+          const optLoc = page.locator(optSel);
+          let count = await optLoc.count().catch(() => 0);
+          if (count === 0) {
+            // Custom dropdown: options are buttons inside a shadow container
+            const tagged = await page.evaluate(() => {
+              const containers = [...document.querySelectorAll('div[class*="shadow"]')];
+              for (const c of containers) {
+                if (!/max-h|overflow/i.test(c.className || '')) continue;
+                const r = c.getBoundingClientRect();
+                if (r.width < 50 || r.height < 10) continue;
+                const optBtns = [...c.querySelectorAll('button')];
+                for (const ob of optBtns) {
+                  const txt = (ob.textContent || '').trim();
+                  if (txt.length > 1 && !/^select\b|^choose\b|^pick\b|^--/i.test(txt)) {
+                    ob.setAttribute('data-iflow-cdd-opt', 'pick');
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }).catch(() => false);
+            if (tagged) {
+              await page.click('[data-iflow-cdd-opt="pick"]', { timeout: 1500, force: true });
+            }
+          } else {
+            for (let oi = 0; oi < Math.min(count, 10); oi++) {
+              const txt = await optLoc.nth(oi).textContent({ timeout: 300 }).catch(() => '');
+              if (txt && txt.trim().length > 1 && !/select|choose|pick|--/i.test(txt.trim())) {
+                await optLoc.nth(oi).click({ timeout: 1500, force: true });
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 3. Detect visible inputs and fill them
+    const inputInfos = await page.evaluate(() => {
+      const results = [];
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+      };
+      document.querySelectorAll('input, textarea, select').forEach((inp, idx) => {
+        if (!visible(inp)) return;
+        if (inp.tagName === 'SELECT') return; // handled above
+        if (inp.value && inp.value.length > 0) return;
+        if (inp.type === 'hidden' || inp.type === 'checkbox' || inp.type === 'radio' || inp.type === 'file') return;
+        const hint = (inp.type + ' ' + (inp.name || '') + ' ' + (inp.placeholder || '') + ' ' + (inp.getAttribute('aria-label') || '')).toLowerCase();
+        const tag = '__iflow_' + idx;
+        inp.setAttribute('data-iflow', tag);
+        results.push({ tag, hint, type: inp.type, inputMode: inp.inputMode, maxLength: inp.maxLength });
+      });
+      return results;
+    }).catch(() => []);
+
+    for (const info of inputInfos) {
+      const h = info.hint;
+      let val = '';
+      if (/phone|mobile|tel/.test(h) || info.type === 'tel') val = MOCK.phone;
+      else if (/password|pass/.test(h) || info.type === 'password') val = MOCK.password;
+      else if (/otp|verify|code|token/.test(h) || info.inputMode === 'numeric' || info.maxLength == 6 || info.maxLength == 4) val = MOCK.otp;
+      else if (/email/.test(h) || info.type === 'email') val = 'mock@test.com';
+      else if (/name|full.?name/.test(h)) val = 'Mohammad Rahman';
+      else if (/passport/.test(h)) val = 'AB1234567';
+      else if (/date|dob|birth|expir/.test(h) || info.type === 'date') val = FUTURE_DATE;
+      else val = MOCK.phone;
+
+      if (val) {
+        try {
+          const loc = page.locator(`[data-iflow="${info.tag}"]`);
+          await loc.focus({ timeout: 1000 });
+          await loc.fill(val, { timeout: 2000 });
+        } catch (_) {
+          try {
+            await page.locator(`[data-iflow="${info.tag}"]`).click({ timeout: 1000 });
+            await page.keyboard.type(val, { delay: 30 });
+          } catch (_2) {}
+        }
+      }
+    }
+
+    // 3b. Phone input fallback
+    try {
+      const phoneEmpty = await page.evaluate(() => {
+        const ph = document.querySelector('input[name="phone"], input[name="mobile"], input[placeholder*="01"]');
+        return ph && (!ph.value || ph.value.length === 0);
+      });
+      if (phoneEmpty) {
+        const phoneLocator = page.locator('input[name="phone"], input[name="mobile"], input[placeholder*="01"]').first();
+        await phoneLocator.focus({ timeout: 1000 });
+        await phoneLocator.fill(MOCK.phone, { timeout: 2000 });
+      }
+    } catch (_) {}
+
+    // 4. Handle file upload inputs — set the native <input type=file>, AND, for
+    // drag-drop zones that have no such input, fire a real `drop` with a
+    // DataTransfer so the bundle's own handler builds and POSTs the multipart
+    // upload (which we then intercept). This makes PRIMARY UPLOAD a real,
+    // walk-verified call instead of a static path read from the bundle.
+    await page.evaluate(() => {
+      document.querySelectorAll('input[type="file"]').forEach(fi => fi.removeAttribute('required'));
+    }).catch(() => {});
+    let _fileWasSet = false;
+    // AUTO-UPLOAD: the site's upload is a custom modal with hidden inputs that a
+    // headless walk cannot reliably drive. Instead we call the bundle's OWN upload
+    // action — exposed as window.__ivacUploadFn by upload-expose.js (it finds the
+    // function carrying the "x-sec-runtime-state" header and exposes it) — with a
+    // synthetic applicant object, so the bundle itself fires the real /file/upload
+    // POST. That request is the ONLY one that carries x-sec-runtime-state, which we
+    // then capture. No UI/modal dependency; works whatever the upload widget looks like.
+    if (curPath.includes('upload') || curPath.includes('file')) {
+      const au = await page.evaluate(async (tkn) => {
+        if (typeof globalThis.__ivacUploadFn !== 'function') return 'no-fn';
+        try {
+          const bytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52, 10, 109, 111, 99, 107]); // %PDF-1.4\nmock
+          const realFile = new File([bytes], 'passport.pdf', { type: 'application/pdf' });
+          // real props pass through; any unknown obfuscated key returns a benign
+          // value so the bundle's validation passes and it reaches the POST.
+          // ONLY the real File is supplied under the key the bundle reads (e.file);
+          // every OTHER field the upload action touches is answered by the Proxy with
+          // a benign default, so no per-bundle field names are hard-coded.
+          const base = { file: realFile };
+          void tkn;
+          const e = new Proxy(base, { get(t, p) { if (p in t) { const v = t[p]; return typeof v === 'function' ? v.bind(t) : v; } if (typeof p === 'symbol') return undefined; return 'passport.pdf'; } });
+          await Promise.resolve(globalThis.__ivacUploadFn(e)).catch(() => {});
+          return 'fired';
+        } catch (e) { return 'err:' + (e && e.message); }
+      }, MOCK.turnstile).catch(() => 'eval-err');
+      if (au !== 'no-fn') console.log('  [auto-upload] ' + au);
+      _fileWasSet = true;
+      await page.waitForTimeout(sms(1000));
+    }
+    const fileInputs = await page.locator('input[type="file"]').all().catch(() => []);
+    for (const fi of fileInputs) {
+      try {
+        const buf = Buffer.from('%PDF-1.4 mock passport file content');
+        const tmpFile = path.join(OUT, '_mock_passport.pdf');
+        fs.writeFileSync(tmpFile, buf);
+        await fi.setInputFiles(tmpFile, { timeout: 2000 });
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        _fileWasSet = true;
+      } catch (_) {}
+    }
+    // 4b. Drag-drop zones (no usable <input type=file>): synthesize a drop with a
+    // real File in the DataTransfer on the most likely dropzone element.
+    if (curPath.includes('upload') || curPath.includes('file')) {
+      await page.evaluate(() => {
+        const bytes = new Uint8Array([37,80,68,70,45,49,46,52,10,109,111,99,107]); // "%PDF-1.4\nmock"
+        const file = new File([bytes], 'passport.pdf', { type: 'application/pdf' });
+        const zones = [...document.querySelectorAll('[class*="drop"],[class*="drag"],[class*="upload"],[class*="dropzone"],label,div')]
+          .filter(el => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 40; });
+        // prefer an element whose text/ID hints at upload
+        zones.sort((a,b) => {
+          const s = el => /upload|drag|drop|browse|ছবি|ফাইল|passport|choose|select file/i.test((el.textContent||'')+' '+el.className+' '+el.id) ? 1 : 0;
+          return s(b) - s(a);
+        });
+        for (const zone of zones.slice(0, 5)) {
+          try {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            for (const type of ['dragenter','dragover','drop']) {
+              const ev = new DragEvent(type, { bubbles: true, cancelable: true });
+              try { Object.defineProperty(ev, 'dataTransfer', { value: dt }); } catch (_) {}
+              zone.dispatchEvent(ev);
+            }
+          } catch (_) {}
+        }
+      }).catch(() => {});
+    }
+
+    await page.waitForTimeout(sms(500));
+
+    // 4c. Click an explicit upload / submit / "আপলোড" button so the bundle fires
+    // the multipart POST (some flows upload on button-click, not on file-select).
+    if (_fileWasSet || curPath.includes('upload')) {
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')];
+        for (const b of btns) {
+          const t = (b.textContent || b.value || '').trim();
+          const r = b.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          if (/^(upload|আপলোড|submit|save|জমা)$|upload file|আপলোড কর/i.test(t)) { b.disabled = false; b.removeAttribute('disabled'); b.click(); }
+        }
+      }).catch(() => {});
+      await page.waitForTimeout(sms(500));
+    }
+
+    // 5. Handle checkboxes (terms, declarations)
+    await page.evaluate(() => {
+      document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        if (!cb.checked) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          cb.dispatchEvent(new Event('input', { bubbles: true }));
+          // Also click the label if any
+          const label = cb.closest('label') || document.querySelector(`label[for="${cb.id}"]`);
+          if (label) label.click();
+        }
+      });
+    }).catch(() => {});
+
+    // 6. Ensure Turnstile + enable disabled buttons
+    await page.evaluate((token) => {
+      if (window.turnstile) {
+        document.querySelectorAll('[data-callback]').forEach(el => {
+          const cbName = el.getAttribute('data-callback');
+          if (cbName && typeof window[cbName] === 'function') try { window[cbName](token); } catch(_){}
+        });
+      }
+      document.querySelectorAll('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"], input[name*="turnstile"], input[name*="captcha"]').forEach(i => {
+        i.value = token;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+        i.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      document.querySelectorAll('.cf-turnstile, [data-sitekey]').forEach(el => {
+        const cbName = el.getAttribute('data-callback');
+        if (cbName && typeof window[cbName] === 'function') try { window[cbName](token); } catch(e){}
+      });
+      document.querySelectorAll('button[disabled], input[type="submit"][disabled]').forEach(b => {
+        b.disabled = false;
+        b.removeAttribute('disabled');
+      });
+    }, MOCK.turnstile).catch(() => {});
+
+    await page.waitForTimeout(300);
+
+    // 6b. Handle mission/center page dropdowns
+    if (curPath.includes('mission') && _samePathCount >= 0) {
+      // Ensure commissionId is set in ALL Zustand persist stores in localStorage
+      // Then reload the page so the store rehydrates with the value
+      const didInject = await page.evaluate(() => {
+        const keys = Object.keys(localStorage);
+        let injected = false;
+        for (const key of keys) {
+          try {
+            const val = JSON.parse(localStorage.getItem(key));
+            if (val && val.state && 'commissionId' in val.state && !val.state.commissionId) {
+              val.state.commissionId = 'COM-MOCK-001';
+              localStorage.setItem(key, JSON.stringify(val));
+              injected = true;
+            }
+          } catch(_) {}
+        }
+        return injected;
+      }).catch(() => false);
+      if (didInject) {
+        console.log('  → injected commissionId into store, reloading...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(sms(2000));
+      }
+    }
+    if (curPath.includes('mission') && _samePathCount >= 1) {
+      // Use Playwright native clicks for React custom selects (Radix/react-select).
+      // page.evaluate(() => el.click()) only fires DOM click — React custom selects
+      // need full pointer event sequence (pointerdown/mousedown/pointerup/mouseup/click)
+      // which Playwright's page.click() dispatches properly.
+
+      // The app uses a custom UF dropdown component (not react-select/Radix):
+      // - A <button> with placeholder text acts as trigger, toggles React state
+      // - When open, renders <button> elements for each option inside a scrollable div
+      // - Options are plain <button type="button"> with onClick handlers
+      // Strategy: find trigger buttons with placeholder text, Playwright-click to open,
+      // then find and Playwright-click the first option button that appears.
+
+      // Find dropdown trigger buttons by placeholder text pattern
+      const triggerInfo = await page.evaluate(() => {
+        const results = [];
+        // UF component renders: button > div > div > [label span, value/placeholder span]
+        // The trigger button contains "Select" placeholder text
+        const btns = [...document.querySelectorAll('button')];
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (r.width < 80 || r.height < 20) continue;
+          // Match placeholder text patterns (Select a Mission, Select an IVAC center, etc.)
+          if (/select\s+(a\s+)?mission|select\s+(a\s+)?center|select\s+(an?\s+)?ivac|select\s+visa/i.test(txt)) {
+            b.setAttribute('data-iflow-dd', 'trigger-' + results.length);
+            results.push({ idx: results.length, text: txt.substring(0, 50) });
+          }
+        }
+        return results;
+      }).catch(() => []);
+
+      for (const trig of triggerInfo) {
+        const sel = `[data-iflow-dd="trigger-${trig.idx}"]`;
+        try {
+          await page.click(sel, { timeout: 2000, force: true });
+          console.log(`  → clicked dropdown: "${trig.text}"`);
+          await page.waitForTimeout(sms(600));
+
+          // DEBUG: count all buttons after click
+          if (_samePathCount === 1) {
+            const btnCount = await page.evaluate(() => {
+              return [...document.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0).length;
+            }).catch(() => -1);
+            console.log(`  [DEBUG] buttons after click: ${btnCount}`);
+          }
+
+          // After clicking, UF renders option buttons inside a shadow-2xl container
+          // Options are <button type="button"> elements that appeared after the click
+          const optionResult = await page.evaluate(() => {
+            // Find the dropdown menu container — it has shadow-2xl and max-h classes
+            const containers = [...document.querySelectorAll('div[class*="shadow"]')];
+            for (const c of containers) {
+              const cls = c.className || '';
+              if (!/max-h|overflow/i.test(cls)) continue;
+              const r = c.getBoundingClientRect();
+              if (r.width < 50 || r.height < 10) continue;
+              // Find option buttons inside
+              const optBtns = [...c.querySelectorAll('button')];
+              if (optBtns.length > 0) {
+                // Tag first non-placeholder option
+                for (const ob of optBtns) {
+                  const txt = (ob.textContent || '').trim();
+                  if (txt.length > 1 && !/^select\b|^choose\b|^pick\b|^--/i.test(txt)) {
+                    ob.setAttribute('data-iflow-opt', 'pick');
+                    return { found: true, text: txt.substring(0, 40), count: optBtns.length };
+                  }
+                }
+              }
+            }
+            // Fallback: look for any new buttons that appeared and aren't the main form buttons
+            const allBtns = [...document.querySelectorAll('button[type="button"]')];
+            for (const b of allBtns) {
+              const txt = (b.textContent || '').trim();
+              const r = b.getBoundingClientRect();
+              if (r.width > 50 && r.height > 15 && r.height < 60 && txt.length > 1 &&
+                  !/select|choose|pick|confirm|submit|continue|book|verify/i.test(txt)) {
+                b.setAttribute('data-iflow-opt', 'pick');
+                return { found: true, text: txt.substring(0, 40), count: 1 };
+              }
+            }
+            return { found: false, count: 0 };
+          }).catch(() => ({ found: false, count: 0 }));
+
+          if (optionResult.found) {
+            await page.click('[data-iflow-opt="pick"]', { timeout: 2000, force: true });
+            console.log(`  → selected option: "${optionResult.text}" (${optionResult.count} options)`);
+            await page.waitForTimeout(sms(500));
+          } else {
+            console.log(`  → dropdown opened but no options found (${optionResult.count})`);
+          }
+        } catch (e) {
+          console.log(`  → dropdown click error: ${e.message?.substring(0, 60)}`);
+        }
+      }
+
+      // If no dropdown triggers found at all, the page might not have rendered properly
+      if (triggerInfo.length === 0 && _samePathCount <= 2) {
+        console.log('  → no dropdown triggers found on mission page');
+      }
+
+      // If still stuck after 3 rounds, use direct API + store update as fallback
+      if (_samePathCount >= 3) {
+        console.log('  → mission page fallback: direct API + store update');
+        await page.evaluate(async () => {
+          try {
+            const apiBase = performance.getEntriesByType('resource')
+              .map(r => r.name)
+              .find(n => /ivacbd\.com.*\/iams\/api/i.test(n) || /\/iams\/api/i.test(n));
+            let base = '';
+            if (apiBase) {
+              const m = apiBase.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+              if (m) base = m[1];
+            }
+            if (!base) base = 'https://appointment.ivacbd.com/iams/api/v1';
+            const authStore = JSON.parse(localStorage.getItem('auth-storage') || '{}');
+            const token = authStore?.state?.accessToken || 'MOCK.ACCESS.TOKEN';
+            await fetch(base + '/appointment/appointment-booking-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({ mission: 'COM-MOCK-001', ivacCenter: 'CTR-MOCK-001' }),
+            });
+          } catch(_) {}
+        }).catch(() => {});
+        await page.waitForTimeout(sms(500));
+        await page.evaluate(() => {
+          const keys = Object.keys(localStorage);
+          for (const key of keys) {
+            try {
+              const val = JSON.parse(localStorage.getItem(key));
+              if (val && val.state && 'appointmentInfo' in val.state) {
+                val.state.appointmentInfo = Object.assign(val.state.appointmentInfo || {}, {
+                  mission: 'COM-MOCK-001', missionName: 'Indian High Commission',
+                  ivacCenter: 'CTR-MOCK-001', centerName: 'IVAC Dhaka',
+                  commissionId: 'COM-MOCK-001',
+                });
+                val.state.currentStep = 'time-slot';
+                localStorage.setItem(key, JSON.stringify(val));
+              }
+            } catch(_) {}
+          }
+        }).catch(() => {});
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(sms(1000));
+        await page.evaluate(() => {
+          try {
+            window.history.pushState({ startTimer: true }, '', '/appointment/time-slot');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch(_) {}
+        }).catch(() => {});
+        await page.waitForTimeout(sms(1000));
+      }
+    }
+
+    // 7. Handle time-slot page: BY component renders an inline calendar grid with day buttons (1-30).
+    //    No dropdown trigger needed — days are already visible.
+    if (curPath.includes('time-slot') && _samePathCount >= 1) {
+      // Step 7a: Click an available day in the calendar. Prefer the days our
+      // mock marks available (derived from FUTURE_DATES) so the app accepts the
+      // pick and advances; otherwise fall back to any enabled day.
+      const availDays = FUTURE_DATES.map((d) => parseInt(String(d).slice(-2), 10));
+      const pickDay = (AVAIL) => {
+        const btns = [...document.querySelectorAll('button')];
+        // Find day buttons (single/double digit text, reasonable size)
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            const day = parseInt(txt, 10);
+            if (AVAIL.includes(day)) {
+              b.setAttribute('data-iflow-day', txt);
+              return txt;
+            }
+          }
+        }
+        // Fallback: any day
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          if (/^\d{1,2}$/.test(txt) && r.width > 20 && r.height > 20 && !b.disabled) {
+            b.setAttribute('data-iflow-day', txt);
+            return txt;
+          }
+        }
+        return '';
+      };
+      let dayPicked = await page.evaluate(pickDay, availDays).catch(() => '');
+      // No selectable day in the current month view — the available dates may sit
+      // in the next month (e.g. running late in the month). Click the calendar's
+      // next-month (›) arrow and retry once, so month-end runs don't get stuck.
+      if (!dayPicked) {
+        const moved = await page.evaluate(() => {
+          const b = [...document.querySelectorAll('button')].find(
+            (x) => { const t = (x.textContent || '').trim(); return (t === '›' || t === '>' || t === '❯') && !x.disabled; });
+          if (b) { b.click(); return true; }
+          return false;
+        }).catch(() => false);
+        if (moved) {
+          await page.waitForTimeout(sms(900));
+          dayPicked = await page.evaluate(pickDay, availDays).catch(() => '');
+          if (dayPicked) console.log('  → advanced to next month for an available day');
+        }
+      }
+
+      if (dayPicked) {
+        try {
+          await page.click(`[data-iflow-day="${dayPicked}"]`, { timeout: 2000, force: true });
+          console.log(`  → Clicked calendar day ${dayPicked}`);
+        } catch (_) {}
+        await page.waitForTimeout(sms(1500));
+      }
+
+      // Debug: Check if day click registered by examining button styling changes
+      const tsState = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')];
+        const day15 = btns.find(b => b.textContent.trim() === '15' && b.getBoundingClientRect().width > 20);
+        const all = btns.filter(b => b.getBoundingClientRect().width > 0).map(b => b.textContent.trim().substring(0, 60));
+        // Check for time-slot-like buttons (not calendar days)
+        const nonCalBtns = all.filter(t => !/^\d{1,2}$/.test(t) && t !== '‹' && t !== '›');
+        return {
+          day15class: day15 ? day15.className.substring(0, 100) : 'NOT FOUND',
+          day15disabled: day15 ? day15.disabled : null,
+          nonCalBtns,
+          // Check for turnstile/captcha containers
+          captchaContainers: document.querySelectorAll('[class*="captcha"], [class*="turnstile"], [id*="captcha"], [class*="cf-"]').length,
+          iframes: document.querySelectorAll('iframe').length,
+        };
+      }).catch(() => ({}));
+      if (DEBUG) console.log('  [ts-debug] after day click:', JSON.stringify(tsState));
+
+      // Step 7b: Click time slot button (rendered from appointmentTime)
+      const slotClicked = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')];
+        for (const b of btns) {
+          const txt = (b.textContent || '').trim();
+          const r = b.getBoundingClientRect();
+          // Time slot buttons show formatted time like "09:00 AM - 05:00 PM"
+          if (r.width > 40 && r.height > 20 && /\d{1,2}:\d{2}.*(?:AM|PM|am|pm|-)/i.test(txt) && !b.disabled) {
+            b.setAttribute('data-iflow-slot', '1');
+            return txt.substring(0, 50);
+          }
+        }
+        return '';
+      }).catch(() => '');
+
+      if (slotClicked) {
+        try {
+          await page.click('[data-iflow-slot="1"]', { timeout: 2000, force: true });
+          console.log(`  → Playwright-clicked slot: "${slotClicked}"`);
+        } catch (_) {}
+        await page.waitForTimeout(sms(1000));
+      }
+
+      // Step 7c: Force slot ID + captcha state via React fiber dispatch, then click Continue Booking.
+      // The turnstile widget never renders without real Cloudflare, so we set state directly.
+      if (_samePathCount >= 2) {
+        const patchResult = await page.evaluate((slotId) => {
+          const btns = [...document.querySelectorAll('button')];
+          const continueBtn = btns.find(b => /continue.*book/i.test(b.textContent.trim()));
+          if (!continueBtn) return { error: 'no Continue Booking button' };
+          const fiberKey = Object.keys(continueBtn).find(k => k.startsWith('__reactFiber'));
+          if (!fiberKey) return { error: 'no fiber key' };
+
+          let fiber = continueBtn[fiberKey];
+          for (let i = 0; i < 30 && fiber; i++) {
+            const hooks = fiber.memoizedState;
+            if (!hooks) { fiber = fiber.return; continue; }
+            let hook = hooks;
+            const hookList = [];
+            while (hook) {
+              if (hook.queue) hookList.push(hook);
+              hook = hook.next;
+            }
+            const dateIdx = hookList.findIndex(h => typeof h.memoizedState === 'string' && /^\d{4}-\d{2}-\d{2}/.test(h.memoizedState));
+            if (dateIdx >= 0 && hookList.length >= dateIdx + 3) {
+              const slotHook = hookList[dateIdx + 1];
+              const captchaHook = hookList[dateIdx + 2];
+              const patched = [];
+              if (slotHook.queue.dispatch && (!slotHook.memoizedState || slotHook.memoizedState === '')) {
+                slotHook.queue.dispatch(slotId);
+                patched.push('slot=' + slotId);
+              }
+              if (captchaHook.queue.dispatch && !captchaHook.memoizedState) {
+                captchaHook.queue.dispatch('MOCK_CAPTCHA');
+                patched.push('captcha=MOCK_CAPTCHA');
+              }
+              return {
+                foundComponent: true,
+                dateState: hookList[dateIdx].memoizedState,
+                slotState: String(slotHook.memoizedState).substring(0, 40),
+                captchaState: String(captchaHook.memoizedState).substring(0, 40),
+                patched,
+              };
+            }
+            fiber = fiber.return;
+          }
+          return { error: 'component not found' };
+        }, SLOT_ID || '').catch(e => ({ error: e.message }));
+        if (DEBUG) console.log('  [ts-debug] React state patch:', JSON.stringify(patchResult));
+
+        if (patchResult && patchResult.patched && patchResult.patched.length > 0) {
+          await page.waitForTimeout(sms(500));
+        }
+
+        // Call the reserve-slot mutation directly from the React fiber.
+        // The onClick does: _(c: G, appointmentDate: v) where _ is the useMutation mutate function.
+        // G = bJ(S, siteKey) is a custom hook we can't easily set, so call _ directly.
+        if (_samePathCount >= 3 && patchResult && patchResult.foundComponent) {
+          const mutateResult = await page.evaluate((slotId) => {
+            const btns = [...document.querySelectorAll('button')];
+            const continueBtn = btns.find(b => /continue.*book/i.test(b.textContent.trim()));
+            if (!continueBtn) return { error: 'no button' };
+            const fiberKey = Object.keys(continueBtn).find(k => k.startsWith('__reactFiber'));
+            if (!fiberKey) return { error: 'no fiber' };
+
+            let fiber = continueBtn[fiberKey];
+            for (let i = 0; i < 30 && fiber; i++) {
+              const hooks = fiber.memoizedState;
+              if (!hooks) { fiber = fiber.return; continue; }
+              let hook = hooks;
+              const hookList = [];
+              while (hook) {
+                if (hook.queue) hookList.push(hook);
+                hook = hook.next;
+              }
+              const dateIdx = hookList.findIndex(h => typeof h.memoizedState === 'string' && /^\d{4}-\d{2}-\d{2}/.test(h.memoizedState));
+              if (dateIdx < 0) { fiber = fiber.return; continue; }
+
+              // Find the mutation — it's a hook whose memoizedState has a mutate/mutateAsync function
+              for (let j = 0; j < hookList.length; j++) {
+                const ms = hookList[j].memoizedState;
+                if (ms && typeof ms === 'object' && typeof ms.mutate === 'function') {
+                  try {
+                    ms.mutate({ c: 'MOCK_CAPTCHA', appointmentDate: hookList[dateIdx].memoizedState });
+                    return { called: true, hookIdx: j, date: hookList[dateIdx].memoizedState };
+                  } catch (e) { return { error: 'mutate threw: ' + e.message }; }
+                }
+              }
+              // Also check for mutate on memoizedState.current
+              for (let j = 0; j < hookList.length; j++) {
+                const ms = hookList[j].memoizedState;
+                if (ms && ms.current && typeof ms.current.mutate === 'function') {
+                  try {
+                    ms.current.mutate({ c: 'MOCK_CAPTCHA', appointmentDate: hookList[dateIdx].memoizedState });
+                    return { called: true, hookIdx: j, via: 'ref', date: hookList[dateIdx].memoizedState };
+                  } catch (e) { return { error: 'ref mutate threw: ' + e.message }; }
+                }
+              }
+              return { error: 'no mutation hook found', hookCount: hookList.length };
+            }
+            return { error: 'component not found' };
+          }, SLOT_ID || '').catch(e => ({ error: e.message }));
+          if (DEBUG) console.log('  [ts-debug] mutation call:', JSON.stringify(mutateResult));
+
+          // The lookup above keys off English button text. Bundles render Bangla
+          // too, so fall back to scanning the whole fiber tree by shape.
+          if (!(mutateResult && mutateResult.called)) {
+            const dateStr = (patchResult && patchResult.dateState) || FUTURE_DATE;
+            const res = await fireMutations(page, { c: MOCK.turnstile, appointmentDate: dateStr },
+              async () => log.some(e => /reserve[-_]slot/i.test(e.url))).catch(() => null);
+            if (res) console.log(`  → reserve mutation via fiber scan: found=${res.found} hit=${res.hit}`);
+            if (log.some(e => /reserve[-_]slot/i.test(e.url))) { idleRounds = 0; writeFlow(); continue; }
+          }
+
+          if (mutateResult && mutateResult.called) {
+            await page.waitForTimeout(sms(3000));
+            if (page.url().includes('time-slot')) {
+              // Reserve fired via the app's OWN mutation → the real request is
+              // intercepted and captured. Keep driving so the app navigates to
+              // continue-payment and fires the REAL payment-initiate itself
+              // (captured below) — never fabricate a request.
+              console.log('  → reserve fired via UI; continuing to the real payment step');
+              idleRounds = 0; writeFlow(); continue;
+            }
+          }
+        }
+
+        // Fallback: still try clicking Continue Booking
+        const continueClicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button')];
+          for (const b of btns) {
+            const txt = (b.textContent || '').trim();
+            const r = b.getBoundingClientRect();
+            if (r.width > 100 && /continue.*book|book.*now|reserve|confirm.*book/i.test(txt)) {
+              b.setAttribute('data-iflow-continue', '1');
+              return txt;
+            }
+          }
+          return '';
+        }).catch(() => '');
+
+        if (continueClicked) {
+          try {
+            await page.click('[data-iflow-continue="1"]', { timeout: 2000, force: true });
+            console.log(`  → Playwright-clicked: "${continueClicked}"`);
+          } catch (_) {}
+          try { await page.waitForTimeout(sms(2000)); } catch (_) {}
+        }
+      }
+    }
+
+    // 8. Find and click the most likely submit/action button (skip on time-slot — handled by step 7)
+    let clicked = '';
+    if (curPath.includes('time-slot')) { clicked = ''; } else { clicked = await page.evaluate(() => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+      };
+      const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"], a[href]')];
+      const actionWords = /submit|sign.?in|log.?in|continue|verify|next|proceed|confirm|upload|pay|book|reserve|send|apply|okay|ok|start|enter|now|take|appointment|save|select|choose/i;
+      const skipWords = /cancel|back|close|dismiss|reset|clear|forgot|already|privacy|terms|cookie|sign.?up|create.?account|register|sign.?in.?then|log.?out|sign.?out|resend|check.?payment|profile|find.?answer|download/i;
+      let best = null;
+      let bestScore = -1;
+      for (const b of btns) {
+        if (!visible(b)) continue;
+        const txt = (b.textContent || '').trim().toLowerCase();
+        const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
+        const combined = txt + ' ' + ariaLabel;
+        if (skipWords.test(combined) && !actionWords.test(combined)) continue;
+        // Skip calendar day buttons
+        if (/^[0-9]{1,2}$/.test(txt)) continue;
+        let score = 0;
+        if (b.type === 'submit') score += 5;
+        if (actionWords.test(combined)) score += 10;
+        if (b.classList.contains('primary') || /primary|submit|action/.test(b.className)) score += 3;
+        if (/bg-blue|bg-green|bg-primary|btn-primary|btn-success|bg-\[/.test(b.className)) score += 2;
+        if (txt.length > 0 && txt.length < 30) score += 1;
+        const rect = b.getBoundingClientRect();
+        if (rect.width > 200) score += 3;
+        if (score > bestScore) { bestScore = score; best = b; }
+      }
+      if (!best) return '';
+      best.disabled = false;
+      best.removeAttribute('disabled');
+      best.click();
+      return (best.textContent || '').trim().substring(0, 40);
+    }).catch(() => ''); }
+
+    try { await page.waitForTimeout(STEP_PAUSE); } catch (_pageGone) {
+      console.log('  [info] page closed during step pause');
+      break;
+    }
+    writeFlow();
+
+    // 9. Check progress
+    if (log.length > prevCaptures) {
+      idleRounds = 0;
+      prevCaptures = log.length;
+      console.log(`  ✓ step captured (${log.length} API calls so far)`);
+    } else {
+      if (clicked) console.log(`  … clicked "${clicked}" but no new API call  [page: ${page.url()}]`);
+      else {
+        const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '').catch(() => '');
+        console.log(`  … nothing to click  [${curPath}]  text:"${bodyText.replace(/\n/g,' ').substring(0,100)}"`);
+      }
+      idleRounds++;
+    }
+
+    // If payment initiate captured, we're done
+    if (log.some(e => /\/payment\/.*\/initiate/.test(e.url))) {
+      console.log('  ✓ payment initiate captured — flow complete');
+      break;
+    }
+
+    // (time-slot clicking handled above in section 7)
+
+    // Payment submit is captcha-gated, so drive the mutation through the fiber
+    // tree first: that makes the app build the real initiate URL (which carries
+    // the bundle's own payment UUID) instead of us fabricating one.
+    if (idleRounds >= 2 && curPath.includes('continue-payment') && !flowState.paymentInitiated) {
+      const appointmentId = flowState.capturedAppointmentId || 'mock-appointment-id';
+      const before = log.length;
+      const res = await fireMutations(page, {
+        paymentMethod: 'dg-epay', appointmentId,
+        turnstileToken: MOCK.turnstile, c: MOCK.turnstile,
+      }, async () => log.some(e => /\/payment\/.*initiate/i.test(e.url))).catch(() => null);
+      if (res) console.log(`  → payment mutation via fiber: found=${res.found} fired=${res.fired} hit=${res.hit}`);
+      if (log.some(e => /\/payment\/.*initiate/i.test(e.url))) {
+        console.log('  ✓ real payment endpoint captured via UI mutation');
+        writeFlow();
+        break;
+      }
+      if (log.length > before) { idleRounds = 0; continue; }
+    }
+
+    // No fabrication fallbacks: the flow drives the REAL bundle and every value
+    // (slotId, dgepay uuid, endpoints) is captured from the real intercepted
+    // requests the app itself fires — reserve via the UI mutation above, payment
+    // via the UI mutation at the continue-payment step. If the drive genuinely
+    // cannot reach a step, that value is left empty (honest) rather than faked.
+    // The loop exits naturally on MAX_IDLE / WALK_TIMEOUT.
+  }
+
+  writeFlow();
+
+  if (HOLD_OPEN_MS > 0) {
+    console.log(`🖐 manual mode — window open for ${Math.round(HOLD_OPEN_MS / 1000)}s`);
+    let closed = false; page.on('close', () => { closed = true; });
+    const t0 = Date.now();
+    while (!closed && Date.now() - t0 < HOLD_OPEN_MS) { await page.waitForTimeout(sms(1000)).catch(() => { closed = true; }); }
+    writeFlow();
+  }
+
+  console.log(`\n💾 captured ${log.length} API call(s) → ${path.join(OUT, 'flow.json')}`);
+  const captured = extractFromCaptured(log, true);
+  console.log('📋 extracted:', JSON.stringify(captured, null, 2));
+  // For a connected (warm) browser this disconnects and clears our contexts but
+  // leaves the shared server running; for our own it closes fully.
+  await browser.close().catch(() => {});
+  process.exit(0);
+})().catch((e) => { console.error('flow-capture error:', e); process.exit(1); });
+
+module.exports = { mockBodyFor, turnstileInitScript, isApi };

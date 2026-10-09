@@ -88,6 +88,9 @@ type sharedScanResult struct {
 	ep       EndpointScan
 	cipher   CipherScan
 	cipherOK bool
+	// extractCache is the `.endpoint-cache.json` produced by running extract_fetch.js
+	// v15 on THIS bundle (Option A). Empty when node is missing / the run failed.
+	extractCache []byte
 }
 
 var (
@@ -238,7 +241,14 @@ func getSharedScan(f Fetcher, origin string, maxTries int, stopped func() bool, 
 	}
 	j.combined = combined
 	if combined != "" {
-		j.ep = ScanEndpoints(combined) // ~0.3s
+		// Option A: run extract_fetch.js v15 on the SAME downloaded bundle — full
+		// endpoints + slot id + dg-epay uuid, no autocheck push / pre-signin wait.
+		// Falls back to the regex ScanEndpoints below when node is unavailable.
+		if cache := RunExtractFetch(combined, baseName(j.bundle), log); len(cache) > 0 {
+			j.extractCache = cache
+			log("🧩 extract_fetch.js v15: live bundle theke endpoints+slot+dgepay ber kora holo (autocheck lagbe na)")
+		}
+		j.ep = ScanEndpoints(combined) // ~0.3s (regex fallback / gap-fill)
 		if cs, err := ScanCipher(combined); err == nil {
 			j.cipher = cs
 			j.cipherOK = true

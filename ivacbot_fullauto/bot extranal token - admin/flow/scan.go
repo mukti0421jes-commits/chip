@@ -40,8 +40,6 @@ var apiBasePatterns = []*regexp.Regexp{
 // id that is NOT strictly hex (e.g. "139fd4d2-27c9-4758-a623-368583e830bs" — note
 // the trailing "bs"), so the old [0-9a-fA-F-]{36} pattern rejected it and the flow
 // fell back to a stale id → reserve hit the wrong slot. Allow any alnum + hyphen.
-// The reserve action segment is reserve-slot OR reserve_slot depending on the
-// bundle (this bundle uses the underscore), so the separator is [-_].
 var slotIDRe = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve[-_]slot`)
 
 // EndpointScan is the plain-text (non-obfuscated) part of the live scan: API base,

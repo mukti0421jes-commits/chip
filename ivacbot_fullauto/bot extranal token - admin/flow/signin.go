@@ -8,6 +8,12 @@ type SigninParams struct {
 	Password         string
 	EncryptedCaptcha string // captcha token already encrypted with the 'signin' cipher
 	NavState         string // x-sec-navigation-state (from dynamic scan / runtime)
+	// BodyKeys / NavHeader come from the drift adapter (endpoint_spec.go). When nil/""
+	// the proven defaults {phone,password,c} + "x-sec-navigation-state" are used, so a
+	// normal build is byte-for-byte unchanged. They differ ONLY when extract_fetch
+	// decoded an IVAC field/header rename, and are mapped positionally onto the values.
+	BodyKeys  []string
+	NavHeader string
 }
 
 // BuildSignin builds the POST /auth/v2-sign-in request exactly as RJ SLOT v10.5
@@ -22,23 +28,32 @@ type SigninParams struct {
 //     referrer: API_REFERRER,
 //     body: JSON.stringify({ phone, password, c: encryptedCaptcha }) })
 func BuildSignin(p SigninParams) (Request, error) {
+	// Proven order {phone,password,c}; the adapter supplies renamed keys ONLY on drift.
+	keys := p.BodyKeys
+	if len(keys) != 3 {
+		keys = []string{"phone", "password", "c"}
+	}
 	body, err := marshalBody(map[string]string{
-		"phone":    p.Phone,
-		"password": p.Password,
-		"c":        p.EncryptedCaptcha,
-	}, "phone", "password", "c")
+		keys[0]: p.Phone,
+		keys[1]: p.Password,
+		keys[2]: p.EncryptedCaptcha,
+	}, keys...)
 	if err != nil {
 		return Request{}, err
+	}
+	navHeader := p.NavHeader
+	if navHeader == "" {
+		navHeader = "x-sec-navigation-state"
 	}
 	return Request{
 		Method: "POST",
 		URL:    EPSignin,
 		Headers: map[string]string{
-			"accept":                  "application/json, text/plain, */*",
-			"cache-control":           "no-cache, no-store, must-revalidate",
-			"content-type":            "application/json",
-			"pragma":                  "no-cache",
-			"x-sec-navigation-state":  p.NavState,
+			"accept":        "application/json, text/plain, */*",
+			"cache-control": "no-cache, no-store, must-revalidate",
+			"content-type":  "application/json",
+			"pragma":        "no-cache",
+			navHeader:       p.NavState,
 		},
 		Body:     body,
 		Referrer: APIReferrer,

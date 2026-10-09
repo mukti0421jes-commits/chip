@@ -1,9 +1,33 @@
 package flow
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"strings"
 )
+
+// flexStr unmarshals a JSON string OR number into a string (commissionId may be
+// either a numeric id or a uuid-like string depending on the bundle).
+type flexStr string
+
+func (f *flexStr) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*f = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = flexStr(s)
+		return nil
+	}
+	*f = flexStr(strings.Trim(string(b), `"`))
+	return nil
+}
 
 // overviewApplicant is one entry from /file/over-view-v3 (body.data[]).
 type overviewApplicant struct {
@@ -11,6 +35,7 @@ type overviewApplicant struct {
 	Primary        bool    `json:"primary"`
 	IvacCenter     *string `json:"ivacCenter"`     // null until the center is confirmed for this appointment
 	CommissionName string  `json:"commissionName"` // the mission this applicant/file belongs to (e.g. "Dhaka", "Rajshahi")
+	CommissionID   flexStr `json:"commissionId"`   // server id → high-commissions/by-id → EXACT mission+center (guaranteed, no hardcode)
 }
 
 var extRe = regexp.MustCompile(`(?i)\.[a-z0-9]+$`)

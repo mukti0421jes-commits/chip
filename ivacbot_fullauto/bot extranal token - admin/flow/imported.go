@@ -76,7 +76,7 @@ type ImportedRecord struct {
 // (e.g. "139fd4d2-27c9-4758-a623-368583e830bs" — note the trailing "bs"), and a
 // hex-only pattern silently rejects the real value.
 var (
-	slotFromURLRe   = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve-slot`)
+	slotFromURLRe   = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve[-_]slot`)
 	dgepayFromURLRe = regexp.MustCompile(`/payment/([0-9a-zA-Z-]{36})/dg-epay/initiate`)
 )
 
@@ -213,6 +213,60 @@ func ParseImport(raw []byte) (*Imported, error) {
 
 // Summary renders a one-line description of what an import carries, for the log
 // and the dashboard.
+// ApplyIvacflowForce OVERRIDES this run's cipher, endpoints, slot/dg-epay id, API
+// base and security headers with an ivacflow capture. Used by the #1 cipher-fail
+// fallback: when signin/reserve is rejected for a cipher/captcha reason, the run
+// re-applies ivacflow's proven-correct values and retries. Unlike ApplyImportGaps
+// (which only fills what the scan missed), this WINS over the current config on
+// purpose. Returns true if it applied anything usable (a cipher or an endpoint).
+func (c *Config) ApplyIvacflowForce(imp *Imported) bool {
+	if imp == nil {
+		return false
+	}
+	applied := false
+	if imp.APIBase != "" {
+		c.APIBase = imp.APIBase
+	}
+	if c.Endpoints == nil {
+		c.Endpoints = map[string]string{}
+	}
+	for k, v := range imp.Families {
+		if v != "" {
+			c.Endpoints[k] = v
+			applied = true
+		}
+	}
+	if imp.SlotID != "" {
+		c.SlotID = imp.SlotID
+		applied = true
+	}
+	if imp.DgepayID != "" {
+		c.DgepayID = imp.DgepayID
+		applied = true
+	}
+	if imp.Signin != nil && imp.Signin.Key != "" {
+		c.Signin = imp.Signin
+		applied = true
+	}
+	if imp.Reserve != nil && imp.Reserve.Key != "" {
+		c.Reserve = imp.Reserve
+		applied = true
+	}
+	if imp.Initiate != nil && imp.Initiate.Key != "" {
+		c.Initiate = imp.Initiate
+		applied = true
+	}
+	for k, v := range imp.Headers {
+		switch k {
+		case "x-sec-navigation-state":
+			c.NavState = v
+		case "x-sec-runtime-state":
+			c.RuntimeState = v
+		}
+	}
+	return applied
+}
+
 func (i *Imported) Summary() string {
 	if i == nil {
 		return "none"
@@ -320,12 +374,39 @@ func (c *Config) fillFrom(imp *Imported, s EndpointScan, cipherOK bool, say func
 		}
 	}
 
-	if s.SlotID == "" && imp.SlotID != "" && c.Source["slotId"] != SrcIvacflow {
-		if c.SlotID != imp.SlotID {
-			say(tag + "slot id → " + imp.SlotID + " (scan resolve korte pareni)")
+	// slot id. ivacflow push is AUTHORITATIVE (user setting): it overrides even a
+	// value THIS run's scan resolved, when they differ. Any other capture keeps the
+	// old rule — fill only the gap the scan left. The SrcIvacflow guard stops a
+	// later, weaker capture from clobbering an ivacflow value already applied.
+	if imp.SlotID != "" && c.Source["slotId"] != SrcIvacflow {
+		king := imp.Origin == SrcIvacflow
+		if king || s.SlotID == "" {
+			if c.SlotID != imp.SlotID {
+				why := " (scan resolve korte pareni)"
+				if king {
+					why = " (ivacflow authoritative — scan-ke overwrite korlo)"
+				}
+				say(tag + "slot id → " + imp.SlotID + why)
+			}
+			c.SlotID = imp.SlotID
+			c.noteSource("slotId", imp.Origin)
+			if king {
+				c.IvacflowSlotID = imp.SlotID // sticky: wins in ReserveURLFor over cache/manual/scan
+			}
 		}
-		c.SlotID = imp.SlotID
-		c.noteSource("slotId", imp.Origin)
+	}
+
+	// dg-epay uuid. ONLY an ivacflow push writes it here, and it is AUTHORITATIVE
+	// (user setting) — overriding scan / resolve / cache / manual. Non-ivacflow
+	// captures keep using the ImportedDgepayID / ensureDgEpay fallback path below,
+	// so their behavior is unchanged.
+	if imp.Origin == SrcIvacflow && imp.DgepayID != "" && c.Source["dgepayId"] != SrcIvacflow {
+		if c.DgepayID != imp.DgepayID {
+			say(tag + "dg-epay uuid → " + imp.DgepayID + " (ivacflow authoritative — scan-ke overwrite korlo)")
+		}
+		c.DgepayID = imp.DgepayID
+		c.noteSource("dgepayId", imp.Origin)
+		c.IvacflowDgepayID = imp.DgepayID // sticky: wins in InitiateURLFor over cache/manual/scan
 	}
 
 	if !cipherOK && imp.Signin != nil && c.Source["cipher"] != SrcIvacflow {

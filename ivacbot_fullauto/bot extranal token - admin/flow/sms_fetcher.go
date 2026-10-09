@@ -44,35 +44,43 @@ func StartSMSFetcher(r *Runner, phone string) {
 	}
 	url := SMSURL(phone)
 	seen := map[string]bool{}
-	deadline := time.Now().Add(SMSWaitForNewMax)
 	r.interruptibleSleep(SMSFirstDelay)
 
-	waitingLogged := ""
-	for a := 0; !r.Stopped() && r.otp() == ""; a++ {
-		// Stop once BOTH the attempt budget is spent and the extra wait window is
-		// over. While a stale OTP is all the server has, the wait window governs.
-		if a >= SMSMaxAttempts && time.Now().After(deadline) {
-			r.log("⌛ OTP auto-fetch give up — notun OTP asheni. Dashboard theke manual OTP din.")
-			return
-		}
+	// AUTO OTP fetch: poll the php SMS server at most SMSAutoMaxAttempts (10) times for
+	// THIS instance. Each try is logged (success / server-or-proxy error / no OTP yet /
+	// still-stale code) so a silent failure is never invisible. The first fresh, non-
+	// stale OTP is stored and stops the loop. If all tries are spent without one, the
+	// auto-fetch stops here and the flow falls back to a manually typed OTP (the verify
+	// step keeps waiting until OTPVerifyLifetime elapses).
+	for a := 1; a <= SMSAutoMaxAttempts && !r.Stopped() && r.otp() == ""; a++ {
+		tag := "(try " + itoa(a) + "/" + itoa(SMSAutoMaxAttempts) + ")"
 		body, err := r.Fetcher.Get(url)
-		if err == nil {
-			if otp := ExtractOTP(body); otp != "" {
-				if r.IsStaleOTP(otp) {
-					// The server is still serving the OLD code — do NOT verify with it.
-					if waitingLogged != otp {
-						waitingLogged = otp
-						r.log("⏳ sms.php ekhono purono OTP (" + otp + ") dicche — notun OTP na asha porjonto verify korbo na")
-					}
-				} else if !seen[otp] {
-					seen[otp] = true
-					if r.SetOTP(otp) {
-						r.log("📩 Notun OTP received: " + otp)
-						return
-					}
+		switch {
+		case err != nil:
+			r.log("⚠ Auto OTP fetch " + tag + " — server/proxy error: " + err.Error())
+		default:
+			otp := ExtractOTP(body)
+			switch {
+			case otp == "":
+				r.log("⏳ Auto OTP fetch " + tag + " — OTP ekhono php server e ashe ni")
+			case r.IsStaleOTP(otp):
+				// The server is still serving the OLD code — do NOT verify with it.
+				r.log("⏳ Auto OTP fetch " + tag + " — purono OTP (" + otp + ") dicche, notun OTP wait korchi")
+			case !seen[otp]:
+				seen[otp] = true
+				if r.SetOTP(otp) {
+					r.log("📩 Auto OTP paowa gelo " + tag + ": " + otp)
+					return
 				}
 			}
 		}
-		r.interruptibleSleep(SMSPollInterval) // Stop cancels the poll wait immediately
+		if a < SMSAutoMaxAttempts {
+			r.interruptibleSleep(SMSPollInterval) // Stop cancels the poll wait immediately
+		}
+	}
+	if !r.Stopped() && r.otp() == "" {
+		r.log("⌛ Auto OTP fetch bondho — " + itoa(SMSAutoMaxAttempts) +
+			" bar try kore notun OTP paowa jayni. Dashboard theke manual OTP din (OTP window " +
+			OTPVerifyLifetime.String() + ").")
 	}
 }

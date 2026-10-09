@@ -1,0 +1,13 @@
+
+# secrets & artifacts (go bot / ivacflow)
+*.exe
+node_modules/
+ivacbot_fullauto/**/instances.json
+ivacbot_fullauto/**/portal_users.json
+ivacbot_fullauto/**/portal_entries.json
+ivacbot_fullauto/**/proxies.json
+ivacbot_fullauto/**/captcha_config.json
+ivacbot_fullauto/**/ivacflow_token.txt
+ivacflow/flow.json
+ivacflow/values.json
+ivacflow/ivacflow_token.txt

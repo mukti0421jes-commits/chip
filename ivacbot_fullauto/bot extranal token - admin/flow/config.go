@@ -36,6 +36,15 @@ type Config struct {
 	ForcedSlotID   string
 	ForcedDgepayID string
 
+	// ivacflow push is AUTHORITATIVE for these two ids (user setting): when an
+	// ivacflow capture carries a slot id / dg-epay uuid, it wins over EVERYTHING —
+	// the live scan, the endpoint-cache path, a manual override and the built-in
+	// default. These sticky fields hold that value so nothing downstream (a later
+	// scan, ensureDgEpay, a cache apply) can quietly clobber it. Empty = no
+	// ivacflow value yet, so the normal scan/cache/default precedence applies.
+	IvacflowSlotID   string
+	IvacflowDgepayID string
+
 	// Fallbacks are captured configs consulted IN ORDER, after the live scan and
 	// before the built-in defaults: ivacflow first (it runs the bundle, so it is
 	// the more reliable of the two), then the RJ SLOT recorder capture. They are a
@@ -85,6 +94,22 @@ type Config struct {
 	// If the live bundle name still matches this snapshot, Scan reuses it and skips
 	// the heavy download + goja cipher/dg-epay work (smart-skip). Empty = none yet.
 	LastGoodJSON []byte
+
+	// EndpointSpec holds the decoded body-field-name list + header-name list per
+	// logical endpoint ("signin","reserve") from the endpoint cache (extract_fetch.js
+	// v15). Used ONLY by the drift adapter (endpoint_spec.go): when the live spec
+	// differs from the proven default, the body keys / header names are remapped
+	// positionally so an IVAC field/header RENAME is followed instead of breaking the
+	// request. Empty (or spec == proven default) = proven builder, byte-for-byte.
+	EndpointSpec map[string]EndpointSpec
+}
+
+// EndpointSpec is one endpoint's decoded request shape from the endpoint cache: the
+// ordered body field NAMES and the custom header NAMES. The step still builds the
+// VALUES; only the names come from here, so an IVAC rename is followed.
+type EndpointSpec struct {
+	Body []string // ordered body field names, e.g. ["phone","password","c"]
+	Hdrs []string // custom header names, e.g. ["x-sec-navigation-state"]
 }
 
 // anyCipher returns the first available scanned cipher (all purposes share one key
@@ -126,14 +151,14 @@ func NewConfig() *Config {
 			"/otp/verifySigninOtp":                    "/otp/verify-Signin_Otp",
 			"/file/file-confirmation_and_slot_status": "/file/file_confirmation-and_slot-status",
 		},
-		SlotID:       "139fd5d2-27c9-4728-a103-278583e830bd", // current bundle slot uuid (2026-10-06)
-		DgepayID:     "27228961-2327-3s28-861a-465sb28327b3", // live dg-epay uuid (from a real 2026-10-06 initiate / ivacflow push)
+		SlotID:       "", // BLANK by design: filled by live scan, then overwritten by an ivacflow push if they differ. No stale hardcoded id.
+		DgepayID:     "", // BLANK by design: filled by live scan / resolve, then overwritten by an ivacflow push if they differ.
 		VRequestMeta: "windos.s",
 		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
 		// the server accepts the request but returns {data:null,"Success"} — no
 		// session — so these must be sent on sign-in / upload.
 		NavState:     "80d51dc5-af20-46fa-a7bb-e6a8f3f80065",
-		RuntimeState: "v1.5a4c8831.9a53.47ed.b579.042a2c0cee5a",
+		RuntimeState: "v3.5s4c8831.9a53.27ed.b579.042a2c0cee5a",
 		// cipher fallback (from live bundle muwjfj8w 2026-10-06: version 5 / skip 6 /
 		// len 26 — byte-verified by scanning the bundle) so signin/reserve can still
 		// encrypt the captcha token into body `c` when the bundle is unreachable.
@@ -210,6 +235,11 @@ func (c *Config) BookURL() string { return c.join(c.ep("/appointment/get-booking
 // is used verbatim — so a suffix change on IVAC's side is followed automatically.
 // Otherwise it reconstructs /slots/<slotId>/reserve-slot (built-in behavior).
 func (c *Config) ReserveURLFor() string {
+	// ivacflow push is authoritative (user setting): its slot id wins over the
+	// cached path, a manual override and the scan. Proven suffix is kept.
+	if c.IvacflowSlotID != "" {
+		return c.join("/slots/" + c.IvacflowSlotID + "/reserve-slot")
+	}
 	if c.CacheReservePath != "" {
 		return c.join(c.CacheReservePath)
 	}
@@ -227,6 +257,11 @@ func (c *Config) ReserveURLFor() string {
 // bundle. A manual dashboard override (ForcedDgepayID) wins; else the scanned /
 // fallback DgepayID is used.
 func (c *Config) InitiateURLFor() string {
+	// ivacflow push is authoritative (user setting): its dg-epay uuid wins over the
+	// manual override, the cached path and the scan. Proven suffix is kept.
+	if c.IvacflowDgepayID != "" {
+		return c.join("/payment/" + c.IvacflowDgepayID + "/dg-epay/initiate")
+	}
 	// Manual dashboard override always wins.
 	if c.ForcedDgepayID != "" {
 		return c.join("/payment/" + c.ForcedDgepayID + "/dg-epay/initiate")

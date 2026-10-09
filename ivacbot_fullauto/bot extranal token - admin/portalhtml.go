@@ -114,28 +114,14 @@ select option{background:#0a1020}
 .spin{width:120px;height:120px;border-radius:50%;border:4px solid rgba(34,211,238,.15);border-top-color:#22d3ee;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:800;color:#9fb0cf;animation:rot 4s linear infinite;margin:0 auto}
 @keyframes rot{to{transform:rotate(360deg)}}
 .row-actions{display:flex;gap:6px}
-/* Dashboard overview */
-.pstat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px;margin-bottom:20px}
-.pstat{display:flex;align-items:center;gap:16px;padding:20px 22px;background:linear-gradient(160deg,#0e1626,#0b1120);border:1px solid rgba(34,211,238,.12);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.30)}
-.pstat .ic{font-size:28px;line-height:1}
-.pstat .num{font-size:32px;font-weight:800;color:#ece4cf;line-height:1.05}
-.pstat .lbl{font-size:12px;color:#8b93a7;font-weight:600;margin-top:3px;text-transform:uppercase;letter-spacing:.6px}
-.pstat.acc{border-color:rgba(34,211,238,.28)}
-.pstat.pend{border-color:rgba(251,191,36,.28)}
-.pstat.done{border-color:rgba(52,211,153,.28)}
-.pstat.phone{border-color:rgba(124,108,240,.28)}
-.dash-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
-.dash-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid rgba(34,211,238,.06)}
-.dash-row:last-child{border-bottom:none}
-.qbtns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
 </style></head><body>
+<div id="impBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#7c2d12;color:#fed7aa;padding:8px 16px;text-align:center;font-weight:700;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,.4);">&#128065; Admin view — <span id="impUser"></span> hisebe dekhchen &nbsp; <a href="/portal/returnAdmin" style="background:#fb923c;color:#1c1917;padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:800;">&#11013; Return to Admin</a></div>
 <div class="layout">
   <div class="side">
     <div class="logo">RJ Slot<span> Hub</span></div>
     <div class="mlabel">MENU</div>
     <div class="nav">
-      <a id="nav-dash" class="active" onclick="showSec('dash')">&#127968; Dashboard</a>
-      <a id="nav-pay" onclick="showSec('pay')">&#128202; Payment Hub</a>
+      <a id="nav-pay" class="active" onclick="showSec('pay')">&#128202; Payment Hub</a>
       <a id="nav-file" onclick="showSec('entries')">&#128193; File Manager</a>
       <a class="sub" id="nav-entries" onclick="showSec('entries')">&#128203; Entries</a>
       <a class="sub" id="nav-add" onclick="showSec('add')">&#10133; Add New</a>
@@ -145,37 +131,13 @@ select option{background:#0a1020}
   </div>
   <div class="main">
     <div class="top">
-      <div class="title" id="secTitle">&#127968; Dashboard <span class="live" id="liveBadge" style="display:none">&#9679; LIVE</span></div>
+      <div class="title" id="secTitle">&#128202; Payment Hub <span class="live" id="liveBadge" style="display:none">&#9679; LIVE</span></div>
       <div class="clock" id="clock"></div>
       <div class="who"><div class="av" id="av">U</div><div><div class="nm" id="nm">USER</div><div class="rl" id="rl">USER</div></div></div>
     </div>
     <div class="content">
-      <!-- DASHBOARD -->
-      <div class="sec active" id="sec-dash">
-        <div class="qbtns">
-          <button class="btn btn-sm" onclick="showSec('add')">&#10133; Add New Entry</button>
-          <button class="btn btn-sm" style="background:linear-gradient(90deg,#0891b2,#0e7490)" onclick="showSec('pay')">&#128202; Payment Hub</button>
-          <button class="btn btn-sm" style="background:#241a3a" onclick="showSec('entries')">&#128203; My Entries</button>
-        </div>
-        <div class="pstat-grid">
-          <div class="pstat acc"><div class="ic">&#128193;</div><div><div class="num" id="dsAcc">0</div><div class="lbl">My Accounts</div></div></div>
-          <div class="pstat pend"><div class="ic">&#9203;</div><div><div class="num" id="dsPend">0</div><div class="lbl">Pending Payment</div></div></div>
-          <div class="pstat done"><div class="ic">&#9989;</div><div><div class="num" id="dsDone">0</div><div class="lbl">Payment Done</div></div></div>
-          <div class="pstat phone"><div class="ic">&#128222;</div><div><div class="num" id="dsPhone">0</div><div class="lbl">Phone Records</div></div></div>
-        </div>
-        <div class="dash-panels">
-          <div class="card" style="padding:18px 20px">
-            <div class="h1" style="font-size:17px;margin-bottom:10px">&#128203; Recent Entries</div>
-            <div id="dsRecent" class="muted">No entries yet.</div>
-          </div>
-          <div class="card" style="padding:18px 20px">
-            <div class="h1" style="font-size:17px;margin-bottom:10px">&#128179; Payment Ready</div>
-            <div id="dsPayReady" class="muted">None yet.</div>
-          </div>
-        </div>
-      </div>
       <!-- PAYMENT HUB -->
-      <div class="sec" id="sec-pay">
+      <div class="sec active" id="sec-pay">
         <div class="card" style="padding:50px 20px;text-align:center" id="payBox">
           <div class="spin" id="paySpin">5</div>
           <div class="muted" id="payMsg" style="margin-top:18px">No payments yet — auto-refreshing</div>
@@ -246,48 +208,20 @@ fetch('/api/portal/me').then(function(r){return r.json();}).then(function(d){
   document.getElementById('rl').textContent=(d.role||'user').toUpperCase();
   document.getElementById('av').textContent=(d.username||'U').substring(0,2).toUpperCase();
   var fu=document.getElementById('f-user'); if(fu) fu.value=(d.username||'').toUpperCase();
+  if(d.impersonating){var b=document.getElementById('impBanner');var iu=document.getElementById('impUser');if(iu)iu.textContent=(d.username||'user').toUpperCase();if(b){b.style.display='block';document.body.style.paddingTop='38px';}}
 });
 
-var titles={dash:'&#127968; Dashboard',pay:'&#128202; Payment Hub',entries:'&#128193; File Manager',add:'&#128193; File Manager',phone:'&#128222; Phone List'};
+var titles={pay:'&#128202; Payment Hub',entries:'&#128193; File Manager',add:'&#128193; File Manager',phone:'&#128222; Phone List'};
 function showSec(s){
-  ['dash','pay','entries','add','phone'].forEach(function(x){var el=document.getElementById('sec-'+x);if(el)el.classList.remove('active');});
+  ['pay','entries','add','phone'].forEach(function(x){var el=document.getElementById('sec-'+x);if(el)el.classList.remove('active');});
   var sec=document.getElementById('sec-'+s); if(sec)sec.classList.add('active');
-  ['dash','pay','file','entries','add','phone'].forEach(function(x){var n=document.getElementById('nav-'+x);if(n)n.classList.remove('active');});
+  ['pay','file','entries','add','phone'].forEach(function(x){var n=document.getElementById('nav-'+x);if(n)n.classList.remove('active');});
   var nav=document.getElementById('nav-'+(s==='add'?'add':s)); if(nav)nav.classList.add('active');
   document.getElementById('secTitle').innerHTML=titles[s]+(s==='pay'?' <span class="live">&#9679; LIVE</span>':'');
-  if(s==='dash')loadDash();
   if(s==='entries')loadEntries();
   if(s==='phone')loadPhones();
   if(s==='add')loadLock();
 }
-
-// Dashboard overview — counts from entries + payments + phones (read-only).
-function dsEsc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-function loadDash(){
-  fetch('/api/portal/entries').then(function(r){return r.json();}).then(function(d){
-    var list=d.entries||[];
-    var pend=0,done=0;
-    list.forEach(function(x){ if(x.payStatus==='done')done++; else pend++; });
-    var set=function(id,v){var el=document.getElementById(id);if(el)el.textContent=v;};
-    set('dsAcc',list.length); set('dsPend',pend); set('dsDone',done);
-    var recent=list.slice().reverse().slice(0,6);
-    var rc=document.getElementById('dsRecent');
-    if(rc){ rc.innerHTML=recent.length? recent.map(function(x){
-      return '<div class="dash-row"><span><b style="color:#a5f3fc">'+dsEsc(x.name||x.phone)+'</b> <span class="muted">'+dsEsc(x.mission||'')+(x.type?(' • '+dsEsc(x.type)):'')+'</span></span><span class="muted" style="font-size:11px">'+dsEsc(x.createdAt||'')+'</span></div>';
-    }).join('') : 'No entries yet.'; }
-  }).catch(function(){});
-  fetch('/api/portal/phones').then(function(r){return r.json();}).then(function(d){
-    var el=document.getElementById('dsPhone'); if(el)el.textContent=(d.phones||[]).length;
-  }).catch(function(){});
-  fetch('/api/portal/payments').then(function(r){return r.json();}).then(function(d){
-    var ready=(d.payments||[]).filter(function(p){return p.paymentUrl&&p.payStatus!=='done'&&p.payStatus!=='expired';});
-    var pl=document.getElementById('dsPayReady');
-    if(pl){ pl.innerHTML=ready.length? ready.map(function(p){
-      return '<div class="dash-row"><b>'+dsEsc(p.phone)+'</b><button class="btn btn-sm" onclick="window.open(\''+dsEsc(p.paymentUrl)+'\',\'_blank\')">PayNow</button></div>';
-    }).join('') : 'None yet.'; }
-  }).catch(function(){});
-}
-loadDash();
 
 // Payment Hub auto-refresh
 var paySpin=document.getElementById('paySpin'),payCount=5;
@@ -550,8 +484,12 @@ td{padding:12px 14px;border-bottom:1px solid rgba(34,211,238,.05);font-size:13.5
 
   <div class="card">
     <h3>&#128279; Login link to share with users</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <input id="pubUrl" placeholder="http://rjslothub.duckdns.org:8080" style="flex:1;min-width:260px;padding:8px 10px;border-radius:8px;border:1px solid rgba(129,140,248,.25);background:#0b1225;color:#cbd5e1">
+      <button class="btn btn-sm" onclick="savePubUrl()">Save public URL</button>
+    </div>
     <div class="link"><span id="loginLink"></span><button class="btn btn-sm" onclick="copyLink()">Copy</button></div>
-    <div class="muted" style="color:#8b93a7;font-size:12px;margin-top:8px">User-কে এই link + তার username/password দিন। (PC-তে চালালে public access-এর জন্য Cloudflare Tunnel লাগবে।)</div>
+    <div class="muted" style="color:#8b93a7;font-size:12px;margin-top:8px">উপরে আপনার PUBLIC URL দিন (যেমন DuckDNS লিংক) → Save করুন। তাহলে নিচের share-link সেটাই দেখাবে। User-কে এই link + তার username/password দিন।</div>
   </div>
 
   <div class="card" style="padding:0;overflow:hidden">
@@ -559,12 +497,17 @@ td{padding:12px 14px;border-bottom:1px solid rgba(34,211,238,.05);font-size:13.5
   </div>
 </div>
 <script>
-document.getElementById('loginLink').textContent=window.location.origin+'/login';
-function copyLink(){navigator.clipboard.writeText(window.location.origin+'/login');var m=document.getElementById('msg');m.style.color='#34d399';m.textContent='Login link copied!';}
+var pubBase=window.location.origin; // fallback until the saved public URL loads
+function renderLink(){document.getElementById('loginLink').textContent=pubBase+'/login';}
+function loadPubUrl(){fetch('/api/portalPublicUrl').then(function(r){return r.json();}).then(function(d){if(d&&d.url){pubBase=d.url;var el=document.getElementById('pubUrl');if(el)el.value=d.url;}renderLink();}).catch(function(){renderLink();});}
+function savePubUrl(){var u=document.getElementById('pubUrl').value.trim();fetch('/api/portalPublicUrl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})}).then(function(r){return r.json();}).then(function(d){pubBase=(d&&d.url)?d.url:window.location.origin;renderLink();var m=document.getElementById('msg');if(m){m.style.color='#34d399';m.textContent='Public URL saved!';}});}
+function copyLink(){navigator.clipboard.writeText(pubBase+'/login');var m=document.getElementById('msg');m.style.color='#34d399';m.textContent='Login link copied!';}
+loadPubUrl();
 function load(){
   fetch('/api/portal/users').then(function(r){return r.json();}).then(function(d){
     document.getElementById('ub').innerHTML=(d.users||[]).map(function(x){
-      return '<tr><td><b>'+x.username+'</b></td><td><span class="pill '+x.role+'">'+x.role.toUpperCase()+'</span></td><td class="muted" style="color:#8b93a7">'+(x.createdAt||'')+'</td><td style="text-align:right">'+(x.username==='admin'?'':'<button class="btn btn-sm" style="background:#241a3a" onclick="delUser(\''+x.username+'\')">Delete</button>')+'</td></tr>';
+      var actions=(x.username==='admin')?'':'<button class="btn btn-sm" style="background:#1d3a2a;color:#9cf6c4;margin-right:6px" onclick="viewAs(\''+x.username+'\')">&#128065; View</button><button class="btn btn-sm" style="background:#241a3a" onclick="delUser(\''+x.username+'\')">Delete</button>';
+      return '<tr><td><b>'+x.username+'</b></td><td><span class="pill '+x.role+'">'+x.role.toUpperCase()+'</span></td><td class="muted" style="color:#8b93a7">'+(x.createdAt||'')+'</td><td style="text-align:right">'+actions+'</td></tr>';
     }).join('');
   });
 }
@@ -579,5 +522,6 @@ function createUser(){
    });
 }
 function delUser(name){if(!confirm('Delete user '+name+'?'))return;fetch('/api/portal/users?username='+encodeURIComponent(name),{method:'DELETE'}).then(function(){load();});}
+function viewAs(name){fetch('/api/portal/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({Username:name})}).then(function(r){return r.json();}).then(function(d){if(d.ok){window.location.href=d.redirect||'/portal';}else{alert(d.error||'failed');}});}
 load();
 </script></body></html>`

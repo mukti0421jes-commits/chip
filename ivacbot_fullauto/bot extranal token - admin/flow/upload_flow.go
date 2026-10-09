@@ -56,25 +56,45 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// 1) APPOINTMENT — POST /appointment. This call does NOT return an appointmentId
 	//    (that comes later from get-booking-config); success is just 2xx. It creates
 	//    the appointment context on the server for the uploads that follow.
-	resp, err := r.Do(r.Config.BuildAppointment(r.AccessToken, dev))
-	if err != nil {
-		return err
+	//
+	//    CREATE ONCE PER SESSION. The upload sub-flow is retried as a whole (fullauto
+	//    retries RunUpload on an over-view hiccup). Re-POSTing /appointment on every
+	//    retry risks RESETTING the server-side appointment, so the over-view would then
+	//    see an empty appointment and return 400 — exactly the "over-view keeps failing"
+	//    symptom. RJ SLOT creates it a single time; we match that. Uploaded applicants
+	//    persist on the server across the retries, so skipping the re-create is safe.
+	if !r.appointmentSetupDone {
+		resp, err := r.Do(r.Config.BuildAppointment(r.AccessToken, dev))
+		if err != nil {
+			return err
+		}
+		if !appointmentOK(resp) {
+			return errAppointment
+		}
+		r.appointmentSetupDone = true
+		r.log("📋 Appointment created (2xx)")
+	} else {
+		r.log("⏭ Appointment already created this session — skip re-create (RJ parity)")
 	}
-	if !appointmentOK(resp) {
-		return errAppointment
-	}
-	r.log("📋 Appointment created (2xx)")
 
 	// 2a) PRE-CHECK overview — a previous session may have ALREADY uploaded these
 	//     files. Re-uploading an already-present applicant makes the server 404.
 	//     So fetch the overview once; any file whose name already matches an
 	//     overview applicant is treated as done and NOT re-uploaded.
 	alreadyUp := map[int]bool{}
+	// preApplicants = how many applicants the appointment ALREADY held before this run
+	// (from the pre-check overview). If >0 and an upload later gets 404 "appointment
+	// not found", the appointment is already set up/locked on the server — re-uploading
+	// can never succeed — so we skip to Book/Reserve instead of aborting (slip-number-
+	// named PDFs can't name-match the existing applicants, which is why they weren't
+	// skipped above).
+	preApplicants := 0
 	if pre, err := r.Do(r.Config.BuildOverview(r.AccessToken, dev)); err == nil && pre.OK() {
 		var pb struct {
 			Data []overviewApplicant `json:"data"`
 		}
 		_ = json.Unmarshal(pre.Body, &pb)
+		preApplicants = len(pb.Data)
 		// COUNT-AUTHORITY: if the appointment already holds as many applicants as we
 		// have files, EVERY file is already uploaded — mark them all, WITHOUT relying
 		// on fragile name-matching. (A single-word filename like "SHUVO" won't match
@@ -114,8 +134,14 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 			uploadedOK++ // counts as done — do not re-upload (would 404)
 			continue
 		}
-		ok, newly := r.uploadOne(f, dev)
-		if r.fatalUpload != nil { // e.g. appointment expired (>30 days) — stop, don't retry
+		ok, newly := r.uploadOne(f, dev, len(files))
+		if r.fatalUpload != nil {
+			// The only fatal, do-not-retry upload state uploadOne sets is appointment
+			// EXPIRED (>30 days) — retrying can never fix it; a NEW appointment is required,
+			// so stop here. A 404/409 is NOT fatal anymore: uploadOne reality-checks it via
+			// the overview and either moves to the next file (already present) or retries the
+			// upload until it succeeds (the user stops the instance manually if an
+			// appointment is truly locked) — it never reaches this branch.
 			return r.fatalUpload
 		}
 		if ok {
@@ -196,48 +222,55 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	}
 
 	// 4) CONFIRM MISSION & CENTER.
-	//    The mission the uploaded files ACTUALLY belong to is authoritative from the
-	//    overview (commissionName per applicant) — so we confirm THAT mission's center,
-	//    not blindly the entry's. Prefer the primary applicant's commissionName; fall
-	//    back to any applicant's, then to the entry's mission/ivacCenter.
-	overviewMission := ""
-	for _, a := range ovBody.Data {
-		if a.Primary && a.CommissionName != "" {
-			overviewMission = a.CommissionName
-			break
-		}
-	}
-	if overviewMission == "" {
+	var rMission, rCenter string
+	//    GUARANTEED path (RJ SLOT v10.7.4): the overview carries each applicant's
+	//    commissionId; high-commissions/by-id returns the EXACT {mission, center} the
+	//    appointment-booking-config body must use. Use that verbatim — no hard-coded
+	//    label, so it matches whatever IVAC expects and survives any future rename.
+	if sm, sc := r.resolveMissionCenterFromServer(ovBody.Data, dev); sm != "" && sc != "" {
+		rMission, rCenter = sm, sc
+		r.log("🏛 Confirming center (server-exact via high-commissions): mission=" + rMission + " • ivacCenter=" + rCenter)
+	} else {
+		// FALLBACK (no commissionId / call failed): the mission the uploaded files
+		// belong to is authoritative from the overview (commissionName per applicant);
+		// resolve the label via the known MissionMap, preferring the primary applicant.
+		overviewMission := ""
 		for _, a := range ovBody.Data {
-			if a.CommissionName != "" {
+			if a.Primary && a.CommissionName != "" {
 				overviewMission = a.CommissionName
 				break
 			}
 		}
+		if overviewMission == "" {
+			for _, a := range ovBody.Data {
+				if a.CommissionName != "" {
+					overviewMission = a.CommissionName
+					break
+				}
+			}
+		}
+		// entry's own choice (the specific center the user picked, e.g. Jashore under Dhaka)
+		entryKey := ivacCenter
+		if entryKey == "" {
+			entryKey = mission
+		}
+		entryMission, entryCenter := ResolveMissionCenter(entryKey)
+		switch {
+		case overviewMission == "":
+			// overview didn't say — trust the entry's choice.
+			rMission, rCenter = entryMission, entryCenter
+		case strings.EqualFold(overviewMission, entryMission):
+			// file's mission agrees with the entry → keep the entry's SPECIFIC center
+			// (so Jashore vs Dhaka-JFP under the same Dhaka mission is respected).
+			rMission, rCenter = entryMission, entryCenter
+		default:
+			// the uploaded file's mission differs from the entry → the FILE's mission is
+			// authoritative (you can't confirm a Dhaka center for a Rajshahi file).
+			rMission, rCenter = ResolveMissionCenter(overviewMission)
+			r.log("⚠ mission mismatch — entry='" + entryMission + "' but uploaded file's mission='" + overviewMission + "'; confirming the FILE's mission")
+		}
+		r.log("🏛 Confirming center: mission=" + rMission + " • ivacCenter=" + rCenter + " (file's mission from overview=" + overviewMission + ")")
 	}
-	// entry's own choice (the specific center the user picked, e.g. Jashore under Dhaka)
-	entryKey := ivacCenter
-	if entryKey == "" {
-		entryKey = mission
-	}
-	entryMission, entryCenter := ResolveMissionCenter(entryKey)
-
-	var rMission, rCenter string
-	switch {
-	case overviewMission == "":
-		// overview didn't say — trust the entry's choice.
-		rMission, rCenter = entryMission, entryCenter
-	case strings.EqualFold(overviewMission, entryMission):
-		// file's mission agrees with the entry → keep the entry's SPECIFIC center
-		// (so Jashore vs Dhaka-JFP under the same Dhaka mission is respected).
-		rMission, rCenter = entryMission, entryCenter
-	default:
-		// the uploaded file's mission differs from the entry → the FILE's mission is
-		// authoritative (you can't confirm a Dhaka center for a Rajshahi file).
-		rMission, rCenter = ResolveMissionCenter(overviewMission)
-		r.log("⚠ mission mismatch — entry='" + entryMission + "' but uploaded file's mission='" + overviewMission + "'; confirming the FILE's mission")
-	}
-	r.log("🏛 Confirming center: mission=" + rMission + " • ivacCenter=" + rCenter + " (file's mission from overview=" + overviewMission + ")")
 	bc, err := r.Config.BuildBookingConfig(rMission, rCenter, r.AccessToken, dev)
 	if err != nil {
 		return err
@@ -274,6 +307,14 @@ func RunUpload(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 		// exact same appointment→confirm can NEVER succeed and only triggers 429
 		// rate-limits. Stop now with a clear, actionable message.
 		if cr.Status == 404 || strings.Contains(strings.ToLower(string(cr.Body)), "appointment not found") {
+			// Same stuck-appointment guard as the upload loop: if the overview already had
+			// applicant(s) before this run, a confirm-center 404 means the appointment is
+			// already set up/locked — skip to Book/Reserve instead of aborting the entry.
+			if preApplicants > 0 {
+				r.log("⏭ confirm center 404, kintu overview-e age thekei " + itoa(preApplicants) +
+					" ta applicant chilo — appointment already set up; Book/Reserve e jacchi")
+				return nil
+			}
 			r.log("🛑 confirm center: appointment not found — this appointment is stuck (files uploaded earlier but center not confirmed). Delete this entry & re-add to get a fresh appointment.")
 			return errAppointmentNotFound
 		}
@@ -286,6 +327,30 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// overviewHasFile fetches the CURRENT overview and reports whether this file's applicant
+// is already present (by the same name-token match the pre-check uses), plus the total
+// applicant count the appointment now holds. Used by uploadOne to turn a 409/404 into a
+// correct per-file decision (skip-if-present vs retry). On any overview error it reports
+// (false, 0) — i.e. "not confirmed present" — so the caller retries rather than wrongly
+// skipping a file.
+func (r *Runner) overviewHasFile(f PDFFile, deviceID string) (bool, int) {
+	ov, err := r.Do(r.Config.BuildOverview(r.AccessToken, deviceID))
+	if err != nil || !ov.OK() {
+		return false, 0
+	}
+	var ob struct {
+		Data []overviewApplicant `json:"data"`
+	}
+	_ = json.Unmarshal(ov.Body, &ob)
+	ftok := nameTokens(f.Name)
+	for _, a := range ob.Data {
+		if tokensMatch(ftok, nameTokens(a.FullName)) {
+			return true, len(ob.Data)
+		}
+	}
+	return false, len(ob.Data)
 }
 
 // appointmentOK mirrors RJ SLOT: success = 2xx AND (no statusCode, or statusCode 2xx).
@@ -314,7 +379,16 @@ func appointmentOK(resp Response) bool {
 // it was uploaded THIS call. An HTTP 409 (Conflict) means the file is ALREADY
 // uploaded on the server, so it returns (true, false) — done, but not new — which
 // also lets the re-login "skip confirm-center" logic work correctly.
-func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
+//
+// A 404 "appointment not found" OR a 409 "already uploaded" is NOT trusted blindly.
+// Both trigger a REALITY CHECK via the overview: if THIS file's applicant is already
+// present (its slip-number name just didn't name-match earlier), or the appointment
+// already holds >= totalFiles applicants, the file is done → return (true,false) and the
+// caller moves on to the next file. If it is genuinely absent, the upload is retried with
+// the dashboard upload-delay UNTIL IT SUCCEEDS (Stop-aware) — the user stops the instance
+// manually if an appointment is truly locked. Appointment EXPIRED (>30 days) is the one
+// exception: it can never succeed, so it stays a fatal stop (create a new appointment).
+func (r *Runner) uploadOne(f PDFFile, deviceID string, totalFiles int) (bool, bool) {
 	// retryTransient decides whether to try once more after a transient failure.
 	retryTransient := func(attempt int) bool { return r.Mode.Single || attempt < UploadMaxTries }
 	for attempt := 1; ; attempt++ {
@@ -360,27 +434,48 @@ func (r *Runner) uploadOne(f PDFFile, deviceID string) (bool, bool) {
 		_ = json.Unmarshal(resp.Body, &body)
 		msg := strings.ToLower(body.Message)
 
-		// ALREADY UPLOADED — detect by HTTP 409, body statusCode 409, OR the message
-		// (server sometimes says "already uploaded" inside a 200/400). Treat as done.
-		if resp.Status == 409 || (body.StatusCode != nil && *body.StatusCode == 409) ||
-			strings.Contains(msg, "already uploaded") || strings.Contains(msg, "already exist") {
-			r.log("✔ " + f.Name + " — already uploaded (server), treating as done")
-			return true, false
-		}
-		// APPOINTMENT EXPIRED (>30 days) — retrying can't fix this; a new appointment
-		// is needed. Signal the sub-flow to STOP with a clear message (from sample).
+		// APPOINTMENT EXPIRED (>30 days) — checked FIRST (its message also mentions
+		// "appointment"). Retrying can't fix this; a new appointment is needed. STOP.
 		if strings.Contains(msg, "more than 30 days") || strings.Contains(msg, "30 days") ||
 			(strings.Contains(msg, "appointment") && strings.Contains(msg, "expired")) {
 			r.log("🛑 " + f.Name + " — appointment expired (>30 days): " + body.Message)
 			r.fatalUpload = errAppointmentExpired
 			return false, false
 		}
-		// APPOINTMENT NOT FOUND (404) — the appointment is stuck/gone; re-uploading
-		// can't fix it and only draws 429 rate-limits. Stop the sub-flow.
+		// ALREADY UPLOADED (409) — the server's OWN authoritative confirmation that this
+		// file is on the appointment. We still fetch the overview (as a reality check /
+		// for the log), but a 409 is NEVER retried: whether or not the name-token match
+		// finds it (slip-number PDFs often don't name-match), the file is done → move to
+		// the next file. Retrying a 409 can only 409 again, which would loop forever.
+		if resp.Status == 409 || (body.StatusCode != nil && *body.StatusCode == 409) ||
+			strings.Contains(msg, "already uploaded") || strings.Contains(msg, "already exist") {
+			present, ovTotal := r.overviewHasFile(f, deviceID)
+			if present || (totalFiles > 0 && ovTotal >= totalFiles) {
+				r.log("✔ " + f.Name + " — already uploaded (409) & overview confirms present → porer file")
+			} else {
+				r.log("✔ " + f.Name + " — already uploaded (409); overview name-match hoyni (" +
+					itoa(ovTotal) + "/" + itoa(totalFiles) + ") kintu server 409 confirm korche → done, porer file")
+			}
+			return true, false
+		}
+		// APPOINTMENT NOT FOUND (404) — ambiguous: could be a real stuck/locked appointment
+		// OR a transient server state. REALITY CHECK via the overview: if THIS file's
+		// applicant is present (name-match), or the appointment already holds >= totalFiles
+		// applicants, the file is done → next file. If genuinely absent, retry the upload at
+		// the dashboard upload-delay UNTIL IT SUCCEEDS (Stop-aware) — the user stops the
+		// instance manually if the appointment is truly locked. Overview is fetched ONLY here.
 		if resp.Status == 404 || strings.Contains(msg, "appointment not found") {
-			r.log("🛑 " + f.Name + " — appointment not found (404): appointment stuck; delete & re-add this entry.")
-			r.fatalUpload = errAppointmentNotFound
-			return false, false
+			present, ovTotal := r.overviewHasFile(f, deviceID)
+			if present || (totalFiles > 0 && ovTotal >= totalFiles) {
+				r.log("✔ " + f.Name + " — overview confirms present (404 ignore); already uploaded → porer file")
+				return true, false
+			}
+			d := r.delayFor(StUpload)
+			r.log("↻ " + f.Name + " — HTTP 404 kintu overview-te ekhono nei (" +
+				itoa(ovTotal) + "/" + itoa(totalFiles) + " applicant); " + d.String() +
+				" por abar upload (success na howa porjonto; dorkar hole instance stop korun)")
+			r.interruptibleSleep(d)
+			continue
 		}
 		ok := resp.OK() && (body.StatusCode == nil || (*body.StatusCode >= 200 && *body.StatusCode < 300))
 		if ok {

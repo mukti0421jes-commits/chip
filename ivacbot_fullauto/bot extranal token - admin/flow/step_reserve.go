@@ -129,19 +129,24 @@ func StepReserve(r *Runner) StepResult {
 		r.log("📅 reserve date normalized: " + r.AppointmentDate + " → " + apptDate)
 	}
 	enc := r.Config.EncryptForPurpose(token, r.Config.Reserve)
-	body, err := marshalBody(map[string]string{"c": enc, "appointmentDate": apptDate}, "c", "appointmentDate")
+	// Proven order {c,appointmentDate}; the adapter supplies renamed keys ONLY on drift.
+	rKeys := r.Config.ReserveBodyKeys(r.log)
+	if len(rKeys) != 2 {
+		rKeys = []string{"c", "appointmentDate"}
+	}
+	body, err := marshalBody(map[string]string{rKeys[0]: enc, rKeys[1]: apptDate}, rKeys...)
 	if err != nil {
 		return StepResult{}
 	}
 	req := Request{
 		Method: "POST", URL: r.Config.ReserveURLFor(), Referrer: APIReferrer, Body: body,
 		Headers: map[string]string{
-			"accept":          "application/json, text/plain, */*",
-			"authorization":   "Bearer " + r.AccessToken,
-			"cache-control":   "no-cache, no-store, must-revalidate",
-			"content-type":    "application/json",
-			"pragma":          "no-cache",
-			"x-v-request-meta": r.Config.VRequestMeta,
+			"accept":                       "application/json, text/plain, */*",
+			"authorization":                "Bearer " + r.AccessToken,
+			"cache-control":                "no-cache, no-store, must-revalidate",
+			"content-type":                 "application/json",
+			"pragma":                       "no-cache",
+			r.Config.ReserveMetaHeader(r.log): r.Config.VRequestMeta,
 		},
 	}
 	resp, err := r.Do(req)
@@ -159,6 +164,9 @@ func StepReserve(r *Runner) StepResult {
 			snip = snip[:250]
 		}
 		r.log("✗ reserve — HTTP " + itoa(resp.Status) + " • date=" + apptDate + " • " + snip)
+		// #1 fallback: cipher/captcha rejection → re-apply newest ivacflow push
+		// (correct reserve cipher + endpoints) so the next retry uses it.
+		maybeCipherFallback(r, resp.Status, string(resp.Body), "reserve")
 		// carry the parsed body so ReserveCycle can tell a rate-limit / captcha
 		// failure (retry same date) apart from a genuinely full slot (next date).
 		return StepResult{Status: resp.Status, Data: rb}
@@ -213,6 +221,11 @@ func ReserveCycle(r *Runner) StepResult {
 			r.log("🎟 reserve try date " + itoa(step+1) + "/" + itoa(len(dates)) + ": " + dates[i] + " (idx " + itoa(i+1) + ")")
 			res := StepReserve(r)
 			if res.Win || res.Cancelled {
+				return res
+			}
+			// access token died mid-sweep (post-auth 401) → bail so RunFullAuto relogs in
+			// instead of hammering reserve with a dead token.
+			if r.SessionDead() {
 				return res
 			}
 			rb, _ := res.Data.(reserveResponse)

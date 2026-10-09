@@ -37,6 +37,12 @@ var (
 	// faRejectOTPs maps instanceID → the running flow's RejectOTP func, so a code
 	// cleared from the dashboard is also blacklisted and cannot come straight back.
 	faRejectOTPs = map[int]func(string){}
+	// faPhones maps a login phone → the instanceID currently running Full Auto for it.
+	// IVAC sends ONE single-use OTP per phone, so two Full Auto runs on the same phone
+	// can never both verify — the second just skips sign-in and hangs. This guard lets
+	// only one Full Auto run per phone at a time; a second start for a busy phone is
+	// rejected instead of creating a stuck "zombie" run. Guarded by faStopMu.
+	faPhones = map[string]int{}
 )
 
 // handleClearInstanceOTP wipes ONE instance's OTP so a fresh one can be typed.
@@ -197,10 +203,16 @@ type flowSession struct {
 	RequestID     string
 	Verified      bool
 	ReservationID string
+	ReservedAt    time.Time // when the RID was created — a reservation lives ~5 min
 	At            time.Time
 }
 
 const flowSessionTTL = 14 * time.Minute // IVAC access token lives ~15 min
+
+// reserveReuseTTL caps how long a saved reservationId may be REUSED (resume
+// smart-skip). An IVAC reservation lasts ~5 min; reuse past this would skip
+// reserve and send initiate against an EXPIRED slot. Kept safely under 5 min.
+const reserveReuseTTL = 4 * time.Minute
 
 var (
 	flowSessMu   sync.Mutex
@@ -254,6 +266,29 @@ func handleCleanCache(w http.ResponseWriter, r *http.Request) {
 	// are NOT touched — only their cached state.
 	clearRunningFlowOTPs()
 	n := clearAllInstanceLogsAndOTP()
+
+	// STORE caches — clear ALL of them so nothing stale survives (instances kept):
+	//   • last_good_config.json  (cached cipher + endpoints — smart-skip)
+	//   • endpoint_cache.json    (autocheck-pushed endpoints)
+	//   • ivacflow_config.json   (ivacflow snapshot: cipher + endpoints)
+	//   • captured_config.json   (RJ SLOT userscript capture)
+	// Files AND their in-memory copies are wiped. Instances/entries/PDFs untouched.
+	_ = os.Remove(lastGoodFile)
+	lastGoodMu.Lock()
+	lastGoodRaw = nil
+	lastGoodMu.Unlock()
+	_ = os.Remove(endpointCacheStoreFile)
+	endpointCacheMu.Lock()
+	endpointCacheRaw = nil
+	endpointCacheMu.Unlock()
+	_ = os.Remove(ivacflowConfigFile)
+	_ = os.Remove(capturedConfigFile)
+	importMu.Lock()
+	ivacflowCfg, ivacflowAt = nil, time.Time{}
+	bumpIvacflowVersion() // keep the version monotonic so a paused runner re-checks
+	importedCfg, importedSaved = nil, time.Time{}
+	importMu.Unlock()
+
 	// NOTE: the 15-minute sign-in/OTP window is deliberately NOT cleared here. It
 	// mirrors a session that is still alive on IVAC's side, and forgetting it would
 	// make the next run sign in again, re-send the OTP and hit HTTP 429.
@@ -261,7 +296,8 @@ func handleCleanCache(w http.ResponseWriter, r *http.Request) {
 		"ok":        true,
 		"instances": n,
 		"cleared": []string{"resume-sessions", "captcha-queues", "dg-epay-cache",
-			"scan-cache", "otp", "instance-logs"},
+			"scan-cache", "otp", "instance-logs",
+			"last-good", "endpoint-cache", "ivacflow-config", "captured-config"},
 	})
 }
 
@@ -744,6 +780,24 @@ func fullAutoStepDelays() map[string]int {
 	return out
 }
 
+// cipherResumeStagger returns this instance's signin-resume delay after a shared
+// ivacflow cipher push. When many instances pause on the same wrong cipher and a
+// single push fixes them all, they would otherwise resume in the same instant and
+// fire N signins at once → HTTP 429. Each instance waits index × 300ms (capped at
+// 12s), so the herd is spread out. Instance 0 resumes immediately.
+func cipherResumeStagger(id int) time.Duration {
+	if id <= 0 {
+		return 0
+	}
+	const unit = 300 * time.Millisecond
+	const cap = 12 * time.Second
+	d := time.Duration(id) * unit
+	if d > cap {
+		d = cap
+	}
+	return d
+}
+
 // liveStepDelaySec returns the CURRENT retry delay (seconds) for a step, read fresh
 // from the dashboard controller so a value changed mid-run applies to the next
 // retry. Returns -1 when the step has no configured value (flow falls back).
@@ -798,7 +852,7 @@ func handlePortalInvoiceDownload(w http.ResponseWriter, r *http.Request) {
 	// fresh RAW captcha token for x-token (invoice uses a raw token, like upload/initiate).
 	capTok, ok := captchaMgr.TakeRaw("Signin")
 	if !ok || capTok == "" {
-		if t, err := captchaMgr.solveRaw("Signin"); err == nil {
+		if t, err := captchaMgr.pullRawFailover("Signin"); err == nil {
 			capTok = t
 		}
 	}
@@ -978,7 +1032,7 @@ func invoiceDoneCheck(instID int) (bool, string) {
 	// fresh RAW captcha for x-token (all-by-user uses a raw token, like invoice download).
 	capTok, ok2 := captchaMgr.TakeRaw("Signin")
 	if !ok2 || capTok == "" {
-		if t, err := captchaMgr.solveRaw("Signin"); err == nil {
+		if t, err := captchaMgr.pullRawFailover("Signin"); err == nil {
 			capTok = t
 		}
 	}
@@ -1130,7 +1184,7 @@ func autoSaveInvoicePDF(instID int, txrID, accessTok, phone string) bool {
 	// fresh RAW captcha for x-token (invoice uses a raw token, like upload/initiate).
 	capTok, ok := captchaMgr.TakeRaw("Signin")
 	if !ok || capTok == "" {
-		if t, err := captchaMgr.solveRaw("Signin"); err == nil {
+		if t, err := captchaMgr.pullRawFailover("Signin"); err == nil {
 			capTok = t
 		}
 	}
@@ -1280,6 +1334,25 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 	inst.Data.PaymentURL = ""
 	inst.mu.Unlock()
 
+	// PER-PHONE GUARD: only one Full Auto per phone at a time. A second run on the same
+	// phone can never verify (IVAC sends one single-use OTP per phone) and would just
+	// hang on sign-in-skip, wasting 5 minutes + a captcha. Reject it up-front instead.
+	if phone != "" {
+		faStopMu.Lock()
+		if other, busy := faPhones[phone]; busy && other != id {
+			faStopMu.Unlock()
+			inst.mu.Lock()
+			inst.Data.Status = "STOPPED"
+			inst.Data.Step = "phone busy"
+			inst.mu.Unlock()
+			addLog(id, fmt.Sprintf("⛔ Ei phone (%s) e already Full Auto cholche (instance #%d) — ei run baatil. Ekbare ek phone e ekta Full Auto.", phone, other))
+			writeJSON(w, map[string]interface{}{"status": "phone busy", "phone": phone, "runningOn": other})
+			return
+		}
+		faPhones[phone] = id
+		faStopMu.Unlock()
+	}
+
 	// mission/center resolution: instance HighCom → portal entry Mission → query.
 	center := ""
 	pMu.Lock()
@@ -1311,6 +1384,9 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("delay"); v != "" {
 		fmt.Sscanf(v, "%d", &delaySec)
 	}
+	// Play All → cacheOnly=1: skip the live bundle scan, run straight from the
+	// last-good store (cached cipher + endpoints). Full Auto All leaves it off.
+	cacheOnly := r.URL.Query().Get("cacheOnly") == "1"
 
 	// Log sink: instance panel + server console + live STEP column, so progress
 	// is visible everywhere (like RJ SLOT's A_E status line).
@@ -1336,7 +1412,15 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 	var preTok, preReq, preRes string
 	var preVer bool
 	if s := getFlowSession(id); s != nil {
-		preTok, preReq, preVer, preRes = s.AccessToken, s.RequestID, s.Verified, s.ReservationID
+		preTok, preReq, preVer = s.AccessToken, s.RequestID, s.Verified
+		// Only reuse the reservationId while it is still within its ~5-min life.
+		// An expired RID would make reserve smart-skip and send initiate against a
+		// dead slot — so drop it past the TTL and let reserve run fresh.
+		if s.ReservationID != "" && !s.ReservedAt.IsZero() && time.Since(s.ReservedAt) < reserveReuseTTL {
+			preRes = s.ReservationID
+		} else if s.ReservationID != "" {
+			addLog(id, "↻ Resume: saved RID is older than 4 min (reservation expired) — will re-reserve")
+		}
 		if preTok != "" {
 			addLog(id, "⏭ Resume: live session found — continuing from where it stopped")
 		}
@@ -1361,10 +1445,12 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			ProxyURL:   flowProxy,
 			Single:           retry, // retry each step until success (RJ SLOT)
 			Auto:             true,
+			CacheOnly:        cacheOnly, // Play All: last-good cache, no live scan
 			DelaySec:         delaySec,
 			StepDelays:       fullAutoStepDelays(), // initial snapshot (fallback)
 			LiveDelaySec:     liveStepDelaySec,     // read fresh each retry (runtime change)
-			ReserveStartOffset: id,                // round-robin: each instance starts its date-sweep at a different date
+			ReserveStartOffset: id,                          // round-robin: each instance starts its date-sweep at a different date
+			CipherResumeStagger: cipherResumeStagger(id),     // spread signin resume so 30 instances don't 429 on the same ivacflow push
 			AppointmentID:    knownAppt,
 			PreAccessToken:   preTok,
 			PreRequestID:     preReq,
@@ -1473,12 +1559,20 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 				it.Data.ReservationID = resID
 				it.mu.Unlock()
 				saveInstancesToFile()
-				updateFlowSession(id, func(s *flowSession) { s.ReservationID = resID })
+				updateFlowSession(id, func(s *flowSession) { s.ReservationID = resID; s.ReservedAt = time.Now() })
 				logSink("💾 reservationId (RID) saved: " + resID)
 			}
 		}
 		logSink("🚀 FULL AUTO started (RJ SLOT pipeline)")
-		payURL, err := RunFullAutoForEntry(in)
+		// NO AUTO-RELOGIN (by design): the ~15-min access token can die mid-flow (HTTP
+		// 401 before payment). We no longer auto-off→wait→relogin. The run simply ends and
+		// the instance goes cleanly STOPPED (not FAILED, see the finalize below); the user
+		// re-logs manually by pressing Start again, which does a FRESH signin. Paid /
+		// initiated instances never reach a session-expiry here (RunFullAuto returns
+		// success, not the session-expiry error).
+		var payURL string
+		var err error
+		payURL, err = RunFullAutoForEntry(in)
 
 		// unregister the stop hook now that the run is finished
 		faStopMu.Lock()
@@ -1486,14 +1580,25 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 		delete(faOTPs, id)
 		delete(faClearOTPs, id)
 		delete(faRejectOTPs, id)
+		if faPhones[phone] == id { // release the per-phone lock this run held
+			delete(faPhones, phone)
+		}
 		faStopMu.Unlock()
 
 		stopped := err != nil && strings.Contains(err.Error(), "stop")
+		sessionExpired := flow.IsSessionExpired(err)
 		inst.mu.Lock()
 		inst.Data.WaitingOTP = false // run finished → hide the OTP input regardless of outcome
 		if stopped {
 			inst.Data.Status = "STOPPED"
 			inst.Data.Step = "⏹ STOPPED"
+		} else if sessionExpired {
+			// Session (the ~15-min access token) died mid-flow BEFORE payment. This is NOT
+			// a failure — it is an expected auto-OFF (no auto-relogin anymore). Mark the
+			// instance cleanly STOPPED (not FAILED, so it is not counted as a failure); the
+			// user presses Start again to relogin manually with a FRESH signin.
+			inst.Data.Status = "STOPPED"
+			inst.Data.Step = "⏹ Session shesh — auto-OFF. Start chaple fresh login hobe."
 		} else if err != nil {
 			// a real failure (not a user-stop) → mark FAILED so the dashboard's
 			// "Failed" counter reflects it (was "STOPPED", which never counted).
@@ -1510,9 +1615,20 @@ func handleFullAuto(w http.ResponseWriter, r *http.Request) {
 			// payment is confirmed COMPLETED (or the payment window lapses).
 		}
 		inst.mu.Unlock()
+		// OTP verify window expired (never verified) → the sign-in session + its OTP are
+		// dead. Clear the resume cache (and the sign-in window) so clicking Start again does
+		// a FRESH sign-in that sends a new OTP, instead of reusing the expired session and
+		// re-polling for an OTP that will never arrive.
+		if flow.IsOTPWindow(err) {
+			flow.ForgetSignin(phone)
+			clearFlowSession(id)
+			addLog(id, "🧹 OTP window expired — session cache clear; next Start will sign in fresh")
+		}
 		// log AFTER releasing inst.mu — addLog locks inst.mu itself (would deadlock).
 		if stopped {
 			addLog(id, "⏹ Full Auto stopped by user")
+		} else if sessionExpired {
+			addLog(id, "⏹ Session shesh (401 token expire) — auto-OFF. Auto-relogin nei; manually Start korle fresh signin hobe.")
 		} else if err != nil {
 			addLog(id, "❌ Full Auto: "+err.Error())
 		} else {

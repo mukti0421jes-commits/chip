@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px; font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0a0e17; color: #e2e8f0; padding: 12px;
+    }
+    h1 { font-size: 15px; margin-bottom: 10px; color: #2dd4bf; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .tab {
+      flex: 1; padding: 7px; text-align: center; cursor: pointer;
+      background: #131b2e; border: 1px solid #1e293b; border-radius: 7px;
+      font-size: 13px; user-select: none;
+    }
+    .tab.active { background: #134e4a; border-color: #2dd4bf; color: #5eead4; }
+    .pane { display: none; }
+    .pane.active { display: block; }
+    .row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 10px; margin-bottom: 6px;
+      background: #131b2e; border: 1px solid #1e293b; border-radius: 7px;
+    }
+    .row .meta { overflow: hidden; }
+    .row .name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .sub { font-size: 11px; color: #94a3b8; }
+    button.login {
+      background: #2dd4bf; color: #06251f; border: 0; border-radius: 6px;
+      padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 12px;
+    }
+    button.login:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+    textarea {
+      width: 100%; height: 90px; background: #0d1525; color: #e2e8f0;
+      border: 1px solid #1e293b; border-radius: 7px; padding: 8px; font-size: 12px;
+      resize: vertical; font-family: monospace;
+    }
+    .btn-full {
+      width: 100%; margin-top: 8px; background: #2dd4bf; color: #06251f;
+      border: 0; border-radius: 7px; padding: 9px; font-weight: 700; cursor: pointer; font-size: 13px;
+    }
+    .muted { font-size: 11px; color: #64748b; margin: 4px 0 8px; }
+    .status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+    .status.ok { color: #34d399; }
+    .status.err { color: #f87171; }
+    .settings { margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px; }
+    .settings summary { font-size: 12px; color: #94a3b8; cursor: pointer; }
+    .settings label { display: block; font-size: 11px; color: #94a3b8; margin: 8px 0 3px; }
+    .settings input {
+      width: 100%; background: #0d1525; color: #e2e8f0; border: 1px solid #1e293b;
+      border-radius: 6px; padding: 6px; font-size: 12px;
+    }
+    .settings .save { margin-top: 8px; }
+    .empty { font-size: 12px; color: #64748b; text-align: center; padding: 14px 0; }
+
+    .hidden { display: none !important; }
+    .ipbanner {
+      border: 1px solid #334155; border-radius: 9px; padding: 10px 12px; margin-bottom: 10px;
+      background: #131b2e;
+    }
+    .ipbanner.wrong { border-color: #ef4444; background: rgba(239,68,68,0.10); animation: ipblink 1s ease-in-out infinite; }
+    .ipbanner.ok    { border-color: #22c55e; background: rgba(34,197,94,0.10); animation: none; }
+    @keyframes ipblink { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.0); } 50% { box-shadow: 0 0 0 4px rgba(239,68,68,0.35); } }
+    .iprow { display: flex; align-items: center; gap: 10px; }
+    .ipdot { width: 12px; height: 12px; border-radius: 50%; background: #64748b; flex: 0 0 auto; }
+    .ipbanner.wrong .ipdot { background: #ef4444; }
+    .ipbanner.ok .ipdot { background: #22c55e; }
+    .iplabel { font-size: 11px; color: #94a3b8; }
+    .ipval { font-size: 17px; font-weight: 800; color: #e2e8f0; letter-spacing: 0.3px; }
+    .iprow2 { display: flex; align-items: center; justify-content: space-between; margin-top: 7px; }
+    .ipnow { font-size: 11px; color: #94a3b8; }
+    .ipbanner.ok .ipnow { color: #34d399; }
+    .ipbtn { background: #7f1d1d; color: #fecaca; border: 0; border-radius: 6px; padding: 4px 9px; font-size: 11px; cursor: pointer; }
+    .row .ipchip { font-size: 10px; color: #7dd3fc; display: block; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <h1>🔑 IVAC Session Login</h1>
+
+  <!-- Pinned-IP banner: blinks red until this browser is on the required IP -->
+  <div id="ipBanner" class="ipbanner hidden">
+    <div class="iprow">
+      <span id="ipDot" class="ipdot"></span>
+      <div>
+        <div class="iplabel">এই IP-তে থাকতে হবে</div>
+        <div id="ipTarget" class="ipval">—</div>
+      </div>
+    </div>
+    <div class="iprow2">
+      <span id="ipNow" class="ipnow">এখন: যাচাই হচ্ছে…</span>
+      <button id="ipDisconnect" class="ipbtn hidden">✕ Disconnect</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-pane="auto">🔗 Auto</div>
+    <div class="tab" data-pane="paste">📋 Paste</div>
+  </div>
+
+  <!-- AUTO: pull instance list from the bot, one-click login -->
+  <div class="pane active" id="pane-auto">
+    <div class="muted">Bot থেকে logged-in instance টেনে আনে। নাম-এ click = login।</div>
+    <div id="list"><div class="empty">Loading…</div></div>
+    <button class="btn-full" id="refresh">🔄 Refresh list</button>
+  </div>
+
+  <!-- PASTE: paste a session blob copied from the dashboard -->
+  <div class="pane" id="pane-paste">
+    <div class="muted">Dashboard-এ "Copy Session" চেপে এখানে paste করুন।</div>
+    <textarea id="pasteBox" placeholder="এখানে session paste করুন…"></textarea>
+    <button class="btn-full" id="pasteLogin">✅ Login in this tab</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <details class="settings">
+    <summary>⚙️ Settings (bot address &amp; key)</summary>
+    <label>Bot URL</label>
+    <input id="botUrl" placeholder="http://localhost:8080" />
+    <label>Extension key (session_ext_key.txt)</label>
+    <input id="extKey" placeholder="paste the key from the bot console/file" />
+    <button class="btn-full save" id="saveSettings">💾 Save settings</button>
+    <div class="muted" style="margin-top:6px">
+      Auto mode-এর জন্য দরকার। Paste mode-এ লাগে না।
+    </div>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>

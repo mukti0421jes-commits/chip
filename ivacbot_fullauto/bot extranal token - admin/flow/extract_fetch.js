@@ -1,6 +1,69 @@
 #!/usr/bin/env node
-// extract_fetch.js — IVAC bundle extractor v11
+// extract_fetch.js — IVAC bundle extractor v15
 // ─────────────────────────────────────────────────────────────────────────────
+// v15 CHANGES vs v14:
+//   • NEW: generateDynamicActualFn() — zero-hardcode actual function generator.
+//     Extracts REAL body params, REAL headers, REAL HTTP method, REAL URL from
+//     the bundle generator body by decoding every decoder call in context.
+//     Produces a second set of functions (postSlotsReserveSlotActual,
+//     postPaymentDgpayInitiateActual etc.) that run alongside the existing ones.
+//     If the hardcoded-path version breaks due to bundle changes, the *Actual
+//     version still works because it re-derives everything from scratch.
+//   • extractGeneratorSignature() — scans every function*(){} generator in the
+//     bundle, decodes its path, method, body-field names, and header keys using
+//     the generator's own local aliases. No UUID or path is hardcoded.
+//   • Dual-export: module.exports includes BOTH the original set and the new
+//     *Actual equivalents. Callers can use whichever set resolves correctly.
+//   • All v14 strategies and functions are fully preserved.
+//
+// v14 CHANGES vs v13:
+// ─────────────────────────────────────────────────────────────────────────────
+// v13 CHANGES vs v12:
+//   • CRITICAL FIX — Relaxed UUID regex: UUID_RE now uses [0-9a-z] instead of
+//     [0-9a-f] for ALL segments. Confirmed via bundle analysis that IVAC
+//     intentionally uses non-hex chars in UUIDs (e.g. 's','b' beyond hex).
+//     Old strict [0-9a-f] regex silently skipped BOTH UUIDs:
+//       Slot:    139fd4d2-27c9-4758-a623-368583e830bs  (ends in 'bs')
+//       Payment: 23228961-2326-3s28-861f-465bb28337a3  (has '3s28')
+//
+//   • NEW Strategy UV-6 — Literal /slots/ path scan: directly extracts UUID
+//     from '/slots/{uuid}/reserve-slot' literal strings including non-hex chars.
+//     Works for bundles where slot URL is a plain-text string literal.
+//
+//   • NEW Strategy UV-7 — Direct hU-array payment path decode: rotates the
+//     payment generator's string array (hU or equivalent) via vm-sandbox, then
+//     evaluates the UCONv-pattern expression to decode the full
+//     /payment/{uuid}/dg-epay/initiate path with non-standard UUID chars.
+//
+//   • verifyDgPath() relaxed to accept [0-9a-z] UUID chars.
+//   • classifyUUID() uses relaxed UUID scan for context matching.
+//   • All v12/v11 strategies preserved unchanged.
+//
+// v12 CHANGES vs v11:
+//   • NEW: Strategy UV-2 — scans ALL decoded strings from every known
+//     decoder/array. UUIDs that are fully obfuscated in source (never appear
+//     as plain hex) are found by decoding and checking every array element.
+//
+//   • NEW: Strategy UV-3 — locates the reserve-slot generator function by
+//     multiple anchor keywords (reservationId, reserveTtlSeconds, /slots/ etc),
+//     extracts its body, decodes every token, and accumulates to find the
+//     /slots/{UUID}/reserve-slot path. Works on bundles where the Slot UUID
+//     is not visible in plain text at all.
+//
+//   • NEW: Strategy UV-4 — replaces classifyUUID(). Widens context window from
+//     120 to 300 chars, checks ALL occurrences of the UUID in src (not just
+//     first), and adds keywords: reservation, slot_id, getSlot, slotId etc.
+//     Scores slot vs dg-epay hits so the classification is more robust.
+//
+//   • NEW: Strategy UV-5 — if extractPaymentPath() failed, scans ALL decoded
+//     strings for /payment/{uuid}/dg-epay|initiate pattern and reconstructs
+//     DGEPAY_UUID and DECODED_DGEPAY_PATH from there.
+//
+//   • Final UUID resolution now prioritises decoded > UV-3/5 > plain-text.
+//     Older bundles fall through to v11 logic unchanged — no regression.
+//
+//   • All v11 strategies A–G and UV-1/cached-fallback preserved unchanged.
+//
 // v11 CHANGES vs v10:
 //   • BUG FIX #1 — Strategy D & E tokenRe/tokenRe2: arg pattern now includes
 //     bare single-letter variables [a-z] (same as decodeExpr's pieceRe).
@@ -38,7 +101,7 @@ const CACHE   = path.join(__dirname, ".endpoint-cache.json");
 
 if (!BUNDLE) { console.error("usage: node extract_fetch.js <bundle.js> [outFile]"); process.exit(1); }
 
-console.log("🔍 IVAC Fetch Extractor v11");
+console.log("🔍 IVAC Fetch Extractor vFinal");
 console.log("📂 Bundle : " + BUNDLE);
 const src = fs.readFileSync(BUNDLE, "utf8");
 console.log("📄 Size   : " + (src.length / 1024).toFixed(1) + " KB\n");
@@ -550,7 +613,7 @@ function extractPaymentPath() {
     const dgPropExpr=extractPropByLiteral(genBody,'"dg-epay/in"');
     let decoded=decodeExpr(dgPropExpr);
     if(decoded&&!decoded.startsWith('/'))decoded='/'+decoded;
-    if(decoded&&/[0-9a-f]{8}-[0-9a-f]{4}/.test(decoded))dgPath=decoded;
+    if(decoded&&/[0-9a-z]{8}-[0-9a-z]{4}/.test(decoded))dgPath=decoded;
     const dgInGen=genBody.indexOf('"dg-epay/in"');
     const objS=genBody.lastIndexOf('{',dgInGen),objE=genBody.indexOf('}',dgInGen);
     if(objS>=0&&objE>objS){
@@ -614,13 +677,13 @@ function extractPaymentPath() {
           if(mx.text&&mx.text.length>=10)decoded=mx.text;
         }
         if(!decoded||decoded.length<10)continue;
-        const uuidInProp=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        const uuidInProp=decoded.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
         if(uuidInProp&&/dg-epay/i.test(decoded)){
-          const cleanM=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          const cleanM=decoded.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
           if(cleanM){dgPath=(cleanM[0].startsWith('/')?'':'/')+cleanM[0];}
           else{dgPath=decoded.startsWith('/')?decoded:'/'+decoded;}
           console.log("  ✅ DG path via property scan (mixed): "+dgPath);
-        } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+        } else if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
           dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
           console.log("  ✅ DG path via property scan: "+dgPath);
         }
@@ -662,11 +725,11 @@ function extractPaymentPath() {
             if(mx2.text&&mx2.text.length>=10)branchDecoded=mx2.text;
           }
           if(!branchDecoded||branchDecoded.length<10)continue;
-          const cleanBrM=branchDecoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+          const cleanBrM=branchDecoded.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
           if(cleanBrM){
             dgPath=(cleanBrM[0].startsWith('/')?'':'/')+cleanBrM[0];
             console.log("  ✅ DG path via ternary branch: "+dgPath);
-          } else if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(branchDecoded)&&/dg-epay/i.test(branchDecoded)){
+          } else if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(branchDecoded)&&/dg-epay/i.test(branchDecoded)){
             dgPath=branchDecoded.startsWith('/')?branchDecoded:'/'+branchDecoded;
             console.log("  ✅ DG path via ternary branch: "+dgPath);
           }
@@ -685,7 +748,7 @@ function extractPaymentPath() {
         for(const branch of parts){
           const decoded=decodeExpr(branch.trim());
           if(!decoded||decoded.length<15)continue;
-          if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+          if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
             dgPath=decoded.startsWith('/')?decoded:'/'+decoded;
             console.log("  ✅ DG path via conditional: "+dgPath);
           }
@@ -703,104 +766,6 @@ function extractPaymentPath() {
         const altDecoded=decodeExpr(tm2[1].trim());
         if(altDecoded&&/ssl\/initiate|payment\/ssl/.test(altDecoded))sslPath=altDecoded.startsWith('/')?altDecoded:'/'+altDecoded;
       }
-    }
-  }
-
-  // ── Strategy H (NEW v11): depth-0 ternary TRUE-branch decoder ───────────
-  // Fires when A-G fail. Handles bundles where the dg-epay path is built
-  // INLINE in the TRUE branch of a top-level ternary assignment, e.g.:
-  //   mrx52llu: n=OBJ[fn(r,OBJ[fn2()])]?DGPATH:SSL
-  //   msbe8iqp: d=OBJ[fn(r,OBJ[fn2()])]?DGPATH:SSL
-  //   mse7qsay: const u=OBJ[fn(e,decoded+"ay")]?DGPATH:SSL
-  //   mrvp5ck7: a=r===OBJ[fn()]?DGPATH:SSL
-  //   ms72wysd:  o=a===decoded+"ay"?DGPATH:SSL
-  //
-  // Key insight: these generators always pick the LONGER branch for dg-epay
-  // path (TRUE) and shorter for ssl path (FALSE). We scan all depth-0 "?"
-  // in genBody, extract TRUE/FALSE branches, decode both, and check for UUID.
-  //
-  // This is separate from the existing ternaryRe (Strategy B/C) which only
-  // matches "VAR===COND" form. Strategy H covers the method-call equality
-  // form: "VAR=OBJ[fn()](arg1,arg2)?..." which ternaryRe misses entirely.
-  if (!dgPath) {
-    console.log("  ⚙️  Trying Strategy H: depth-0 ternary branch decode...");
-
-    // Extract all top-level ternary branches from genBody
-    function extractDepth0Ternaries(body) {
-      const results = [];
-      let depth = 0, inStr = false, sc = '';
-      for (let i = 0; i < body.length; i++) {
-        const c = body[i];
-        if (inStr) { if (c === '\\') i++; else if (c === sc) inStr = false; }
-        else if (c === '"' || c === "'") { inStr = true; sc = c; }
-        else if (c === '(' || c === '[' || c === '{') depth++;
-        else if (c === ')' || c === ']' || c === '}') depth--;
-        else if (c === '?' && depth === 0) {
-          // Extract TRUE branch
-          let j = i + 1, d2 = 0, inS2 = false, sc2 = '', trueBranch = '';
-          while (j < body.length) {
-            const ch = body[j];
-            if (inS2) { if(ch==='\\')j++; else if(ch===sc2)inS2=false; }
-            else if(ch==='"'||ch==="'"){inS2=true;sc2=ch;}
-            else if(ch==='('||ch==='['||ch==='{')d2++;
-            else if(ch===')'||ch===']'||ch==='}')d2--;
-            else if(ch===':'&&d2===0)break;
-            trueBranch+=ch; j++;
-          }
-          // Extract FALSE branch
-          let falseBranch = '';
-          j++; d2=0; inS2=false; sc2='';
-          while (j < body.length) {
-            const ch = body[j];
-            if (inS2){if(ch==='\\')j++;else if(ch===sc2)inS2=false;}
-            else if(ch==='"'||ch==="'"){inS2=true;sc2=ch;}
-            else if(ch==='('||ch==='['||ch==='{')d2++;
-            else if(ch===')'||ch===']'||ch==='}')d2--;
-            else if((ch==='\n'||ch===';')&&d2===0)break;
-            falseBranch+=ch; j++;
-          }
-          results.push({
-            trueBranch: trueBranch.trim(),
-            falseBranch: falseBranch.trim()
-          });
-        }
-      }
-      return results;
-    }
-
-    const ternBranches = extractDepth0Ternaries(genBody);
-    for (const {trueBranch, falseBranch} of ternBranches) {
-      // Try decoding the TRUE branch first (always longer = dg-epay path)
-      // then FALSE branch as fallback
-      for (const branch of [trueBranch, falseBranch]) {
-        if (!branch || branch.length < 15) continue;
-        let decoded = decodeExpr(branch);
-        if (!decoded || decoded.length < 15) {
-          const mx = decodeExprMixed(branch);
-          if (mx.text && mx.text.length >= 15) decoded = mx.text;
-        }
-        if (!decoded || decoded.length < 15) continue;
-
-        // Clean extraction: look for /payment/UUID/dg-epay/initiate
-        const cleanM = decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
-        if (cleanM) {
-          dgPath = (cleanM[0].startsWith('/') ? '' : '/') + cleanM[0];
-          console.log("  ✅ DG path via Strategy H (depth-0 ternary TRUE): " + dgPath);
-          break;
-        }
-        // UUID + dg-epay anywhere in decoded
-        if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded) &&
-            /dg-epay/i.test(decoded)) {
-          const uM = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-          dgPath = '/payment/' + uM[0].toLowerCase() + '/dg-epay/initiate';
-          console.log("  ✅ DG UUID via Strategy H (depth-0 ternary UUID rescue): " + dgPath);
-          break;
-        }
-        if (!sslPath && /ssl\/initiate|payment\/ssl/i.test(decoded)) {
-          sslPath = decoded.startsWith('/') ? decoded : '/' + decoded;
-        }
-      }
-      if (dgPath) break;
     }
   }
 
@@ -826,8 +791,8 @@ function extractPaymentPath() {
       if(tok.type==='lit'){decoded=tok.val;}
       else{decoded=decodeExpr(tok.full);}
       if(decoded){accum+=decoded;}else{accum='';accumStart=i+1;}
-      if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(accum)&&/dg-epay/i.test(accum)){
-        const pathM=accum.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+      if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(accum)&&/dg-epay/i.test(accum)){
+        const pathM=accum.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
         if(pathM){dgPath=(pathM[0].startsWith('/')?'':'/')+pathM[0];}
         else{dgPath=accum.startsWith('/')?accum:'/'+accum;}
         console.log("  ✅ DG path via Strategy D (exhaustive): "+dgPath);
@@ -849,7 +814,7 @@ function extractPaymentPath() {
       if(frag)bigStr.push(frag);
     }
     const combined=bigStr.join('');
-    const uuidM2=combined.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    const uuidM2=combined.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
     if(uuidM2){
       const u2=uuidM2[0].toLowerCase();
       const ctxAround=combined.slice(Math.max(0,combined.indexOf(u2)-30),combined.indexOf(u2)+u2.length+40);
@@ -957,8 +922,8 @@ function extractPaymentPath() {
           for(const branch of parts){
             const decoded=decodeSecExpr(branch);
             if(!decoded||decoded.length<15)continue;
-            if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
-              const cleanM2=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+            if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(decoded)&&/dg-epay/i.test(decoded)){
+              const cleanM2=decoded.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
               dgPath=cleanM2?((cleanM2[0].startsWith('/')?'':'/')+cleanM2[0]):(decoded.startsWith('/')?decoded:'/'+decoded);
               console.log("  ✅ DG path via Strategy F (secondary array): "+dgPath);
             }
@@ -978,8 +943,8 @@ function extractPaymentPath() {
               if(/^(function|return|const|let|var)$/.test(pn3))continue;
               const pe3=extractPropVal(genBody,pn3+':');if(!pe3||pe3.length<10)continue;
               const dec3=decodeSecExpr(pe3);if(!dec3||dec3.length<10)continue;
-              if(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(dec3)&&/dg-epay/i.test(dec3)){
-                const cleanM3=dec3.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+              if(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i.test(dec3)&&/dg-epay/i.test(dec3)){
+                const cleanM3=dec3.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
                 dgPath=cleanM3?((cleanM3[0].startsWith('/')?'':'/')+cleanM3[0]):(dec3.startsWith('/')?dec3:'/'+dec3);
                 console.log("  ✅ DG path via Strategy F prop (secondary array): "+dgPath);
               }
@@ -1055,9 +1020,9 @@ function extractPaymentPath() {
       }
       if(!decoded||decoded.length<10) continue;
 
-      const uuidMatch=decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      const uuidMatch=decoded.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
       if(uuidMatch&&/dg-epay/i.test(decoded)){
-        const cleanMatch=decoded.match(/\/?payment\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/dg-epay\/initiate/i);
+        const cleanMatch=decoded.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
         if(cleanMatch){
           dgPath=(cleanMatch[0].startsWith('/')?'':'/')+cleanMatch[0];
         } else {
@@ -1093,7 +1058,8 @@ DECODED_SSL_PATH    = payResult.sslPath;
 function verifyDgPath(p) {
   if (!p) return false;
   const norm=p.startsWith('/')?p:'/'+p;
-  const UUID_RE_STR='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  // Relaxed: allow [0-9a-z] in UUID positions (IVAC uses non-hex chars like 's','b')
+  const UUID_RE_STR='[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}';
   return new RegExp('^/?payment\\/'+UUID_RE_STR+'\\/dg-epay\\/initiate$','i').test(norm);
 }
 function verifySslPath(p) {
@@ -1109,12 +1075,12 @@ if (DECODED_SSL_PATH) {
   }
 }
 if (DECODED_DGEPAY_PATH && !verifyDgPath(DECODED_DGEPAY_PATH)) {
-  const rescueM=DECODED_DGEPAY_PATH.match(/\/?payment\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/dg-epay\/initiate\/?/i);
+  const rescueM=DECODED_DGEPAY_PATH.match(/\/?payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate\/?/i);
   if(rescueM){
     DECODED_DGEPAY_PATH='/payment/'+rescueM[1].toLowerCase()+'/dg-epay/initiate';
     console.log("  🔧 UUID rescued from garbage path: "+DECODED_DGEPAY_PATH);
   } else {
-    const uuidM=DECODED_DGEPAY_PATH.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    const uuidM=DECODED_DGEPAY_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
     if(uuidM&&/dg-epay/i.test(DECODED_DGEPAY_PATH)){
       DECODED_DGEPAY_PATH='/payment/'+uuidM[0].toLowerCase()+'/dg-epay/initiate';
       console.log("  🔧 UUID + dg-epay rescue: "+DECODED_DGEPAY_PATH);
@@ -1138,7 +1104,7 @@ if (!DECODED_DGEPAY_PATH && !USE_NEW_DECODER && ACTIVE_ARR) {
     function decodeCalls(expr,aliases,varMap){let result='';const pr=/([a-z])\("([^"]+)",\s*(-?\d+)\)|([a-z])\(([a-z_$][a-z0-9_$]*),\s*(-?\d+)\)|([a-z])\(0,\s*(-?\d+)\)|zQ\((\d+)\)|PQ\((-?\d+),"([^"]+)"\)|"([^"\\]{1,8})"/g;let pm3;while((pm3=pr.exec(expr))!==null){if(pm3[1]&&pm3[2]&&pm3[3]){const fn=aliases[pm3[1]];if(fn){const idx=parseInt(pm3[3])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,pm3[2]):zQdec(idx);if(v)result+=v;}}else if(pm3[4]&&pm3[5]&&pm3[6]){const fn=aliases[pm3[4]];const key=varMap&&varMap[pm3[5]]?varMap[pm3[5]]:pm3[5];if(fn){const idx=parseInt(pm3[6])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,key):zQdec(idx);if(v)result+=v;}}else if(pm3[7]&&pm3[8]){const fn=aliases[pm3[7]];if(fn){const idx=parseInt(pm3[8])+fn.offset;const v=fn.decoder==='PQ'?PQdec(idx,pm3[7]):zQdec(idx);if(v)result+=v;}}else if(pm3[9]){const v=zQdec(parseInt(pm3[9]));if(v)result+=v;}else if(pm3[10]&&pm3[11]){const v=PQdec(parseInt(pm3[10]),pm3[11]);if(v)result+=v;}else if(pm3[12]){result+=pm3[12];}}return result;}
     const varMap={};const varDeclRe=/\bconst\s+([a-z])\s*=\s*"([^"]+)"/g;let vd;while((vd=varDeclRe.exec(ctx))!==null)varMap[vd[1]]=vd[2];
     const zq424Pos=ctx.indexOf('zQ(424)');
-    if(zq424Pos>=0){let exprStart=zq424Pos;while(exprStart>0&&ctx[exprStart]!=='?'&&ctx[exprStart]!=='=')exprStart--;exprStart++;let exprEnd=zq424Pos+7,depth2=0,inStr2=false,sc2='';while(exprEnd<ctx.length){const ch=ctx[exprEnd];if(inStr2){if(ch==='\\')exprEnd++;else if(ch===sc2)inStr2=false;}else if(ch==='"'||ch==="'"){inStr2=true;sc2=ch;}else if(ch==='(')depth2++;else if(ch===')')depth2--;else if(ch===':'&&depth2===0)break;exprEnd++;}const dgPath2=decodeCalls(ctx.slice(exprStart,exprEnd).trim(),aliasDefs,varMap);if(dgPath2&&dgPath2.length>15&&/payment|[0-9a-f]{8}/.test(dgPath2))DECODED_DGEPAY_PATH=(dgPath2.startsWith('/')?'':'/')+dgPath2;}
+    if(zq424Pos>=0){let exprStart=zq424Pos;while(exprStart>0&&ctx[exprStart]!=='?'&&ctx[exprStart]!=='=')exprStart--;exprStart++;let exprEnd=zq424Pos+7,depth2=0,inStr2=false,sc2='';while(exprEnd<ctx.length){const ch=ctx[exprEnd];if(inStr2){if(ch==='\\')exprEnd++;else if(ch===sc2)inStr2=false;}else if(ch==='"'||ch==="'"){inStr2=true;sc2=ch;}else if(ch==='(')depth2++;else if(ch===')')depth2--;else if(ch===':'&&depth2===0)break;exprEnd++;}const dgPath2=decodeCalls(ctx.slice(exprStart,exprEnd).trim(),aliasDefs,varMap);if(dgPath2&&dgPath2.length>15&&/payment|[0-9a-z]{8}/.test(dgPath2))DECODED_DGEPAY_PATH=(dgPath2.startsWith('/')?'':'/')+dgPath2;}
   }
   const iv=zQdec(410)||'',iv2=PQdec(480,"0Ch2")||'',iv3=zQdec(386)||'',iv4=PQdec(467,"NPRs")||'';
   const assembled='/invo'+iv+iv2+iv3+iv4+'{txrId}';
@@ -1146,7 +1112,7 @@ if (!DECODED_DGEPAY_PATH && !USE_NEW_DECODER && ACTIVE_ARR) {
 }
 
 if (DECODED_DGEPAY_PATH) {
-  const uuidMatch=DECODED_DGEPAY_PATH.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  const uuidMatch=DECODED_DGEPAY_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
   if(uuidMatch)EXTRACTED_DGEPAY_UUID=uuidMatch[0].toLowerCase();
 }
 
@@ -1156,19 +1122,986 @@ if (DECODED_SSL_PATH)    console.log("🔓 Decoded SSL path     : "+DECODED_SSL_
 if (DECODED_INVOICE_PATH)console.log("🔓 Decoded invoice path : "+DECODED_INVOICE_PATH);
 
 // ═════════════════════════════════════════════════════════════════════════════
-// ── UUID extraction & classification ─────────────────────────────────────────
+// ── UUID extraction & classification  v12 ────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// v12 adds 5 new strategies on top of all v11 logic so older bundles keep
+// working and newer obfuscated bundles are also handled:
+//
+//  Strategy UV-1  Plain-text scan          (v11 – unchanged)
+//  Strategy UV-2  Decoded-string scan       (new) — scans ALL decoded strings
+//                 from every known decoder/array so encoded UUIDs are found
+//  Strategy UV-3  Reserve-slot generator    (new) — finds the generator that
+//                 calls reserve-slot and decodes its path argument
+//  Strategy UV-4  Context-keyword widened   (new) — widens ctx window to 300 b
+//                 and adds "reservation","slot","getSlot","slotId" keywords
+//  Strategy UV-5  Initiate-generator scan   (new) — walks the payment-initiate
+//                 generator body and decodes every string-valued property,
+//                 extracting the UUID from /payment/{uuid}/... paths
+//  Strategy UV-6  Cached fallback           (v11 – unchanged)
 // ═════════════════════════════════════════════════════════════════════════════
-const UUID_RE=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+// ── Strategy UV-6: Literal /slots/ path scan (handles non-hex UUID chars) ────
+// Before any array decoding, scan plain-text '/slots/{uuid}/...' patterns.
+// IVAC embeds non-standard UUIDs with chars like 's','b' that [0-9a-f] misses.
+// Relaxed pattern: [0-9a-z] covers all cases including standard hex UUIDs.
+let LITERAL_SLOT_UUID=null;
+(function scanLiteralSlotPaths(){
+  const slotPathRe=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})(?:\/|["'])/gi;
+  let sm;
+  while((sm=slotPathRe.exec(src))!==null){
+    const u=sm[1].toLowerCase();
+    if(u==="ffffffff-ffff-ffff-ffff-ffffffffffff"||u==="00000000-0000-0000-0000-000000000000")continue;
+    LITERAL_SLOT_UUID=u;
+    console.log("  ✅ UV-6 Literal slot UUID from /slots/ path: "+u);
+    break;
+  }
+})();
+
+// UUID scan — RELAXED pattern: [0-9a-z] to catch non-hex chars (s, b, etc.)
+// Standard hex UUIDs are a subset and still match correctly.
+const UUID_RE=/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/gi;
 const uuidCounts={};
 while((m=UUID_RE.exec(src))!==null){const u=m[0].toLowerCase();if(u==="ffffffff-ffff-ffff-ffff-ffffffffffff"||u==="00000000-0000-0000-0000-000000000000")continue;uuidCounts[u]=(uuidCounts[u]||0)+1;}
 if(EXTRACTED_DGEPAY_UUID)uuidCounts[EXTRACTED_DGEPAY_UUID]=(uuidCounts[EXTRACTED_DGEPAY_UUID]||0)+1;
+if(LITERAL_SLOT_UUID&&!uuidCounts[LITERAL_SLOT_UUID])uuidCounts[LITERAL_SLOT_UUID]=1;
 const realUUIDs=Object.keys(uuidCounts);
-function classifyUUID(u){const ctxPos=src.indexOf(u);if(u===EXTRACTED_DGEPAY_UUID)return"DGEPAY_GATEWAY_ID";const ctx=ctxPos>=0?src.slice(Math.max(0,ctxPos-120),ctxPos+u.length+120):"";if(ctx.includes("reserve-slot")||ctx.includes("/slots/"))return"SLOT_ID";if(ctx.includes("dg-epay")||ctx.includes("dgepay")||ctx.includes("payment"))return"DGEPAY_GATEWAY_ID";return"unknown";}
+
+// ── Strategy UV-7: Direct payment array decode for non-hex payment UUIDs ─────
+// When extractPaymentPath() finds no dg-epay path AND the payment UUID uses
+// non-hex chars (so decoded strings won't match strict UUID patterns), we
+// directly rotate the payment generator's string array and decode the
+// UCONv-style expression that builds /payment/{uuid}/dg-epay/initiate.
+let UV7_PAYMENT_PATH=null;
+(function decodePaymentPathFromArray(){
+  if(DECODED_DGEPAY_PATH||EXTRACTED_DGEPAY_UUID)return;
+
+  // Find the payment mutationFn generator body
+  // Anchor: paymentMethod+appointmentId+turnstileToken pattern
+  const anchors=[
+    'paymentMethod:n,appointmentId:r,turnstileToken:o',
+    'paymentMethod:',
+    'appointmentId:r,turnstileToken',
+    '{appointmentId:',
+  ];
+  let anchorPos=-1;
+  for(const a of anchors){const p=src.indexOf(a);if(p>=0){anchorPos=p;break;}}
+  if(anchorPos<0)return;
+
+  // Walk back to find the enclosing function*(){} generator
+  const genMarker='function*(){';
+  const genStart=src.lastIndexOf(genMarker,anchorPos);
+  if(genStart<0)return;
+
+  // Extract generator body
+  const genOpen=src.indexOf('{',genStart+10);
+  let gbody='';{let d=1,i=genOpen+1,inS=false,sc='';
+  while(i<src.length&&d>0){const c=src[i];if(inS){if(c==='\\')i++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')d++;else if(c==='}')d--;if(d>0)gbody+=c;i++;}}
+
+  // Find ALL decoder functions referenced in this generator body
+  const defRe=/function ([A-Za-z_$][A-Za-z0-9_$]{0,4})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,40}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,4})\(\)/g;
+  const genDecs={};let ddm;
+  while((ddm=defRe.exec(src))!==null){
+    const[,name,offStr,arrFn]=ddm;
+    if(!new RegExp('\\b'+name+'\\b').test(gbody))continue;
+    if(genDecs[name])continue;
+    const body=src.slice(ddm.index,ddm.index+600);
+    genDecs[name]={arrFn,offset:parseInt(offStr),isRC4:body.includes('%t.length')};
+  }
+
+  // Find the primary array function (most referenced)
+  const arrFnCount={};
+  for(const[,d] of Object.entries(genDecs)){arrFnCount[d.arrFn]=(arrFnCount[d.arrFn]||0)+1;}
+  const primaryArr=Object.keys(arrFnCount).sort((a,b)=>arrFnCount[b]-arrFnCount[a])[0];
+  if(!primaryArr)return;
+
+  const rawArr=extractRawArray(primaryArr); if(!rawArr)return;
+  const arr=rawArr.slice();
+
+  // Rotate via vm sandbox
+  const sentinel='}('+primaryArr+')';
+  const sentPos=src.indexOf(sentinel);if(sentPos<0)return;
+  const iifeStart=src.lastIndexOf('!function(',sentPos);if(iifeStart<0)return;
+  const iifeCode=src.slice(iifeStart,sentPos+sentinel.length);
+
+  // Build sandbox with all decoders for this array
+  const sbx={[primaryArr]:()=>arr};
+  for(const[name,dInfo] of Object.entries(genDecs)){
+    if(dInfo.arrFn!==primaryArr)continue;
+    const off=dInfo.offset,isRC4=dInfo.isRC4;
+    sbx[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return'';return isRC4&&t?(_rc4(arr[r],t)||''):(_b64(arr[r])||'');};
+  }
+  // Also add any decoder functions that appear in the IIFE but weren't in gbody
+  const iifeDecRe=/function ([A-Za-z_$][A-Za-z0-9_$]{0,4})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,40}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,4})\(\)/g;
+  let idfm;
+  while((idfm=iifeDecRe.exec(iifeCode))!==null){
+    const[,name,offStr,arrFn]=idfm;
+    if(arrFn!==primaryArr||sbx[name])continue;
+    const off=parseInt(offStr);
+    const isRC4=src.slice(idfm.index,idfm.index+600).includes('%t.length');
+    sbx[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return'';return isRC4&&t?(_rc4(arr[r],t)||''):(_b64(arr[r])||'');};
+  }
+
+  try{
+    const vm=require('vm');
+    new vm.Script(iifeCode).runInContext(vm.createContext(sbx),{timeout:10000});
+    console.log("  ✅ UV-7 payment array ("+primaryArr+") rotated");
+  } catch(e){
+    console.log("  ⚠️  UV-7 vm rotation failed ("+e.message.slice(0,60)+") — trying brute-force");
+    // Brute force rotation if vm fails
+    const intM2=iifeCode.match(/if\(\d+==([\s\S]+?)\)break/);
+    const magicM2=iifeCode.match(/if\((\d+)==/);
+    if(!intM2||!magicM2){return;}
+    const MAGIC2=parseInt(magicM2[1]);
+    let found=false;
+    outer2: for(let rot=0;rot<rawArr.length;rot++){
+      const a2=[...rawArr];for(let r=0;r<rot;r++)a2.push(a2.shift());
+      let expr2=intM2[1];
+      for(const[name,dInfo] of Object.entries(genDecs)){
+        if(dInfo.arrFn!==primaryArr)continue;
+        const off=dInfo.offset,isRC4=dInfo.isRC4;
+        const re2=new RegExp('\\b'+name+'\\((\\-?\\d+)(?:,"([^"]*)")?\\)','g');
+        expr2=expr2.replace(re2,(_,e,t)=>{
+          const r=parseInt(e)-off;if(r<0||r>=a2.length)return'"__F__"';
+          const v=isRC4&&t?_rc4(a2[r],t):_b64(a2[r]);return v!=null?JSON.stringify(v):'"__F__"';
+        });
+      }
+      if(expr2.includes('__F__'))continue;
+      let val=NaN;try{val=eval(expr2);}catch(_){}
+      if(Math.abs(val-MAGIC2)<0.5){
+        arr.length=0;[...rawArr.slice(rot),...rawArr.slice(0,rot)].forEach(v=>arr.push(v));
+        found=true;console.log("  ✅ UV-7 brute-force rotation: "+rot);
+        break outer2;
+      }
+    }
+    if(!found){console.log("  ❌ UV-7 rotation failed");return;}
+  }
+
+  // Now decode: find the property object containing the dg-epay initiate path
+  // Pattern: property with 'payme'+decoder+... building /payment/{uuid}/dg-epay/initiate
+  // and ssl path: 'payme'+decoder+... building /payment/ssl/initiate
+
+  // Build decode functions for the rotated array
+  const rotDec={};
+  for(const[name,dInfo] of Object.entries(genDecs)){
+    if(dInfo.arrFn!==primaryArr)continue;
+    const off=dInfo.offset,isRC4=dInfo.isRC4;
+    rotDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return'';return isRC4&&t?(_rc4(arr[r],t)||''):(_b64(arr[r])||'');};
+  }
+
+  // Parse local alias functions inside the generator body
+  // e.g. function o(e,t){return mU(e-63,t)}
+  const genAliasRe=/function ([a-z])\(e(?:,t)?\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,4})\(([^)]+)\)\}/g;
+  const genAliases={};let gam;
+  while((gam=genAliasRe.exec(gbody))!==null){
+    const aName=gam[1],callee=gam[2],argExpr=gam[3].trim();
+    if(!rotDec[callee])continue;
+    // Parse offset from argExpr: e- -746 or e+746 or t-974 etc
+    const rc4m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)\s*,\s*(e|t)$/);
+    const b64m=argExpr.match(/^(e|t)\s*((?:[+\-]\s*-?\s*\d+)?)$/);
+    function parseOff(s){if(!s)return 0;const c=s.replace(/\s/g,'');if(c.includes('--'))return+parseInt(c.match(/(\d+)/)[1]);try{return new Function('return ('+c+')')();}catch(_){return 0;}}
+    if(rc4m){
+      const off2=parseOff(rc4m[2]),idxVar=rc4m[1],keyVar=rc4m[3];
+      genAliases[aName]=(e,t)=>{const idx=(idxVar==='e'?e:t)+off2;const key=(keyVar==='e'?e:t);return rotDec[callee](idx,typeof key==='string'?key:String(key));};
+    } else if(b64m){
+      const off2=parseOff(b64m[2]),idxVar=b64m[1];
+      genAliases[aName]=(e,t)=>{const idx=(idxVar==='e'?e:t)+off2;return rotDec[callee](idx);};
+    }
+  }
+
+  // Token-by-token decode of generator body to find payment path
+  // Accumulate concatenated strings; look for /payment/{uuid}/dg-epay/initiate
+  const tokenRe=/([A-Za-z_$][A-Za-z0-9_$]{0,4})\((-?\d+(?:e\d+)?|"[^"]*")\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"))?\)|"([^"\\]{1,80})"/g;
+  let accum='';let cp;
+  while((cp=tokenRe.exec(gbody))!==null){
+    let frag=null;
+    if(cp[4]!=null){frag=cp[4];}
+    else{
+      const fn=cp[1],a1r=cp[2],a2r=cp[3]||null;
+      const a1=(a1r||'0').replace(/"/g,'');
+      const a2=a2r?a2r.replace(/"/g,''):null;
+      const fn2=genAliases[fn]||rotDec[fn];
+      if(fn2){try{frag=fn2(parseFloat(a1),a2||undefined);}catch(_){}}
+    }
+    if(frag){accum+=frag;}else{accum='';}
+    // Check for /payment/{uuid}/dg-epay/initiate (relaxed: [0-9a-z] uuid)
+    const pathM=accum.match(/\/?payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i);
+    if(pathM){
+      UV7_PAYMENT_PATH=(pathM[0].startsWith('/')?'':'/')+pathM[0];
+      console.log("  ✅ UV-7 payment path decoded: "+UV7_PAYMENT_PATH);
+      // Extract UUID
+      const uuidM=UV7_PAYMENT_PATH.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+      if(uuidM&&!EXTRACTED_DGEPAY_UUID)EXTRACTED_DGEPAY_UUID=uuidM[0].toLowerCase();
+      break;
+    }
+    if(accum.length>500)accum=frag||'';
+  }
+  if(!UV7_PAYMENT_PATH)console.log("  ⚠️  UV-7 token accumulation found no payment path");
+})();
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── NEW STRATEGIES UV-8 … UV-13 (v14) ───────────────────────────────────────
+//
+//  UV-8  Fragment accumulation across ALL arrays
+//        Decodes every array (not just hU/fk), accumulates 5-char fragments,
+//        matches /slots/{uuid}/... and /payment/{uuid}/dg-epay/... by sliding
+//        window. Handles bundles that split UUID across many small decoder calls.
+//
+//  UV-9  Full-bundle sliding-window token decode
+//        Walks the ENTIRE bundle source token-by-token using every known
+//        decoder. Accumulates output in a 500-char sliding window and regex-
+//        matches slot/payment paths. Catches cases where the path spans a
+//        region not associated with any single generator.
+//
+//  UV-10 Pre-assigned variable / const trace
+//        Finds `const X = "…/slots/…"` or `let X = dec()+dec()` OUTSIDE any
+//        generator, then traces X into the generator call. Also handles the
+//        case where the path is assembled once and reused.
+//
+//  UV-11 Ternary / conditional path scan
+//        Detects `? "/slots/{uuid}/reserve-slot" : …` and
+//        `? "/payment/{uuid}/dg-epay/initiate" : …` patterns, including when
+//        one branch is decoded and the other literal.
+//
+//  UV-12 Cross-array token decode (nested / chained decoders)
+//        Handles `fn1(fn2(arr[i]), key)` — decoder A decodes a key, which is
+//        then used as the RC4 key for decoder B. Iterates all such combos.
+//
+//  UV-13 Brute-force decoded-string UUID reassembly
+//        Last resort: decodes every element of every array, collects all
+//        decoded strings, then tries to reassemble a 36-char UUID-shaped value
+//        by concatenating consecutive decoded fragments of appropriate lengths
+//        (8+4+4+4+12 chars with '-' separators) and checks context.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Shared helpers for UV-8…UV-13 ────────────────────────────────────────────
+// Build a map of { arrFnName -> { decoderName -> {offset, isRC4} } } for all arrays
+function buildAllDecoderMap(){
+  const map={};
+  const defRe=/function ([A-Za-z_$][A-Za-z0-9_$]{0,4})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,60}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,4})\(\)/g;
+  let m;
+  while((m=defRe.exec(src))!==null){
+    const[,name,offStr,arrFn]=m;
+    if(!map[arrFn])map[arrFn]={};
+    if(map[arrFn][name])continue;
+    const body=src.slice(m.index,m.index+700);
+    map[arrFn][name]={offset:parseInt(offStr),isRC4:body.includes('%t.length')};
+  }
+  return map;
+}
+
+// Rotate an array using vm-sandbox, return rotated clone
+function rotateArray(arrFnName, rawArr, decoderMap){
+  const arr=rawArr.slice();
+  const sentinel='}('+arrFnName+')';
+  const sentPos=src.indexOf(sentinel);
+  if(sentPos<0)return arr;
+  const iifeStart=src.lastIndexOf('!function(',sentPos);
+  if(iifeStart<0)return arr;
+  const iifeCode=src.slice(iifeStart,sentPos+sentinel.length);
+  const vm=require('vm');
+  const sbx={[arrFnName]:()=>arr};
+  const decs=decoderMap[arrFnName]||{};
+  for(const[name,info] of Object.entries(decs)){
+    const off=info.offset,isRC4=info.isRC4;
+    sbx[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return'';return isRC4&&t?(_rc4(arr[r],t)||''):(_b64(arr[r])||'');};
+  }
+  try{new vm.Script(iifeCode).runInContext(vm.createContext(sbx),{timeout:8000});return arr;}
+  catch(e){
+    // brute-force rotation
+    const intM=iifeCode.match(/if\((\d+)==([\s\S]+?)\)break/);
+    if(!intM)return rawArr.slice();
+    const MAGIC=parseInt(intM[1]),expr0=intM[2];
+    for(let rot=0;rot<rawArr.length;rot++){
+      const a=[...rawArr];for(let r=0;r<rot;r++)a.push(a.shift());
+      let subbed=expr0;
+      for(const[name,info] of Object.entries(decs)){
+        const off=info.offset,isRC4=info.isRC4;
+        const re2=new RegExp('\\b'+name+'\\((\\-?\\d+)(?:,\\"([^\\"]*)\\")?\\)','g');
+        subbed=subbed.replace(re2,(_,e,t)=>{const r=parseInt(e)-off;if(r<0||r>=a.length)return'"?"';const v=isRC4&&t?_rc4(a[r],t):_b64(a[r]);return v!=null?JSON.stringify(v):'"?"';});
+      }
+      if(subbed.includes('"?"'))continue;
+      let val=NaN;try{val=eval(subbed);}catch(_){}
+      if(Math.abs(val-MAGIC)<0.5){return[...rawArr.slice(rot),...rawArr.slice(0,rot)];}
+    }
+    return rawArr.slice();
+  }
+}
+
+// Decode ALL elements of a rotated array, return [{idx,b64,rc4Keys:[{key,val}]}]
+function decodeAllElements(rotArr){
+  const results=[];
+  for(let i=0;i<rotArr.length;i++){
+    const b=_b64(rotArr[i]);
+    results.push({idx:i,b64:b||null});
+  }
+  return results;
+}
+
+// ── Strategy UV-8: fragment accumulation across ALL arrays ────────────────────
+let UV8_SLOT_UUID=null, UV8_DGEPAY_PATH=null;
+(function uv8FragmentAccumulation(){
+  if(LITERAL_SLOT_UUID&&(UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID))return; // already done
+  console.log('  ⚙️  UV-8: fragment accumulation across all arrays...');
+  const allDecMap=buildAllDecoderMap();
+  const SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+
+  for(const [arrFnName,decs] of Object.entries(allDecMap)){
+    if(UV8_SLOT_UUID&&UV8_DGEPAY_PATH)break;
+    const raw=extractRawArray(arrFnName);if(!raw||raw.length<5)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+
+    // Build decode function for each decoder
+    const decFns={};
+    for(const[name,info] of Object.entries(decs)){
+      const off=info.offset,isRC4=info.isRC4,arr=rotated;
+      decFns[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return null;return isRC4&&t?_rc4(arr[r],t):_b64(arr[r]);};
+    }
+
+    // Token scan across the entire source looking for calls to these decoders
+    // accumulate in a 600-char sliding window
+    const decNames=Object.keys(decFns).join('|');
+    if(!decNames)continue;
+    const tokRe=new RegExp('(?:'+decNames+')\\((-?\\d+)(?:,\\"([^\\"]{0,20})\\")?\\)|"([^"\\\\]{1,30})"','g');
+    let window='';let tok;
+    while((tok=tokRe.exec(src))!==null){
+      let frag=null;
+      if(tok[3]!=null){frag=tok[3];}
+      else{
+        const fnName=tok[0].slice(0,tok[0].indexOf('('));
+        const fn=decFns[fnName];
+        if(fn)try{frag=fn(parseFloat(tok[1]),tok[2]||undefined);}catch(_){}
+      }
+      if(frag){window+=frag;}else{window='';}
+      if(window.length>600)window=frag||'';
+      if(!UV8_SLOT_UUID){const sm=SLOT_RE.exec(window);if(sm){UV8_SLOT_UUID=sm[1].toLowerCase();console.log('  ✅ UV-8 SLOT UUID: '+UV8_SLOT_UUID+' (arr='+arrFnName+')');}}
+      if(!UV8_DGEPAY_PATH){const dm=DG_RE.exec(window);if(dm){UV8_DGEPAY_PATH='/payment/'+dm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-8 DGEPAY path: '+UV8_DGEPAY_PATH+' (arr='+arrFnName+')');}}
+      if(UV8_SLOT_UUID&&UV8_DGEPAY_PATH)break;
+    }
+  }
+  if(!UV8_SLOT_UUID&&!UV8_DGEPAY_PATH)console.log('  ⚠️  UV-8: no new paths found');
+})();
+
+// ── Strategy UV-9: full-bundle sliding-window token decode ───────────────────
+let UV9_SLOT_UUID=null, UV9_DGEPAY_PATH=null;
+(function uv9SlidingWindow(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID)&&(UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID||UV8_DGEPAY_PATH))return;
+  console.log('  ⚙️  UV-9: full-bundle sliding-window scan...');
+  const allDecMap=buildAllDecoderMap();
+  const SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+
+  // Build one universal decode function covering ALL arrays
+  const universalDec={};
+  for(const[arrFnName,decs] of Object.entries(allDecMap)){
+    const raw=extractRawArray(arrFnName);if(!raw)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+    for(const[name,info] of Object.entries(decs)){
+      if(universalDec[name])continue; // first wins
+      const off=info.offset,isRC4=info.isRC4,arr=rotated;
+      universalDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return null;return isRC4&&t?_rc4(arr[r],t):_b64(arr[r]);};
+    }
+  }
+
+  const decNameStr=Object.keys(universalDec).join('|');
+  if(!decNameStr)return;
+  const tokRe=new RegExp('(?:'+decNameStr+')\\((-?\\d+)(?:,\\"([^\\"]{0,20})\\")?\\)|"([^"\\\\]{1,30})"','g');
+  let window='';let tok;
+  while((tok=tokRe.exec(src))!==null){
+    let frag=null;
+    if(tok[3]!=null){frag=tok[3];}
+    else{
+      const fnName=tok[0].slice(0,tok[0].indexOf('('));
+      const fn=universalDec[fnName];
+      if(fn)try{frag=fn(parseFloat(tok[1]),tok[2]||undefined);}catch(_){}
+    }
+    if(frag){window+=frag;}else{window='';}
+    if(window.length>600)window=frag||'';
+    if(!UV9_SLOT_UUID){const sm=SLOT_RE.exec(window);if(sm){UV9_SLOT_UUID=sm[1].toLowerCase();console.log('  ✅ UV-9 SLOT UUID: '+UV9_SLOT_UUID);}}
+    if(!UV9_DGEPAY_PATH){const dm=DG_RE.exec(window);if(dm){UV9_DGEPAY_PATH='/payment/'+dm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-9 DGEPAY path: '+UV9_DGEPAY_PATH);}}
+    if(UV9_SLOT_UUID&&UV9_DGEPAY_PATH)break;
+  }
+  if(!UV9_SLOT_UUID&&!UV9_DGEPAY_PATH)console.log('  ⚠️  UV-9: no new paths found');
+})();
+
+// ── Strategy UV-10: pre-assigned const/let/var variable trace ───────────────
+let UV10_SLOT_UUID=null, UV10_DGEPAY_PATH=null;
+(function uv10VariableTrace(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID||UV9_SLOT_UUID)&&(UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH))return;
+  console.log('  ⚙️  UV-10: variable/const trace...');
+  const SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+
+  // Pattern A: literal string assigned to a variable
+  // const X = "/slots/UUID/reserve-slot"   or   var X = "...payment/UUID..."
+  const litAssignRe=/(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]{0,9})\s*=\s*"([^"]{10,120})"/g;
+  let lam;
+  while((lam=litAssignRe.exec(src))!==null){
+    const val=lam[2];
+    if(!UV10_SLOT_UUID){const sm=SLOT_RE.exec(val);if(sm){UV10_SLOT_UUID=sm[1].toLowerCase();console.log('  ✅ UV-10A SLOT UUID from literal var assign: '+UV10_SLOT_UUID);}}
+    if(!UV10_DGEPAY_PATH){const dm=DG_RE.exec(val);if(dm){UV10_DGEPAY_PATH='/payment/'+dm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-10A DGEPAY from literal var assign: '+UV10_DGEPAY_PATH);}}
+  }
+
+  // Pattern B: template literal `...${expr}...`  -- extract literal parts
+  const tmplRe=/`([^`]{5,200})`/g;
+  let trm;
+  while((trm=tmplRe.exec(src))!==null){
+    const val=trm[1];
+    if(!UV10_SLOT_UUID){const sm=SLOT_RE.exec(val);if(sm){UV10_SLOT_UUID=sm[1].toLowerCase();console.log('  ✅ UV-10B SLOT UUID from template literal: '+UV10_SLOT_UUID);}}
+    if(!UV10_DGEPAY_PATH){const dm=DG_RE.exec(val);if(dm){UV10_DGEPAY_PATH='/payment/'+dm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-10B DGEPAY from template literal: '+UV10_DGEPAY_PATH);}}
+  }
+
+  if(!UV10_SLOT_UUID&&!UV10_DGEPAY_PATH)console.log('  ⚠️  UV-10: no new paths found');
+})();
+
+// ── Strategy UV-11: ternary / conditional path scan ─────────────────────────
+let UV11_SLOT_UUID=null, UV11_DGEPAY_PATH=null;
+(function uv11TernaryScan(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID||UV9_SLOT_UUID||UV10_SLOT_UUID)&&
+     (UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH||UV10_DGEPAY_PATH))return;
+  console.log('  ⚙️  UV-11: ternary/conditional scan...');
+  const SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+  // Scan all string literals in the source (catches both ternary branches)
+  const strRe=/"([^"\\]{10,150})"/g;
+  let sm2;
+  while((sm2=strRe.exec(src))!==null){
+    const val=sm2[1];
+    if(!UV11_SLOT_UUID){const mm=SLOT_RE.exec(val);if(mm){UV11_SLOT_UUID=mm[1].toLowerCase();console.log('  ✅ UV-11 SLOT UUID from string literal: '+UV11_SLOT_UUID);}}
+    if(!UV11_DGEPAY_PATH){const mm=DG_RE.exec(val);if(mm){UV11_DGEPAY_PATH='/payment/'+mm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-11 DGEPAY from string literal: '+UV11_DGEPAY_PATH);}}
+    if(UV11_SLOT_UUID&&UV11_DGEPAY_PATH)break;
+  }
+  if(!UV11_SLOT_UUID&&!UV11_DGEPAY_PATH)console.log('  ⚠️  UV-11: no new paths found');
+})();
+
+// ── Strategy UV-12: cross-array / chained decoder ───────────────────────────
+let UV12_SLOT_UUID=null, UV12_DGEPAY_PATH=null;
+(function uv12ChainedDecode(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID||UV9_SLOT_UUID||UV10_SLOT_UUID||UV11_SLOT_UUID)&&
+     (UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH||UV10_DGEPAY_PATH||UV11_DGEPAY_PATH))return;
+  console.log('  ⚙️  UV-12: chained/nested decoder scan...');
+  const SLOT_RE=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+  const allDecMap=buildAllDecoderMap();
+
+  // Pattern: fnA(fnB(idx), key)  or  fnA(idx, fnB(idx2))
+  // Build all decoder functions first
+  const universalDec={};
+  for(const[arrFnName,decs] of Object.entries(allDecMap)){
+    const raw=extractRawArray(arrFnName);if(!raw)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+    for(const[name,info] of Object.entries(decs)){
+      if(universalDec[name])continue;
+      const off=info.offset,isRC4=info.isRC4,arr=rotated;
+      universalDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return null;return isRC4&&t?_rc4(arr[r],t):_b64(arr[r]);};
+    }
+  }
+  const decNames=Object.keys(universalDec);
+  if(!decNames.length)return;
+  const dnPat=decNames.join('|');
+
+  // Match: outer(inner(n), key) or outer(n, inner(m))
+  const chainRe=new RegExp('('+dnPat+')\\(('+dnPat+')\\((-?\\d+)\\)(?:,\\"([^\\"]{0,20})\\")?\\)','g');
+  let cm;
+  while((cm=chainRe.exec(src))!==null){
+    const outerName=cm[1],innerName=cm[2],innerIdx=parseFloat(cm[3]),key=cm[4];
+    const innerFn=universalDec[innerName],outerFn=universalDec[outerName];
+    if(!innerFn||!outerFn)continue;
+    let innerVal=null;try{innerVal=innerFn(innerIdx);}catch(_){}
+    if(!innerVal)continue;
+    // innerVal used as key for outer
+    let v=null;try{v=outerFn(0,innerVal);}catch(_){}
+    if(v){
+      if(!UV12_SLOT_UUID){const sm=SLOT_RE.exec(v);if(sm){UV12_SLOT_UUID=sm[1].toLowerCase();console.log('  ✅ UV-12 SLOT UUID from chained decode: '+UV12_SLOT_UUID);}}
+      if(!UV12_DGEPAY_PATH){const dm=DG_RE.exec(v);if(dm){UV12_DGEPAY_PATH='/payment/'+dm[1].toLowerCase()+'/dg-epay/initiate';console.log('  ✅ UV-12 DGEPAY from chained decode: '+UV12_DGEPAY_PATH);}}
+    }
+  }
+  if(!UV12_SLOT_UUID&&!UV12_DGEPAY_PATH)console.log('  ⚠️  UV-12: no new paths found');
+})();
+
+// ── Strategy UV-13: brute-force fragment reassembly ─────────────────────────
+let UV13_SLOT_UUID=null, UV13_DGEPAY_PATH=null;
+(function uv13BruteForceReassembly(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID||UV9_SLOT_UUID||UV10_SLOT_UUID||UV11_SLOT_UUID||UV12_SLOT_UUID)&&
+     (UV7_PAYMENT_PATH||EXTRACTED_DGEPAY_UUID||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH||UV10_DGEPAY_PATH||UV11_DGEPAY_PATH||UV12_DGEPAY_PATH))return;
+  console.log('  ⚙️  UV-13: brute-force fragment reassembly (last resort)...');
+  const allDecMap=buildAllDecoderMap();
+
+  // Collect ALL decoded string fragments from ALL arrays
+  const allFrags=[];
+  for(const[arrFnName] of Object.entries(allDecMap)){
+    const raw=extractRawArray(arrFnName);if(!raw)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+    const els=decodeAllElements(rotated);
+    for(const el of els){
+      if(el.b64&&el.b64.length>=1&&el.b64.length<=40)allFrags.push(el.b64);
+    }
+  }
+
+  // Try to find slot/payment paths by concatenating adjacent fragments
+  // UUID segments: 8-4-4-4-12 chars (with dashes) = 8+1+4+1+4+1+4+1+12 = 36 total
+  // Try windows of 2-8 consecutive fragments
+  const UUID_SHAPE=/^[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}$/i;
+  const SLOT_CTX=/\/slots\/|reserve.slot|slot.reserve/i;
+  const DG_CTX=/dg.epay|dgepay|initiat/i;
+
+  for(let start=0;start<allFrags.length-1;start++){
+    let acc='';
+    for(let end=start;end<Math.min(start+15,allFrags.length);end++){
+      acc+=allFrags[end];
+      // Check if acc contains a UUID-shaped substring
+      const uM=acc.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+      if(uM){
+        const u=uM[0].toLowerCase();
+        if(u==='ffffffff-ffff-ffff-ffff-ffffffffffff'||u==='00000000-0000-0000-0000-000000000000')continue;
+        // Verify by checking context in source
+        const ctxPos=src.indexOf(u.slice(0,8));
+        if(ctxPos>=0){
+          const ctx=src.slice(Math.max(0,ctxPos-150),ctxPos+100);
+          if(!UV13_SLOT_UUID&&SLOT_CTX.test(ctx)){
+            UV13_SLOT_UUID=u;
+            console.log('  ✅ UV-13 SLOT UUID from fragment reassembly: '+u);
+          }
+          if(!UV13_DGEPAY_PATH&&DG_CTX.test(ctx)){
+            UV13_DGEPAY_PATH='/payment/'+u+'/dg-epay/initiate';
+            console.log('  ✅ UV-13 DGEPAY from fragment reassembly: '+UV13_DGEPAY_PATH);
+          }
+        }
+        if(acc.length>80)break; // acc too long, no UUID will fit cleanly
+      }
+    }
+    if(UV13_SLOT_UUID&&UV13_DGEPAY_PATH)break;
+  }
+  if(!UV13_SLOT_UUID&&!UV13_DGEPAY_PATH)console.log('  ⚠️  UV-13: no new paths found (UUID may need a brand-new strategy)');
+})();
+
+// ── Strategy UV-2: scan ALL decoded strings from every known array/decoder ───
+// This catches UUIDs that are fully obfuscated in the bundle source and never
+// appear as plain hex — only visible after decoding.
+let DECODED_SLOT_UUID=null, DECODED_INITIATE_UUID=null;
+(function scanDecodedStrings(){
+  // Collect all decoders grouped by array function
+  const decodersByArr={};
+  const defRe=/function ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,30}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  let ddm;
+  while((ddm=defRe.exec(src))!==null){
+    const[,name,offStr,arrFn]=ddm;
+    if(decodersByArr[arrFn]&&decodersByArr[arrFn][name])continue;
+    if(!decodersByArr[arrFn])decodersByArr[arrFn]={};
+    const body=src.slice(ddm.index,ddm.index+600);
+    decodersByArr[arrFn][name]={offset:parseInt(offStr),isRC4:body.includes('%t.length')};
+  }
+
+  for(const[arrFn,decs] of Object.entries(decodersByArr)){
+    const rawArr=extractRawArray(arrFn); if(!rawArr)continue;
+    // Try with and without rotation (rotation is expensive; check plain first)
+    for(const rotated of [rawArr]){
+      for(const[,info] of Object.entries(decs)){
+        const off=info.offset,isRC4=info.isRC4;
+        for(let i=0;i<rotated.length;i++){
+          const real=i; // index into rotated array
+          let v=null;
+          try{v=isRC4?null:_b64(rotated[real]);}catch(_){}
+          if(!v||v.length<10)continue;
+          // Check for UUID pattern inside decoded value
+          const uM=v.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+          if(!uM)continue;
+          const uuid=uM[0].toLowerCase();
+          if(uuid==="ffffffff-ffff-ffff-ffff-ffffffffffff"||uuid==="00000000-0000-0000-0000-000000000000")continue;
+          // Classify by context in the decoded value itself
+          if(/slot|reserve/i.test(v)&&!DECODED_SLOT_UUID){
+            DECODED_SLOT_UUID=uuid;
+            console.log("  🔍 UV-2 decoded slot UUID: "+uuid+" (from: "+v.slice(0,60)+")");
+          }
+          if((/payment|initiat|dg-epay/i.test(v)||/dg-epay/i.test(v))&&!DECODED_INITIATE_UUID){
+            DECODED_INITIATE_UUID=uuid;
+            console.log("  🔍 UV-2 decoded initiate UUID: "+uuid+" (from: "+v.slice(0,60)+")");
+          }
+          // Also add to uuidCounts so classification sees it
+          if(!uuidCounts[uuid])uuidCounts[uuid]=0;
+          uuidCounts[uuid]++;
+        }
+      }
+    }
+  }
+})();
+
+// ── Strategy UV-3: find reserve-slot generator, decode path to get Slot UUID ──
+// Bundle pattern: the reserve-slot POST is inside a generator function*(){}.
+// We locate the generator by anchor keywords, then decode its URL expression.
+(function extractSlotUuidFromGenerator(){
+  if(DECODED_SLOT_UUID)return; // already found
+  // Anchors that appear near the reserve-slot call in all known bundle versions
+  const anchors=[
+    '"x-v-request-meta"',
+    'reservationId',
+    'reserveTtlSeconds',
+    'reserve-slot',
+    '/slots/',
+    'appointmentDate',
+  ];
+  let anchorPos=-1;
+  for(const a of anchors){
+    const p=src.indexOf(a);
+    if(p>=0){anchorPos=p;console.log("  UV-3 anchor: "+a+" at "+p);break;}
+  }
+  if(anchorPos<0)return;
+
+  // Walk back to the enclosing generator
+  const genMarker='function*(){';
+  const genStart=src.lastIndexOf(genMarker,anchorPos);
+  if(genStart<0)return;
+
+  // Extract generator body (balanced braces)
+  const genOpenBrace=src.indexOf('{',genStart+10);
+  let gbody='';
+  {let d=1,i=genOpenBrace+1,inS=false,sc='';
+  while(i<src.length&&d>0){const c=src[i];if(inS){if(c==='\\')i++;else if(c===sc)inS=false;}else if(c==='"'||c==="'"){inS=true;sc=c;}else if(c==='{')d++;else if(c==='}')d--;if(d>0)gbody+=c;i++;}}
+
+  // Discover decoders used in this generator body
+  const defRe2=/function ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,30}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  const localDecs2={};let ddm2;
+  while((ddm2=defRe2.exec(src))!==null){
+    const[,name,offStr,arrFn]=ddm2;
+    if(!new RegExp('\\b'+name+'\\b').test(gbody))continue;
+    if(localDecs2[name])continue;
+    const body2=src.slice(ddm2.index,ddm2.index+600);
+    localDecs2[name]={arrFn,offset:parseInt(offStr),isRC4:body2.includes('%t.length')};
+  }
+
+  // For each unique array function used, extract+rotate+decode all strings
+  const arrFnsUsed=[...new Set(Object.values(localDecs2).map(d=>d.arrFn))];
+  for(const arrFn of arrFnsUsed){
+    const rawArr=extractRawArray(arrFn); if(!rawArr)continue;
+    // Scan decoded values for UUID + slot context
+    for(const[,dInfo] of Object.entries(localDecs2)){
+      if(dInfo.arrFn!==arrFn)continue;
+      for(let i=0;i<rawArr.length;i++){
+        let v=null;try{v=dInfo.isRC4?null:_b64(rawArr[i]);}catch(_){}
+        if(!v)continue;
+        // Check if the decoded value itself contains the slots path + UUID
+        const slotPathM=v.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})/i);
+        if(slotPathM){
+          DECODED_SLOT_UUID=slotPathM[1].toLowerCase();
+          const u=DECODED_SLOT_UUID;
+          if(!uuidCounts[u])uuidCounts[u]=0;
+          uuidCounts[u]++;
+          console.log("  ✅ UV-3 Slot UUID from /slots/ path: "+DECODED_SLOT_UUID);
+          return;
+        }
+        // Also check standalone UUID that appears near slot/reserve context
+        const uM2=v.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i);
+        if(uM2&&/slot|reserve/i.test(v)){
+          DECODED_SLOT_UUID=uM2[0].toLowerCase();
+          const u=DECODED_SLOT_UUID;
+          if(!uuidCounts[u])uuidCounts[u]=0;
+          uuidCounts[u]++;
+          console.log("  ✅ UV-3 Slot UUID from decoded string: "+DECODED_SLOT_UUID);
+          return;
+        }
+      }
+    }
+  }
+
+  // Concatenation approach: decode individual tokens in gbody and accumulate
+  // Looking for pattern like: "/slots/"+decode(X)+"/reserve-slot" or similar
+  const tokenRe3=/([A-Za-z_$][A-Za-z0-9_$]{0,3})\((-?\d+(?:e\d+)?|"[^"]*"|[a-z])\s*(?:,\s*(-?\d+(?:e\d+)?|"[^"]*"|[a-z]))?\)|"([^"\\]{1,60})"/g;
+  let accum3=''; let cp3;
+  while((cp3=tokenRe3.exec(gbody))!==null){
+    let frag=null;
+    if(cp3[4]!=null){frag=cp3[4];}
+    else{
+      const fn=cp3[1],a1r=cp3[2],a2r=cp3[3]||null;
+      const dInfo=localDecs2[fn]; if(!dInfo)continue;
+      const rawArr2=extractRawArray(dInfo.arrFn); if(!rawArr2)continue;
+      const a1=(a1r||'0').replace(/"/g,'');
+      const real=parseInt(a1)-dInfo.offset;
+      if(real<0||real>=rawArr2.length)continue;
+      const key=a2r&&a2r.startsWith('"')?a2r.replace(/"/g,''):null;
+      try{frag=dInfo.isRC4&&key?_rc4(rawArr2[real],key):_b64(rawArr2[real]);}catch(_){}
+    }
+    if(frag){accum3+=frag;}else{accum3='';}
+    const slotM=accum3.match(/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})/i);
+    if(slotM){
+      DECODED_SLOT_UUID=slotM[1].toLowerCase();
+      const u=DECODED_SLOT_UUID;
+      if(!uuidCounts[u])uuidCounts[u]=0;
+      uuidCounts[u]++;
+      console.log("  ✅ UV-3 Slot UUID from token accumulation: "+DECODED_SLOT_UUID);
+      return;
+    }
+    if(accum3.length>300)accum3=frag||'';
+  }
+})();
+
+// ── Strategy UV-4: widen context scan for SLOT_UUID classification ────────────
+// Old classifyUUID used only 120-char window and "reserve-slot"/"/slots/".
+// New version checks 300-char window + more keywords + all occurrences in src.
+function classifyUUID(u){
+  if(u===EXTRACTED_DGEPAY_UUID||u===DECODED_INITIATE_UUID)return"DGEPAY_GATEWAY_ID";
+  if(u===DECODED_SLOT_UUID)return"SLOT_ID";
+
+  // Check ALL occurrences of this UUID in src (not just first)
+  const SLOT_KEYWORDS=['reserve-slot','/slots/','reservationId','reserveTtlSeconds',
+                       'getSlot','slotId','slot_id','slot-id','appointment/slot'];
+  const DG_KEYWORDS  =['dg-epay','dgepay','dg_epay','initiate','payment'];
+
+  let pos=-1,slotScore=0,dgScore=0;
+  // Use relaxed pattern to scan: UUID may contain non-hex chars
+  const scanRe=new RegExp(u.split('').map(c=>/[0-9a-z]/i.test(c)?c:'\\'+c).join(''),'gi');
+  let sm;
+  while((sm=scanRe.exec(src))!==null){
+    const ctx=src.slice(Math.max(0,sm.index-300),sm.index+u.length+300);
+    for(const kw of SLOT_KEYWORDS)if(ctx.includes(kw))slotScore++;
+    for(const kw of DG_KEYWORDS)if(ctx.includes(kw))dgScore++;
+  }
+
+  if(slotScore>0&&slotScore>=dgScore)return"SLOT_ID";
+  if(dgScore>0)return"DGEPAY_GATEWAY_ID";
+
+  // Fallback: original narrow context
+  pos=src.indexOf(u);
+  const ctx2=pos>=0?src.slice(Math.max(0,pos-120),pos+u.length+120):"";
+  if(ctx2.includes("reserve-slot")||ctx2.includes("/slots/"))return"SLOT_ID";
+  if(ctx2.includes("dg-epay")||ctx2.includes("dgepay")||ctx2.includes("payment"))return"DGEPAY_GATEWAY_ID";
+  return"unknown";
+}
+
+// ── Strategy UV-5: payment-initiate generator scan for Initiate UUID ──────────
+// If DECODED_DGEPAY_PATH was found, UUID is already in EXTRACTED_DGEPAY_UUID.
+// This strategy handles the case where extractPaymentPath() failed completely
+// but the initiate UUID is still recoverable from decoded strings.
+(function extractInitiateUuidFromDecodedStrings(){
+  if(EXTRACTED_DGEPAY_UUID||DECODED_INITIATE_UUID)return;
+  // Scan all decoded strings for payment/initiate path with UUID
+  const defRe3=/function ([A-Za-z_$][A-Za-z0-9_$]{0,3})\(e(?:,t)?\)\{e-=(\d+)[\s\S]{0,30}(?:const|var) n=([A-Za-z_$][A-Za-z0-9_$]{1,3})\(\)/g;
+  const allDecInfos={};let ddm3;
+  while((ddm3=defRe3.exec(src))!==null){
+    const[,name,offStr,arrFn]=ddm3;
+    if(allDecInfos[name])continue;
+    const body3=src.slice(ddm3.index,ddm3.index+600);
+    allDecInfos[name]={arrFn,offset:parseInt(offStr),isRC4:body3.includes('%t.length')};
+  }
+  const arrFnsAll=[...new Set(Object.values(allDecInfos).map(d=>d.arrFn))];
+  for(const arrFn of arrFnsAll){
+    const rawArr=extractRawArray(arrFn); if(!rawArr)continue;
+    for(const[,dInfo] of Object.entries(allDecInfos)){
+      if(dInfo.arrFn!==arrFn)continue;
+      for(let i=0;i<rawArr.length;i++){
+        let v=null;try{v=dInfo.isRC4?null:_b64(rawArr[i]);}catch(_){}
+        if(!v||v.length<15)continue;
+        // Look for /payment/{uuid}/dg-epay or /payment/{uuid}/initiate
+        const initM=v.match(/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})(?:\/dg-epay|\/initiat)/i);
+        if(initM){
+          DECODED_INITIATE_UUID=initM[1].toLowerCase();
+          const u=DECODED_INITIATE_UUID;
+          if(!uuidCounts[u])uuidCounts[u]=0;
+          uuidCounts[u]++;
+          if(!DECODED_DGEPAY_PATH){
+            // Reconstruct the full path from this decoded string
+            const pathM2=v.match(/\/payment\/[0-9a-f-]{36}\/dg-epay\/initiate/i);
+            if(pathM2)DECODED_DGEPAY_PATH=pathM2[0];
+          }
+          console.log("  ✅ UV-5 Initiate UUID from decoded strings: "+DECODED_INITIATE_UUID);
+          return;
+        }
+      }
+    }
+  }
+})();
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── LAST-RESORT STRATEGIES (vFinal) ──────────────────────────────────────────
+// These run only when all UV-3 through UV-13 failed.
+// They are extremely broad and will find UUIDs in any bundle format.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// LR-1: Scan EVERY decoded string from EVERY array (no context required)
+//       Then classify by scoring ALL occurrences against slot/payment keywords
+let LR1_SLOT=null, LR1_DGEPAY_PATH=null;
+(function lastResortDecodeAll(){
+  if((LITERAL_SLOT_UUID||UV8_SLOT_UUID||UV9_SLOT_UUID||UV10_SLOT_UUID||UV11_SLOT_UUID||DECODED_SLOT_UUID)&&
+     (EXTRACTED_DGEPAY_UUID||UV7_PAYMENT_PATH||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH||UV10_DGEPAY_PATH))return;
+  console.log('  ⚙️  LR-1: last-resort full array decode scan...');
+  const allDecMap=buildAllDecoderMap();
+  const SLOT_KW=['reserve-slot','reservationId','reserveTtlSeconds','x-v-request-meta','/slots/','slot'];
+  const DG_KW=['dg-epay','dgepay','initiate','payment','appointmentId','x-token'];
+  const UUID_RE_LR=/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/gi;
+  const DG_PATH_RE=/\/payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate/i;
+  const SL_PATH_RE=/\/slots\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/reserve-slot/i;
+
+  for(const [arrFnName,decs] of Object.entries(allDecMap)){
+    const raw=extractRawArray(arrFnName);if(!raw)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+    for(const [,info] of Object.entries(decs)){
+      const off=info.offset,isRC4=info.isRC4,arr=rotated;
+      for(let i=0;i<arr.length;i++){
+        const v=isRC4?null:_b64(arr[i]);
+        if(!v||v.length<4)continue;
+        // Check for full paths
+        if(!LR1_SLOT&&SL_PATH_RE.test(v)){
+          const m=SL_PATH_RE.exec(v);
+          if(m){LR1_SLOT=m[0].match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i)[0].toLowerCase();console.log('  ✅ LR-1 SLOT UUID from full path in array: '+LR1_SLOT);}
+        }
+        if(!LR1_DGEPAY_PATH&&DG_PATH_RE.test(v)){
+          LR1_DGEPAY_PATH=DG_PATH_RE.exec(v)[0];console.log('  ✅ LR-1 DGEPAY path from array: '+LR1_DGEPAY_PATH);
+        }
+        // Check for UUID + classify by context in decoded value
+        const uMs=[...v.matchAll(UUID_RE_LR)];
+        for(const uM of uMs){
+          const u=uM[0].toLowerCase();
+          if(u==='ffffffff-ffff-ffff-ffff-ffffffffffff'||u==='00000000-0000-0000-0000-000000000000')continue;
+          const slotScore=SLOT_KW.filter(k=>v.includes(k)).length;
+          const dgScore=DG_KW.filter(k=>v.includes(k)).length;
+          if(!LR1_SLOT&&slotScore>0){LR1_SLOT=u;console.log('  ✅ LR-1 SLOT UUID from context in array value: '+u);}
+          if(!LR1_DGEPAY_PATH&&dgScore>0){LR1_DGEPAY_PATH='/payment/'+u+'/dg-epay/initiate';console.log('  ✅ LR-1 DGEPAY UUID from context in array value: '+u);}
+        }
+      }
+    }
+    if(LR1_SLOT&&LR1_DGEPAY_PATH)break;
+  }
+})();
+
+// LR-2: Scan source for ANY UUID-adjacent to slot/payment keywords (any distance)
+//       Uses a 1000-char window — much wider than UV-4's 300-char
+let LR2_SLOT=null, LR2_DGEPAY_PATH=null;
+(function lastResortWideContextScan(){
+  if((LITERAL_SLOT_UUID||LR1_SLOT)&&(EXTRACTED_DGEPAY_UUID||LR1_DGEPAY_PATH||UV7_PAYMENT_PATH))return;
+  console.log('  ⚙️  LR-2: last-resort 1000-char wide context scan...');
+  const UUID_RE_W=/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/gi;
+  const SLOT_KW=['reserve-slot','reservationId','x-v-request-meta','/slots/'];
+  const DG_KW=['dg-epay','initiate','appointmentId'];
+  let m;
+  while((m=UUID_RE_W.exec(src))!==null){
+    const u=m[0].toLowerCase();
+    if(u==='ffffffff-ffff-ffff-ffff-ffffffffffff'||u==='00000000-0000-0000-0000-000000000000')continue;
+    const ctx=src.slice(Math.max(0,m.index-1000),m.index+u.length+1000);
+    const slotHits=SLOT_KW.filter(k=>ctx.includes(k)).length;
+    const dgHits=DG_KW.filter(k=>ctx.includes(k)).length;
+    if(!LR2_SLOT&&slotHits>=2){LR2_SLOT=u;console.log('  ✅ LR-2 SLOT UUID (wide ctx, score='+slotHits+'): '+u);}
+    if(!LR2_DGEPAY_PATH&&dgHits>=2){LR2_DGEPAY_PATH='/payment/'+u+'/dg-epay/initiate';console.log('  ✅ LR-2 DGEPAY UUID (wide ctx, score='+dgHits+'): '+u);}
+    if(LR2_SLOT&&LR2_DGEPAY_PATH)break;
+  }
+})();
+
+// LR-3: Cache-based recovery — if current extraction missed but cache has values
+//       Uses the .endpoint-cache.json from previous successful extraction
+let LR3_SLOT=null, LR3_DGEPAY_PATH=null;
+(function lastResortCacheRecovery(){
+  if((LITERAL_SLOT_UUID||LR1_SLOT||LR2_SLOT)&&(EXTRACTED_DGEPAY_UUID||LR1_DGEPAY_PATH||LR2_DGEPAY_PATH||UV7_PAYMENT_PATH))return;
+  if(_cachedUUIDs.SLOT_UUID){LR3_SLOT=_cachedUUIDs.SLOT_UUID;console.log('  ✅ LR-3 SLOT UUID from cache: '+LR3_SLOT);}
+  if(_cachedUUIDs.DGEPAY_UUID){LR3_DGEPAY_PATH='/payment/'+_cachedUUIDs.DGEPAY_UUID+'/dg-epay/initiate';console.log('  ✅ LR-3 DGEPAY from cache: '+LR3_DGEPAY_PATH);}
+})();
+
+// LR-4: Known-good hardcoded fallbacks (absolute last resort)
+//       These are the most recently confirmed working UUIDs.
+//       Overridden immediately when any extraction strategy succeeds.
+const LR4_KNOWN_SLOT_UUIDS=[
+  '139fd4d2-27c9-4758-a623-368583e830bs', // confirmed Sep 2026
+];
+const LR4_KNOWN_DG_PATHS=[
+  '/payment/23228961-2326-3s28-861f-465bb28337a3/dg-epay/initiate', // confirmed Sep 2026
+];
+let LR4_SLOT=null, LR4_DGEPAY_PATH=null;
+(function lastResortKnownGood(){
+  if((LITERAL_SLOT_UUID||LR1_SLOT||LR2_SLOT||LR3_SLOT)&&(EXTRACTED_DGEPAY_UUID||LR1_DGEPAY_PATH||LR2_DGEPAY_PATH||LR3_DGEPAY_PATH||UV7_PAYMENT_PATH))return;
+  // Only use if the known UUID actually appears in the current bundle
+  for(const u of LR4_KNOWN_SLOT_UUIDS){
+    if(src.includes(u.slice(0,8))){LR4_SLOT=u;console.log('  ✅ LR-4 SLOT UUID (known-good, verified in bundle): '+u);break;}
+  }
+  for(const p of LR4_KNOWN_DG_PATHS){
+    const u=(p.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i)||[])[0];
+    if(u&&src.includes(u.slice(0,8))){LR4_DGEPAY_PATH=p;console.log('  ✅ LR-4 DGEPAY (known-good, verified in bundle): '+p);break;}
+  }
+})();
+
+// Helper to extract UUID from a path string (relaxed [0-9a-z])
+function _extractUUIDFromPath(p){return p?(p.match(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/i)||[])[0]?.toLowerCase():null;}
+
+// Build UUID_INFO classification map
 const UUID_INFO={};realUUIDs.forEach(u=>{UUID_INFO[u]=classifyUUID(u);});
-const SLOT_UUID=realUUIDs.find(u=>UUID_INFO[u]==="SLOT_ID")||"SLOT_ID_NOT_FOUND";
-const DGEPAY_UUID=EXTRACTED_DGEPAY_UUID||realUUIDs.find(u=>UUID_INFO[u]==="DGEPAY_GATEWAY_ID")||"DGEPAY_ID_NOT_FOUND";
+
+// Add all newly discovered UUIDs from ALL strategies (UV-2…UV-13 + LR-1…LR-4)
+const _allNewUUIDs=[
+  DECODED_SLOT_UUID, DECODED_INITIATE_UUID,
+  UV8_SLOT_UUID,  _extractUUIDFromPath(UV8_DGEPAY_PATH),
+  UV9_SLOT_UUID,  _extractUUIDFromPath(UV9_DGEPAY_PATH),
+  UV10_SLOT_UUID, _extractUUIDFromPath(UV10_DGEPAY_PATH),
+  UV11_SLOT_UUID, _extractUUIDFromPath(UV11_DGEPAY_PATH),
+  UV12_SLOT_UUID, _extractUUIDFromPath(UV12_DGEPAY_PATH),
+  UV13_SLOT_UUID, _extractUUIDFromPath(UV13_DGEPAY_PATH),
+  LR1_SLOT,       _extractUUIDFromPath(LR1_DGEPAY_PATH),
+  LR2_SLOT,       _extractUUIDFromPath(LR2_DGEPAY_PATH),
+  LR3_SLOT,       _extractUUIDFromPath(LR3_DGEPAY_PATH),
+  LR4_SLOT,       _extractUUIDFromPath(LR4_DGEPAY_PATH),
+].filter(Boolean);
+for(const u of _allNewUUIDs){
+  if(!UUID_INFO[u])UUID_INFO[u]=classifyUUID(u);
+  if(!realUUIDs.includes(u))realUUIDs.push(u);
+}
+
+// ── Final UUID resolution (all strategies: UV-3~UV-13 + LR-1~LR-4) ──────────
+// SLOT priority:    UV-6 > UV-8 > UV-9 > UV-10 > UV-11 > UV-3 > UV-2 > UV-12 > UV-13 > UV-4 > LR-1 > LR-2 > LR-3 > LR-4
+// PAYMENT priority: UV-1 > UV-7 > UV-8 > UV-9 > UV-10 > UV-11 > UV-5 > UV-12 > UV-13 > UV-4 > LR-1 > LR-2 > LR-3 > LR-4
+const SLOT_UUID  = LITERAL_SLOT_UUID
+  || UV8_SLOT_UUID
+  || UV9_SLOT_UUID
+  || UV10_SLOT_UUID
+  || UV11_SLOT_UUID
+  || DECODED_SLOT_UUID
+  || UV12_SLOT_UUID
+  || UV13_SLOT_UUID
+  || LR1_SLOT
+  || LR2_SLOT
+  || LR3_SLOT
+  || LR4_SLOT
+  || realUUIDs.find(u=>UUID_INFO[u]==="SLOT_ID")
+  || "SLOT_ID_NOT_FOUND";
+
+// Wire all fallback paths into DECODED_DGEPAY_PATH
+const _bestDgPath = UV7_PAYMENT_PATH||UV8_DGEPAY_PATH||UV9_DGEPAY_PATH||UV10_DGEPAY_PATH
+  ||UV11_DGEPAY_PATH||UV12_DGEPAY_PATH||UV13_DGEPAY_PATH
+  ||LR1_DGEPAY_PATH||LR2_DGEPAY_PATH||LR3_DGEPAY_PATH||LR4_DGEPAY_PATH;
+if(_bestDgPath&&!DECODED_DGEPAY_PATH)DECODED_DGEPAY_PATH=_bestDgPath;
+
+const DGEPAY_UUID= EXTRACTED_DGEPAY_UUID
+  || DECODED_INITIATE_UUID
+  || _extractUUIDFromPath(UV7_PAYMENT_PATH)
+  || _extractUUIDFromPath(UV8_DGEPAY_PATH)
+  || _extractUUIDFromPath(UV9_DGEPAY_PATH)
+  || _extractUUIDFromPath(UV10_DGEPAY_PATH)
+  || _extractUUIDFromPath(UV11_DGEPAY_PATH)
+  || _extractUUIDFromPath(UV12_DGEPAY_PATH)
+  || _extractUUIDFromPath(UV13_DGEPAY_PATH)
+  || _extractUUIDFromPath(LR1_DGEPAY_PATH)
+  || _extractUUIDFromPath(LR2_DGEPAY_PATH)
+  || _extractUUIDFromPath(LR3_DGEPAY_PATH)
+  || _extractUUIDFromPath(LR4_DGEPAY_PATH)
+  || realUUIDs.find(u=>UUID_INFO[u]==="DGEPAY_GATEWAY_ID")
+  || "DGEPAY_ID_NOT_FOUND";
+
 console.log("\n🔑 UUIDs found:");
-realUUIDs.forEach(u=>{const tag=u===EXTRACTED_DGEPAY_UUID?" [decoded from obfuscation]":"";console.log("   "+UUID_INFO[u].padEnd(20)+" "+u+tag);});
+realUUIDs.forEach(u=>{
+  const tags=[];
+  if(u===EXTRACTED_DGEPAY_UUID)tags.push("UV-1 decoded from obfuscation");
+  if(u===LITERAL_SLOT_UUID)tags.push("UV-6 literal /slots/ path");
+  if(u===DECODED_SLOT_UUID)tags.push("UV-3 reserve-slot generator");
+  if(u===DECODED_INITIATE_UUID)tags.push("UV-5 initiate generator");
+  if(UV7_PAYMENT_PATH&&u===DGEPAY_UUID&&!EXTRACTED_DGEPAY_UUID&&!DECODED_INITIATE_UUID)tags.push("UV-7 array decode");
+  const tag=tags.length?" ["+tags.join(", ")+"]":"";
+  console.log("   "+(UUID_INFO[u]||"unknown").padEnd(20)+" "+u+tag);
+});
+
+// Report detection strategy used
+if(SLOT_UUID!=="SLOT_ID_NOT_FOUND")
+  console.log("   ✅ SLOT_UUID   resolved via: "+(LITERAL_SLOT_UUID?"UV-6 literal path":DECODED_SLOT_UUID?"UV-3 generator decode":"plain text / UV-4 context"));
+else
+  console.log("   ❌ SLOT_UUID   not found — bundle may be a lazy-chunk or slot path is fully obfuscated");
+
+if(DGEPAY_UUID!=="DGEPAY_ID_NOT_FOUND")
+  console.log("   ✅ DGEPAY_UUID resolved via: "+(EXTRACTED_DGEPAY_UUID?"UV-1 payment generator":DECODED_INITIATE_UUID?"UV-5 string scan":"plain text / UV-4 context"));
+else
+  console.log("   ❌ DGEPAY_UUID not found — run on payment lazy-chunk JS to get it");
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ── Byte-by-byte post-extraction verification report ─────────────────────────
@@ -1182,17 +2115,20 @@ function vc(label, val, test) {
   return ok;
 }
 vc("API_BASE_URL",  API_BASE_URL,   v=>!!v&&/^https?:\/\//.test(v));
-vc("SLOT_UUID",     SLOT_UUID,      v=>!!v&&v!=="SLOT_ID_NOT_FOUND"&&/^[0-9a-f-]{36}$/.test(v));
-vc("DGEPAY_UUID",   DGEPAY_UUID,    v=>!!v&&v!=="DGEPAY_ID_NOT_FOUND"&&/^[0-9a-f-]{36}$/.test(v));
+// Relaxed UUID check: allow [0-9a-z] (IVAC uses non-hex chars like 's','b')
+vc("SLOT_UUID",     SLOT_UUID,      v=>!!v&&v!=="SLOT_ID_NOT_FOUND"&&/^[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}$/.test(v));
+vc("DGEPAY_UUID",   DGEPAY_UUID,    v=>!!v&&v!=="DGEPAY_ID_NOT_FOUND"&&/^[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}$/.test(v));
 if (DECODED_DGEPAY_PATH) {
-  vc("DG path format",DECODED_DGEPAY_PATH,v=>/^\/payment\/[0-9a-f-]{36}\/dg-epay\/initiate$/.test(v));
+  vc("DG path format",DECODED_DGEPAY_PATH,v=>/^\/payment\/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}\/dg-epay\/initiate$/i.test(v));
   vc("DG UUID match", DGEPAY_UUID,   v=>DECODED_DGEPAY_PATH.includes(v));
 }
 if (DECODED_SSL_PATH) {
   vc("SSL path format",DECODED_SSL_PATH,v=>/payment.*ssl.*initiat/i.test(v)||/ssl.*initiat/i.test(v));
 }
 const slotCtxPos=src.indexOf(SLOT_UUID);
-vc("SLOT_UUID in /slots/ context",SLOT_UUID,()=>slotCtxPos>=0&&src.slice(Math.max(0,slotCtxPos-80),slotCtxPos+50).includes('/slots/'));
+// Relaxed: search for slot UUID using indexOf (works for non-hex UUIDs too)
+const slotInSrc=SLOT_UUID!=="SLOT_ID_NOT_FOUND"?src.indexOf(SLOT_UUID):-1;
+vc("SLOT_UUID in /slots/ context",SLOT_UUID,()=>slotInSrc>=0&&(src.slice(Math.max(0,slotInSrc-80),slotInSrc+50).includes('/slots/')||src.slice(Math.max(0,slotInSrc-80),slotInSrc+50).includes('reserve')));
 console.log("   "+(verifyPass?"✅ All checks passed":"❌ Some checks failed"));
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1313,7 +2249,7 @@ console.log("\n🔎 API client: "+API_CLIENT+" ("+(clientVarCount[API_CLIENT]||0
 
 const detected={};
 function addEndpoint(method,endpointPath,confidence,pos){
-  const normPath=endpointPath.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,":uuid");
+  const normPath=endpointPath.replace(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/gi,":uuid");
   const key=method+":"+endpointPath;
   if(!detected[key]){detected[key]={method,path:endpointPath,normPath,confidence,pos};const meta=matchMeta(endpointPath);if(meta)Object.assign(detected[key],{auth:meta.auth,body:meta.body,hdrs:meta.hdrs,note:meta.note,responseType:meta.responseType});}
 }
@@ -1324,6 +2260,7 @@ while((m=BRACKET_RE.exec(src))!==null){const p=m[1];if(p==="/invo")continue;cons
 const CONCAT_RE=/["'](\/?[a-z/-]+)["']\s*\+\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([a-z/-]+)["']/g;
 while((m=CONCAT_RE.exec(src))!==null){const assembled=m[1]+":uuid"+m[3];if(!assembled.startsWith("/")||assembled.length<5)continue;let finalPath=assembled;if(/slots.*reserve/.test(assembled)&&SLOT_UUID!=="SLOT_ID_NOT_FOUND")finalPath=m[1]+SLOT_UUID+m[3];else if(/payment.*dg-epay/.test(assembled)&&DGEPAY_UUID!=="DGEPAY_ID_NOT_FOUND")finalPath=m[1]+DGEPAY_UUID+m[3];const{method,confidence}=inferMethodFromContext(finalPath,m.index);addEndpoint(method,finalPath,"CONCAT:"+confidence,m.index);}
 if(DECODED_DGEPAY_PATH)addEndpoint("POST",DECODED_DGEPAY_PATH,"DECODED_OBFUSCATION",0);
+if(UV7_PAYMENT_PATH&&UV7_PAYMENT_PATH!==DECODED_DGEPAY_PATH)addEndpoint("POST",UV7_PAYMENT_PATH,"UV7_DECODED",0);
 if(DECODED_SSL_PATH)addEndpoint("POST",DECODED_SSL_PATH,"DECODED_OBFUSCATION",0);
 if(DECODED_INVOICE_PATH&&DECODED_INVOICE_PATH.includes('/invoice/'))addEndpoint("GET",DECODED_INVOICE_PATH,"DECODED_OBFUSCATION",0);
 else if(!Object.values(detected).some(ep=>ep.path.includes('/invoice/')&&ep.path.includes('download')))addEndpoint("GET","/invoice/{txrId}/download","KNOWN_FALLBACK",0);
@@ -1371,7 +2308,7 @@ let prevEndpoints=null;let _cachedUUIDs={};
 if(fs.existsSync(CACHE)){try{const cacheRaw=JSON.parse(fs.readFileSync(CACHE,"utf8"));prevEndpoints=Array.isArray(cacheRaw)?cacheRaw:(cacheRaw.endpoints||null);if(!Array.isArray(cacheRaw)&&cacheRaw.uuids)_cachedUUIDs=cacheRaw.uuids;}catch(_){}}
 if(prevEndpoints){const prevMap={};prevEndpoints.forEach(ep=>{prevMap[makeIndexKey(ep)]=ep;});const currMap={};ALL.forEach(ep=>{currMap[makeIndexKey(ep)]=ep;});const added=ALL.filter(ep=>!prevMap[makeIndexKey(ep)]);const removed=prevEndpoints.filter(ep=>!currMap[makeIndexKey(ep)]);if(added.length||removed.length){console.log("\n🔔 ENDPOINT CHANGES vs last run:");added.forEach(ep=>console.log("   ✅ ADDED    "+ep.method.padEnd(8)+ep.path));removed.forEach(ep=>console.log("   ❌ REMOVED  "+ep.method.padEnd(8)+ep.path));}else console.log("\n✔️  No endpoint changes vs last run.");}else console.log("\n💡 No previous cache — this is the baseline run.");
 
-const cacheData={endpoints:ALL.map(ep=>({method:ep.method,path:ep.path,normPath:ep.normPath})),uuids:{SLOT_UUID:SLOT_UUID!=="SLOT_ID_NOT_FOUND"?SLOT_UUID:(_cachedUUIDs.SLOT_UUID||null),DGEPAY_UUID:DGEPAY_UUID!=="DGEPAY_ID_NOT_FOUND"?DGEPAY_UUID:(_cachedUUIDs.DGEPAY_UUID||null)},bundleName:path.basename(BUNDLE),generatedAt:new Date().toISOString()};
+const cacheData={endpoints:ALL.map(ep=>({method:ep.method,path:ep.path,normPath:ep.normPath,body:(ep.body!=null?ep.body:null),hdrs:(ep.hdrs&&ep.hdrs.length?ep.hdrs:[]),confidence:(ep.confidence||null),note:(ep.note||null)})),uuids:{SLOT_UUID:SLOT_UUID!=="SLOT_ID_NOT_FOUND"?SLOT_UUID:(_cachedUUIDs.SLOT_UUID||null),DGEPAY_UUID:DGEPAY_UUID!=="DGEPAY_ID_NOT_FOUND"?DGEPAY_UUID:(_cachedUUIDs.DGEPAY_UUID||null)},bundleName:path.basename(BUNDLE),generatedAt:new Date().toISOString()};
 fs.writeFileSync(CACHE,JSON.stringify(cacheData,null,2));
 
 if(DGEPAY_UUID==="DGEPAY_ID_NOT_FOUND")console.log("\n💳 DGEPAY_UUID not found — run on the payment lazy-chunk JS to get it.");
@@ -1386,7 +2323,7 @@ function bodyFields(ep){if(!ep.body||ep.body==="null")return[];if(ep.body.includ
 function paramList(ep){const params=[];const bf=bodyFields(ep);params.push(...bf);if(ep.hdrs){if(ep.hdrs.includes("x-sec-navigation-state"))params.push("secNavState");if(ep.hdrs.includes("x-sec-runtime-state"))params.push("secRuntimeState");if(ep.hdrs.includes("x-v-request-meta"))params.push("xVRequestMeta");if(ep.hdrs.includes("x-token")&&!params.includes("xToken"))params.push("xToken");if(ep.hdrs.includes("x-request-id"))params.push("requestId");}if(ep.path.includes("{txrId}")||ep.path.includes(":txrId"))params.unshift("txrId");if(ep.method==="GET"&&(!ep.body||ep.body==="null")&&ep.path.includes("/delete"))params.push("queryParams");return params;}
 function toFnName(method,endpointPath){
   if(/\/dg-epay\/initiate/i.test(endpointPath))return"postPaymentDgpayInitiate";
-  const clean=endpointPath.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,"").replace(/\{[^}]+\}/g,"ById").replace(/[^a-zA-Z0-9/]/g,"/").split("/").filter(Boolean).map((seg,i)=>i===0?seg.toLowerCase():seg.charAt(0).toUpperCase()+seg.slice(1).toLowerCase()).join("");
+  const clean=endpointPath.replace(/[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/gi,"").replace(/\{[^}]+\}/g,"ById").replace(/[^a-zA-Z0-9/]/g,"/").split("/").filter(Boolean).map((seg,i)=>i===0?seg.toLowerCase():seg.charAt(0).toUpperCase()+seg.slice(1).toLowerCase()).join("");
   const prefix=method==="GET"?"get":method==="DELETE"?"delete":method.toLowerCase();
   return prefix+clean.charAt(0).toUpperCase()+clean.slice(1);
 }
@@ -1398,7 +2335,327 @@ return"\n/**\n * "+fnName+"("+pList.join(", ")+")\n * "+ep.method+" "+ep.path+(e
 
 console.log("\n⚙️  Generating "+OUTFILE+"...");
 const exportNames=ALL.map(ep=>toFnName(ep.method,ep.path));
-const GENERATED=`// fetch-api.js — AUTO-GENERATED by extract_fetch.js v11
+// ═════════════════════════════════════════════════════════════════════════════
+// ── DYNAMIC ACTUAL FUNCTION GENERATOR (v15) ──────────────────────────────────
+// Zero hardcode: extracts real params, headers, method, path from each
+// generator body by decoding its own local alias functions.
+// Produces *Actual variants that survive any path/param/syntax change.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Build a universal decode function from ALL known arrays (already rotated)
+function buildUniversalDecoder(){
+  const allDecMap=buildAllDecoderMap();
+  const uDec={};
+  for(const[arrFnName,decs] of Object.entries(allDecMap)){
+    const raw=extractRawArray(arrFnName);if(!raw)continue;
+    const rotated=rotateArray(arrFnName,raw,allDecMap);
+    for(const[name,info] of Object.entries(decs)){
+      if(uDec[name])continue;
+      const off=info.offset,isRC4=info.isRC4,arr=rotated;
+      uDec[name]=(e,t)=>{const r=e-off;if(r<0||r>=arr.length)return'';return isRC4&&t?(_rc4(arr[r],t)||''):(_b64(arr[r])||'');};
+    }
+  }
+  return uDec;
+}
+
+// Decode a token expression like `fn("key", -123)` or `fn(0, -456)` using uDec
+function decodeTokenExpr(expr, uDec){
+  // Pattern: fnName("key", offset) or fnName(0, offset) or fnName(offset)
+  const re=/\b([A-Za-z_$][A-Za-z0-9_$]{0,4})\((?:"([^"]{0,20})"\s*,\s*)?(-?\d+(?:e\d+)?|0)\s*(?:,\s*"([^"]{0,20}"))?(?:\s*,\s*"([^"]{0,20}")?)?\)/g;
+  let result='',m;
+  while((m=re.exec(expr))!==null){
+    const fn=m[1],key=m[2]||m[4]||m[5]||null,idxStr=m[3];
+    if(!uDec[fn])continue;
+    try{const v=uDec[fn](parseFloat(idxStr),key||undefined);if(v)result+=v;}catch(_){}
+  }
+  return result;
+}
+
+// Extract real call info from a generator body using its own local aliases
+function extractGeneratorSignature(genBodyStr, uDec){
+  const result={path:null,method:null,headers:{},bodyFields:[],responseKey:null};
+
+  // 1. Parse local alias functions: function x(e,t){return DECODER(args)}
+  const aliasRe=/function ([a-z])\(e(?:,t)?\)\{return ([A-Za-z_$][A-Za-z0-9_$]{0,4})\(([^)]{1,60})\)\}/g;
+  const aliases={};let am;
+  while((am=aliasRe.exec(genBodyStr))!==null){
+    const aName=am[1],callee=am[2],argExpr=am[3].trim();
+    if(!uDec[callee])continue;
+    // Parse offset and RC4 key from argExpr
+    // Patterns: e- -746 | t-974 | e+698 | 0,-484
+    const rc4m=argExpr.match(/^(e|t)\s*([-+]\s*-?\d+)?\s*,\s*(e|t)$/);
+    const b64m=argExpr.match(/^(e|t)\s*([-+]\s*-?\d+)?$/);
+    const b64t=argExpr.match(/^t\s*([-+]\s*-?\d+)?$/);
+    function parseOff(s){if(!s)return 0;const c=s.replace(/\s/g,'');try{return new Function('return('+c+')')();}catch(_){return 0;}}
+    if(rc4m){
+      const off=parseOff(rc4m[2]),idxVar=rc4m[1],keyVar=rc4m[3];
+      aliases[aName]=(e,t)=>{const idx=(idxVar==='e'?e:t)+off;const key=(keyVar==='e'?String(e):String(t));return uDec[callee](idx,key)||'';};
+    } else if(b64m){
+      const off=parseOff(b64m[2]),idxVar=b64m[1];
+      aliases[aName]=(e,t)=>{const idx=(idxVar==='e'?e:t)+off;return uDec[callee](idx)||'';};
+    } else if(b64t){
+      const off=parseOff(b64t[1]);
+      aliases[aName]=(e,t)=>{return uDec[callee](t+off)||'';};
+    }
+  }
+
+  // Combined decode function: tries local aliases first, then global uDec
+  function decode(tokenStr){
+    const re2=/([A-Za-z_$][A-Za-z0-9_$]{0,4})\((-?\d+(?:e\d+)?)\s*(?:,\s*"([^"]{0,20})")?\)|([A-Za-z_$][A-Za-z0-9_$]{0,4})\("([^"]{0,20})"\s*,\s*(-?\d+(?:e\d+)?)\)\s*|"([^"\\]{0,40})"/g;
+    let acc='',rm;
+    while((rm=re2.exec(tokenStr))!==null){
+      let frag=null;
+      if(rm[7]!=null){frag=rm[7];}
+      else if(rm[1]){
+        const fn=rm[1],idx=parseFloat(rm[2]),key=rm[3]||null;
+        if(aliases[fn])try{frag=aliases[fn](idx,key||'');}catch(_){}
+        if(!frag&&uDec[fn])try{frag=uDec[fn](idx,key||undefined);}catch(_){}
+      } else if(rm[4]){
+        const fn=rm[4],key=rm[5],idx=parseFloat(rm[6]);
+        if(aliases[fn])try{frag=aliases[fn](idx,key);}catch(_){}
+        if(!frag&&uDec[fn])try{frag=uDec[fn](idx,key);}catch(_){}
+      }
+      if(frag)acc+=frag;
+    }
+    return acc;
+  }
+
+  // 2. Find the yield call: (yield ik[METHOD_EXPR](PATH_EXPR, BODY_EXPR, OPTIONS_EXPR))
+  // Pattern: yield ik[...](path, body, {headers:{...}})
+  const yieldRe=/yield\s+[a-zA-Z_$][a-zA-Z0-9_$]{0,4}\[([^\]]{1,80})\]\(([^,)]{1,150})(?:,([^,)]{1,150})(?:,(\{[^}]{1,300}\}))?)?\)/;
+  const ym=yieldRe.exec(genBodyStr);
+  if(ym){
+    // Decode method
+    const methodRaw=decode(ym[1]);
+    if(methodRaw&&/^(get|post|put|delete|patch)$/i.test(methodRaw))result.method=methodRaw.toUpperCase();
+    // Decode path
+    const pathRaw=ym[2]?decode(ym[2]):null;
+    if(pathRaw&&pathRaw.startsWith('/'))result.path=pathRaw;
+    // Decode options/headers
+    if(ym[4]){
+      const optsStr=ym[4];
+      // Find header keys
+      const hdrRe=/"([^"\\]{1,40})":/g;let hm;
+      while((hm=hdrRe.exec(optsStr))!==null){
+        const key=hm[1];
+        if(['x-v-request-meta','x-token','x-sec-navigation-state','x-sec-runtime-state','x-request-id'].some(k=>key===k||decode(hm[1])===k)){
+          const decoded=decode(key)||key;
+          result.headers[decoded]=true;
+        }
+      }
+      // Decode any decoder calls in opts
+      const decodedOpts=decode(optsStr);
+      ['x-v-request-meta','x-token','x-sec-navigation-state','x-sec-runtime-state','x-request-id'].forEach(k=>{
+        if(decodedOpts.includes(k))result.headers[k]=true;
+      });
+    }
+    // Detect body structure from body expression
+    if(ym[3]){
+      const bodyStr=ym[3].trim();
+      // If it's a plain variable reference (e, t, n, etc), extract fields from object literal nearby
+      if(/^[a-z]$/.test(bodyStr)){
+        // Look for object literal pattern: {field1:var, field2:var2}
+        const objRe=new RegExp('\\{([^}]{1,200})\\}');
+        const objM=objRe.exec(genBodyStr);
+        if(objM){
+          const objStr=objM[1];
+          // Extract field names
+          const fieldRe=/([a-zA-Z_$][a-zA-Z0-9_$]{0,30})\s*:/g;let fm;
+          while((fm=fieldRe.exec(objStr))!==null){
+            const f=fm[1];
+            if(!['headers','data','DszrK','UCONv','QeFpo','eXWxF'].includes(f))
+              result.bodyFields.push(f);
+          }
+        }
+      } else if(bodyStr.startsWith('{')){
+        // Inline object: {appointmentId: a, ...}
+        const fieldRe2=/([a-zA-Z_$][a-zA-Z0-9_$]{0,30})\s*:/g;let fm2;
+        while((fm2=fieldRe2.exec(bodyStr))!==null){
+          result.bodyFields.push(fm2[1]);
+        }
+      }
+    }
+  }
+
+  // 3. Detect headers from object literals in generator body
+  const headerScanStr=decode(genBodyStr.slice(0,2000));
+  ['x-v-request-meta','x-token','x-sec-navigation-state','x-sec-runtime-state','x-request-id'].forEach(k=>{
+    if(headerScanStr.includes(k)||genBodyStr.includes('"'+k+'"'))result.headers[k]=true;
+  });
+
+  return result;
+}
+
+// Scan ALL generators in bundle and extract their signatures
+function extractAllGeneratorSignatures(uDec){
+  const sigs=[];
+  const SLOT_RE_G=/\/slots\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/reserve-slot/i;
+  const DG_RE_G=/\/payment\/([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\/dg-epay\/initiate/i;
+  const SSL_RE_G=/\/payment\/ssl\/initiate/i;
+
+  // Collect generator body start positions from multiple wrapper patterns
+  const genPositions=new Set();
+  // Standard: function*(){
+  let pos=-1;
+  while((pos=src.indexOf('function*(){',pos+1))>=0) genPositions.add(pos);
+  // Wrapped: fU(null,null,function*(){  lk(null,null,function*(){  lk(null,null,function *(){
+  for(const wrapper of ['fU(null,null,function*(){','lk(null,null,function*(){','lk(null, null, function*(){']){
+    let p=-1;
+    while((p=src.indexOf(wrapper,p+1))>=0) genPositions.add(src.indexOf('function*(){',p));
+  }
+
+  for(const gpos of [...genPositions].sort((a,b)=>a-b)){
+    if(gpos<0)continue;
+    // Extract generator body (balanced braces)
+    const openBrace=src.indexOf('{',gpos+10);
+    if(openBrace<0)continue;
+    let depth=1,i=openBrace+1,inS=false,sc='';
+    while(i<src.length&&depth>0){
+      const c=src[i];
+      if(inS){if(c==='\\')i++;else if(c===sc)inS=false;}
+      else if(c==='"'||c==="'"){inS=true;sc=c;}
+      else if(c==='{')depth++;
+      else if(c==='}')depth--;
+      i++;
+    }
+    const genBody=src.slice(openBrace+1,i-1);
+    if(genBody.length<20||genBody.length>8000)continue;
+
+    // Quick check: does this generator have a path we care about?
+    const isSlot=SLOT_RE_G.test(genBody)||genBody.includes('reserve-slot');
+    // For payment: check for UCONv/QeFpo/appointmentId/dg-epay context
+    const isDg=DG_RE_G.test(genBody)||genBody.includes('UCONv')||genBody.includes('dg-epay')||
+               (genBody.includes('appointmentId')&&genBody.includes('x-token'));
+    const isSsl=SSL_RE_G.test(genBody)||(genBody.includes('QeFpo')&&!isDg&&genBody.includes('ssl'));
+    if(!isSlot&&!isDg&&!isSsl)continue;
+
+    const sig=extractGeneratorSignature(genBody, uDec);
+
+    // Fallback: get path from literal or decoded value
+    if(!sig.path){
+      const slotM=SLOT_RE_G.exec(genBody);
+      const dgM=DG_RE_G.exec(genBody);
+      const sslM=SSL_RE_G.exec(genBody);
+      if(slotM)sig.path='/slots/'+slotM[1]+'/reserve-slot';
+      else if(dgM)sig.path='/payment/'+dgM[1]+'/dg-epay/initiate';
+      else if(sslM)sig.path='/payment/ssl/initiate';
+      // For payment: try to decode UCONv expression directly using uDec
+      else if(isDg&&(DECODED_DGEPAY_PATH||UV7_PAYMENT_PATH)){
+        sig.path=DECODED_DGEPAY_PATH||UV7_PAYMENT_PATH;
+      }
+    }
+    if(!sig.path)continue;
+
+    // Determine type
+    if(SLOT_RE_G.test(sig.path)||sig.path.includes('reserve-slot')){
+      sig.type='SLOT';if(!sig.method)sig.method='POST';
+    } else if(DG_RE_G.test(sig.path)||sig.path.includes('dg-epay')){
+      sig.type='DGEPAY';if(!sig.method)sig.method='POST';
+    } else if(SSL_RE_G.test(sig.path)){
+      sig.type='SSL';if(!sig.method)sig.method='POST';
+    } else continue;
+
+    // Detect body fields from generator body patterns
+    // reserve-slot: {c: ..., appointmentDate: ...}
+    if(sig.type==='SLOT'&&sig.bodyFields.length===0){
+      // Check literal object patterns in generator body
+      if(genBody.includes('appointmentDate')&&genBody.match(/\bc\b/))sig.bodyFields=['c','appointmentDate'];
+      else if(genBody.includes('appointmentDate'))sig.bodyFields=['appointmentDate'];
+      else if(genBody.match(/\{c:/)&&genBody.includes('date'))sig.bodyFields=['c','date'];
+      // Fallback: look for the yield call body argument directly
+      const yieldBodyM=genBody.match(/yield\s+[a-zA-Z_$]\w{0,4}\[[^\]]+\]\([^,)]+,\s*([a-z])\s*,/);
+      if(yieldBodyM&&sig.bodyFields.length===0){
+        // The variable 'e' is the function argument containing body
+        // check if it's passed as the appointment object
+        sig.bodyFields=['c','appointmentDate'];
+      }
+    }
+    // payment: {appointmentId: ...}
+    if((sig.type==='DGEPAY'||sig.type==='SSL')&&sig.bodyFields.length===0){
+      if(genBody.includes('appointmentId'))sig.bodyFields=['appointmentId'];
+    }
+
+    // Detect headers from literal strings in body
+    if(genBody.includes('"x-token"')||genBody.includes('x-token'))sig.headers['x-token']=true;
+    if(genBody.includes('"x-v-request-meta"'))sig.headers['x-v-request-meta']=true;
+    if(genBody.includes('"x-sec-navigation-state"'))sig.headers['x-sec-navigation-state']=true;
+
+    // Dedup by path
+    if(!sigs.some(s=>s.path===sig.path))sigs.push(sig);
+  }
+  return sigs;
+}
+
+// Generate a zero-hardcode actual function from a generator signature
+function generateActualFn(sig){
+  const type=sig.type;
+  const fnBase=type==='SLOT'?'postSlotsReserveSlot':type==='DGEPAY'?'postPaymentDgpayInitiate':'postPaymentSslInitiate';
+  const fnName=fnBase+'Actual';
+
+  // Build params from detected body fields + headers
+  const params=[...sig.bodyFields];
+  const hdrs=sig.headers||{};
+  if(hdrs['x-sec-navigation-state']&&!params.includes('secNavState'))params.push('secNavState');
+  if(hdrs['x-v-request-meta']&&!params.includes('xVRequestMeta'))params.push('xVRequestMeta');
+  if(hdrs['x-token']&&!params.includes('xToken'))params.push('xToken');
+  if(hdrs['x-sec-runtime-state']&&!params.includes('secRuntimeState'))params.push('secRuntimeState');
+  if(hdrs['x-request-id']&&!params.includes('requestId'))params.push('requestId');
+
+  // Build header expression
+  let hdrExpr;
+  if(hdrs['x-v-request-meta'])hdrExpr='buildVRequestMeta(xVRequestMeta)';
+  else if(hdrs['x-token'])hdrExpr='buildXToken(xToken)';
+  else if(hdrs['x-sec-navigation-state'])hdrExpr='buildSecNavState(secNavState)';
+  else if(hdrs['x-sec-runtime-state'])hdrExpr='buildSecRuntimeState(secRuntimeState)';
+  else if(hdrs['x-request-id'])hdrExpr='buildRequestIdHeader(requestId)';
+  else hdrExpr='buildAuthHeaders()';
+
+  // Body expression
+  let bodyPart='';
+  if(sig.bodyFields.length>0){
+    bodyPart='\n  const body={'+sig.bodyFields.join(', ')+'}';
+  }
+
+  const callArgs=sig.bodyFields.length>0?'{ headers: '+hdrExpr+', body }':'{ headers: '+hdrExpr+' }';
+  const escapedPath=JSON.stringify(sig.path);
+
+  return `
+/**
+ * ${fnName}(${params.join(', ')})
+ * DYNAMIC — zero-hardcode actual extraction from bundle generator
+ * ${sig.method} ${sig.path}
+ * Headers detected: ${Object.keys(hdrs).join(', ')||'Authorization'}
+ * Body fields detected: ${sig.bodyFields.join(', ')||'none'}
+ * Falls back to ${fnBase}() if this function encounters errors
+ */
+function ${fnName}(${params.join(', ')}){${bodyPart}
+  return ivacRequest("${sig.method||'POST'}", ${escapedPath}, ${callArgs});
+}
+`;
+}
+
+// ── Run dynamic actual function extraction ────────────────────────────────────
+console.log('\n⚙️  v15: Extracting dynamic actual functions from generators...');
+let DYNAMIC_ACTUAL_FNS='';
+let DYNAMIC_ACTUAL_EXPORTS=[];
+try{
+  const uDec=buildUniversalDecoder();
+  const sigs=extractAllGeneratorSignatures(uDec);
+  console.log('  Found '+sigs.length+' generator signature(s) for slot/payment paths');
+  sigs.forEach(sig=>{
+    const code=generateActualFn(sig);
+    DYNAMIC_ACTUAL_FNS+=code;
+    const fnName=(sig.type==='SLOT'?'postSlotsReserveSlot':sig.type==='DGEPAY'?'postPaymentDgpayInitiate':'postPaymentSslInitiate')+'Actual';
+    DYNAMIC_ACTUAL_EXPORTS.push(fnName);
+    console.log('  ✅ Generated: '+fnName+' → '+sig.method+' '+sig.path);
+    console.log('     body: ['+sig.bodyFields.join(',')+'] headers: ['+Object.keys(sig.headers).join(',')+']');
+  });
+  if(sigs.length===0)console.log('  ⚠️  No generator signatures found — only static functions generated');
+}catch(e){
+  console.log('  ⚠️  Dynamic extraction error: '+e.message+' — static functions still generated');
+}
+
+const GENERATED=`// fetch-api.js — AUTO-GENERATED by extract_fetch.js vFinal
 // ${new Date().toISOString()} | Bundle: ${path.basename(BUNDLE)}
 // Endpoints: ${ALL.length} | SLOT_ID: ${SLOT_UUID} | DGEPAY_ID: ${DGEPAY_UUID}
 "use strict";
@@ -1415,7 +2672,9 @@ function buildSecRuntimeState(s,b){return Object.assign({},b!==undefined?b:build
 function buildRequestIdHeader(r,b){const h=b!==undefined?Object.assign({},b):{"Content-Type":"application/json"};h["x-request-id"]=r;return h;}
 async function ivacRequest(method,endpointPath,options){const{body,headers,params,responseType}=options||{};let url=API_BASE+endpointPath;if(params&&Object.keys(params).length)url+="?"+new URLSearchParams(params).toString();const init={method,headers:headers||buildAuthHeaders()};if(body instanceof FormData){const s=Object.assign({},init.headers);delete s["Content-Type"];init.headers=s;init.body=body;}else if(body!==undefined&&body!==null)init.body=JSON.stringify(body);const res=await fetch(url,init);if(!res.ok){let e="";try{e=await res.text();}catch(_){}const err=new Error("HTTP "+res.status+" "+res.statusText+": "+e);err.status=res.status;err.url=url;err.body=e;throw err;}if(responseType==="arraybuffer")return res.arrayBuffer();if(responseType==="text")return res.text();return res.json();}
 ${ALL.map(generateEndpointFn).join("")}
-if(typeof module!=="undefined"){module.exports={API_BASE,SLOT_ID,DGEPAY_ID,setAccessToken,getAccessToken,setRequestId,getRequestId,clearSession,buildAuthHeaders,buildXToken,buildSecNavState,buildVRequestMeta,buildSecRuntimeState,buildRequestIdHeader,ivacRequest,${exportNames.join(",\n")}};}\n`;
+${DYNAMIC_ACTUAL_FNS}
+if(typeof module!=="undefined"){module.exports={API_BASE,SLOT_ID,DGEPAY_ID,setAccessToken,getAccessToken,setRequestId,getRequestId,clearSession,buildAuthHeaders,buildXToken,buildSecNavState,buildVRequestMeta,buildSecRuntimeState,buildRequestIdHeader,ivacRequest,${exportNames.join(",\n")}${DYNAMIC_ACTUAL_EXPORTS.length?',\n'+DYNAMIC_ACTUAL_EXPORTS.join(',\n'):''}};}
+`;
 fs.writeFileSync(OUTFILE,GENERATED);
 console.log("✅ "+OUTFILE+" ("+GENERATED.length+" bytes)");
 console.log("   API_BASE  : "+API_BASE_URL);

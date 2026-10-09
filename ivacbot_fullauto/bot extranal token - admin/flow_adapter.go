@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"ivac-bot/flow"
@@ -8,24 +11,57 @@ import (
 
 // ── Adapters wiring the bot's real H2 client + captcha into the flow module ──
 
+// proxyRotateThreshold: how many CONSECUTIVE proxy faults on the current proxy before
+// the instance rotates to the next one. A success (any normal server reply) resets the
+// streak, so a healthy proxy is carried on; only a repeatedly-failing one is swapped.
+const proxyRotateThreshold = 3
+
+// h2ClientFor builds the utls/HTTP-2 client for a proxy (empty = direct), with the
+// standard 45s cap so a dead endpoint never hangs forever.
+func h2ClientFor(proxyURL string) *http.Client {
+	c := newH2Client(proxyURL)
+	if c.Timeout == 0 {
+		c.Timeout = 45 * time.Second
+	}
+	return c
+}
+
 // flowDoer implements flow.Doer using the bot's utls/HTTP-2 client (newH2Client).
 // onHTTP (optional) is fired after every API call with the URL + HTTP status, so
 // the dashboard can show live per-step ENDPOINT + STATUS (200/403/503/…).
+//
+// CONDITIONAL PROXY ROTATION: the current proxy is kept as long as it works. A
+// "proxy fault" (transport error/timeout, or an IP-block/overload status like
+// 403/429/502/504/52x) increments a streak; after `threshold` consecutive faults the
+// doer rotates to the next enabled proxy (round-robin) and rebuilds the client. Any
+// normal server reply (200/400/401/404/… — the proxy reached IVAC) resets the streak,
+// so a good proxy is never rotated for an app-level error.
 type flowDoer struct {
-	hd     *flow.HTTPDoer
-	onHTTP func(url string, status int)
+	mu        sync.Mutex
+	hd        *flow.HTTPDoer
+	onHTTP    func(url string, status int)
+	log       func(string)
+	curProxy  string
+	errStreak int
+	threshold int
 }
 
-func newFlowDoer(proxyURL string, onHTTP func(string, int)) flowDoer {
-	c := newH2Client(proxyURL)
-	if c.Timeout == 0 {
-		c.Timeout = 45 * time.Second // never hang forever on a dead endpoint
+func newFlowDoer(proxyURL string, onHTTP func(string, int), logFn func(string)) *flowDoer {
+	return &flowDoer{
+		hd:        &flow.HTTPDoer{Client: h2ClientFor(proxyURL)},
+		onHTTP:    onHTTP,
+		log:       logFn,
+		curProxy:  proxyURL,
+		threshold: proxyRotateThreshold,
 	}
-	return flowDoer{hd: &flow.HTTPDoer{Client: c}, onHTTP: onHTTP}
 }
 
-func (d flowDoer) Do(req flow.Request) (flow.Response, error) {
-	resp, err := d.hd.Do(req)
+func (d *flowDoer) Do(req flow.Request) (flow.Response, error) {
+	d.mu.Lock()
+	hd := d.hd
+	d.mu.Unlock()
+
+	resp, err := hd.Do(req)
 	if d.onHTTP != nil {
 		st := 0
 		if err == nil {
@@ -33,7 +69,84 @@ func (d flowDoer) Do(req flow.Request) (flow.Response, error) {
 		}
 		d.onHTTP(req.URL, st)
 	}
+	d.noteResult(resp.Status, err)
 	return resp, err
+}
+
+// noteResult updates the proxy-fault streak and rotates when it reaches the threshold.
+func (d *flowDoer) noteResult(status int, err error) {
+	// P_rotate master toggle: when OFF, never rotate — each instance keeps its assigned
+	// proxy regardless of errors (streak not even tracked, so turning it ON later starts
+	// clean). Checked outside the lock; it's a cheap RLock read.
+	if !proxyRotateEnabled() {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !isProxyFault(status, err) {
+		d.errStreak = 0 // proxy reached the server → it's healthy, carry on
+		return
+	}
+	d.errStreak++
+	if d.errStreak < d.threshold {
+		return
+	}
+	// threshold reached → rotate to the next enabled proxy (if any other exists)
+	next := nextEnabledProxyURL(d.curProxy)
+	d.errStreak = 0
+	if next == "" || next == d.curProxy {
+		if d.log != nil {
+			d.log("⚠ proxy rotate skip — onno kono enabled proxy nei (eki proxy diye cholbe)")
+		}
+		return
+	}
+	old := d.curProxy
+	d.curProxy = next
+	d.hd = &flow.HTTPDoer{Client: h2ClientFor(next)}
+	if d.log != nil {
+		d.log("🔄 proxy rotate (" + strconv.Itoa(d.threshold) + " ta error por): " + maskProxy(old) + " → " + maskProxy(next))
+	}
+}
+
+// isProxyFault reports whether a request result points at the PROXY/IP (not the app).
+// Transport errors (connection refused, TLS, timeout) and IP-block / overload statuses
+// count; normal app replies (200/400/401/404/409/500/503…) do NOT — those mean the
+// proxy reached IVAC fine, so the proxy is healthy and the streak resets.
+func isProxyFault(status int, err error) bool {
+	if err != nil {
+		return true
+	}
+	switch status {
+	case 403, 407, 408, 429, 502, 504, 520, 521, 522, 523, 524, 525:
+		return true
+	}
+	return false
+}
+
+// nextEnabledProxyURL returns the enabled proxy that follows `current` in round-robin
+// order, or "" when there is no OTHER enabled proxy to rotate to.
+func nextEnabledProxyURL(current string) string {
+	var urls []string
+	for _, p := range getEnabledProxies() {
+		if p.Enabled {
+			urls = append(urls, getProxyURL(p))
+		}
+	}
+	if len(urls) == 0 {
+		return ""
+	}
+	if len(urls) == 1 {
+		if urls[0] == current {
+			return "" // only one proxy → nothing else to rotate to
+		}
+		return urls[0]
+	}
+	for i, u := range urls {
+		if u == current {
+			return urls[(i+1)%len(urls)]
+		}
+	}
+	return urls[0] // current not in the enabled list → start at the first
 }
 
 // flowTokens implements flow.TokenProvider using the bot's captcha queue. It
@@ -42,19 +155,11 @@ func (d flowDoer) Do(req flow.Request) (flow.Response, error) {
 type flowTokens struct{ purpose string }
 
 func (t flowTokens) GetCaptchaToken() (string, error) {
-	// RELAY: use a token STRAIGHT from the relay (GET /pull) — no local queue. The
-	// relay is already a fresh, single-use, 120s FIFO; pulling on-demand keeps the
-	// token as fresh as possible (no second hold, no staleness).
-	if captchaMgr.providerIsRelay() {
-		return captchaMgr.solveRaw(t.purpose) // relay: solveRelay → GET /pull
-	}
-	// API providers: CONSUME a pre-solved token (single-use) from the local queue —
-	// never reuse the same one, or the next call fails "Captcha verification failed".
-	// TakeRaw also triggers an instant refill.
-	if tok, ok := captchaMgr.TakeRaw(t.purpose); ok && tok != "" {
-		return tok, nil
-	}
-	return captchaMgr.solveRaw(t.purpose)
+	// AUTO FAILOVER: get a raw token from the active source (relay or API — the
+	// dashboard toggle), and if that source can't hand one out (relay empty/unreachable,
+	// or the API errors), fall back to the OTHER kind automatically for this one pull.
+	// pullRawFailover also consumes the pre-warmed API queue first when API is active.
+	return captchaMgr.pullRawFailover(t.purpose)
 }
 
 // flowFetcher implements flow.Fetcher (plain GET) for the SMS OTP poll + bundle
@@ -82,6 +187,9 @@ type FullAutoInput struct {
 	ProxyURL      string
 	Single        bool
 	Auto          bool
+	// CacheOnly (Play All) skips the live bundle scan and runs straight from the
+	// last-good store (cached cipher + endpoints). Full Auto All leaves it false.
+	CacheOnly     bool
 	DelaySec      int
 	// StepDelays are the per-step retry delays (seconds) from the dashboard's
 	// retry-delay controller — keys: signin/verify/book/reserve/initiate. When set,
@@ -96,7 +204,14 @@ type FullAutoInput struct {
 	// instance N starts its sweep at a different date so N instances don't all hit
 	// date #1 at once. Typically the instance id; 0 = start at the first date.
 	ReserveStartOffset int
-	Log                func(string)
+	// CipherResumeStagger spreads the signin RESUME across instances after a shared
+	// ivacflow cipher push (so 30 paused instances don't all fire signin at once →
+	// HTTP 429). Typically instanceIndex × a small unit. 0 = resume immediately.
+	CipherResumeStagger time.Duration
+	// ReloginMode: this run is a RE-LOGIN after a session expiry. Only then does a
+	// signin 429 honor the server's "try after X min Y sec" schedule.
+	ReloginMode bool
+	Log         func(string)
 
 	// resume state (stop → start): a still-live session skips signin/OTP/verify.
 	PreAccessToken   string
@@ -169,7 +284,7 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 		}
 	}
 	r := flow.NewRunner(cfg, mode, in.Log, nil)
-	r.Doer = newFlowDoer(in.ProxyURL, in.OnHTTP)
+	r.Doer = newFlowDoer(in.ProxyURL, in.OnHTTP, in.Log)
 	r.OnOTP = in.OnOTP
 	r.Fetcher = newFlowFetcher(in.ProxyURL)
 	// The live bundle scan always goes DIRECT (no proxy), independent of this
@@ -182,13 +297,18 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 	configMu.RLock()
 	r.LiveScanTries = globalConfig.LiveScanTries
 	configMu.RUnlock()
+	r.CacheOnly = in.CacheOnly // Play All: skip live scan, run from last-good store
 	r.Tokens = flowTokens{purpose: "Signin"}
-	r.ReserveTokens = flowTokens{purpose: "Reserve"} // reserve needs Reserve-widget tokens, not Signin
+	// Reserve draws from the SAME shared token pool now (unifyPurpose collapses every
+	// purpose to one pool), so signin/reserve/upload/initiate all take from one place.
+	r.ReserveTokens = flowTokens{purpose: "Reserve"}
 	r.Phone = in.Phone
 	r.OTPPhone = in.OTPPhone
 	r.Password = in.Password
 	r.AppointmentID = in.AppointmentID // enables get-booking-config smart-skip
-	r.ReserveStartOffset = in.ReserveStartOffset // round-robin reserve date-sweep start
+	r.ReserveStartOffset = in.ReserveStartOffset   // round-robin reserve date-sweep start
+	r.CipherResumeStagger = in.CipherResumeStagger // spread signin resume across instances
+	r.ReloginMode = in.ReloginMode                 // relogin run: honor 429 schedule on signin
 	// resume: preload a still-live session so signin/OTP/verify/reserve are skipped
 	r.AccessToken = in.PreAccessToken
 	r.RequestID = in.PreRequestID
@@ -205,6 +325,26 @@ func RunFullAutoForEntry(in FullAutoInput) (string, error) {
 		if in.OnScanComplete != nil {
 			in.OnScanComplete(ok, detail)
 		}
+	}
+	// #1 cipher-fail fallback: when signin/reserve is rejected for a cipher/captcha
+	// reason, re-apply the NEWEST ivacflow push (autoflow_FINAL: correct cipher
+	// skip/len/key/algo + endpoints) to this run's config so the next retry uses it.
+	// Returns false when ivacflow has not pushed yet → the retry loop waits & asks
+	// again on the next round (exactly the "wait for ivacflow, then resume" behavior).
+	r.OnCipherFail = func() bool {
+		importMu.RLock()
+		imp := ivacflowCfg
+		importMu.RUnlock()
+		if imp == nil {
+			return false
+		}
+		return cfg.ApplyIvacflowForce(imp)
+	}
+	// #1 PAUSE version gate: lets a paused signin tell a NEW correct-cipher push apart
+	// from the same (already-tried) one, so it resumes only on a strictly newer push.
+	r.IvacflowVersion = func() uint64 {
+		_, ver := ivacflowSnapshot()
+		return ver
 	}
 	// live retry delays: map "signin/verify/book/reserve/initiate" → StepName.
 	if in.LiveDelaySec != nil {

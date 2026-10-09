@@ -78,6 +78,10 @@ var (
 	pMu       sync.Mutex
 	pSessions = map[string]string{} // token -> username
 	pSessMu   sync.Mutex
+	// pImpersonate maps an impersonation session token → the ADMIN's own token that
+	// started it, so "View as user" can switch the cookie to the user WITHOUT losing the
+	// admin session, and "Return to Admin" restores it. Guarded by pSessMu.
+	pImpersonate = map[string]string{}
 )
 
 // ---- persistence ----
@@ -160,6 +164,14 @@ func portalLoginAPI(w http.ResponseWriter, r *http.Request) {
 		portalJSON(w, map[string]string{"error": "Invalid username or password"})
 		return
 	}
+	// ADMIN login is allowed ONLY from loopback (the SSH tunnel). From the public link
+	// (DuckDNS / VPS IP) an admin login is refused even with the correct password, so no
+	// one can gain admin from outside. Regular users log in from anywhere as usual.
+	if found.Role == "admin" && !isLoopback(r) {
+		w.WriteHeader(403)
+		portalJSON(w, map[string]string{"error": "Admin login is only available from the local console. Please use your own user account here."})
+		return
+	}
 	tok := portalHash(found.Username + portalID())
 	pSessMu.Lock()
 	pSessions[tok] = found.Username
@@ -177,6 +189,7 @@ func portalLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("ivs_session"); err == nil {
 		pSessMu.Lock()
 		delete(pSessions, c.Value)
+		delete(pImpersonate, c.Value) // drop any impersonation record for this token
 		pSessMu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: "ivs_session", Value: "", Path: "/", MaxAge: -1})
@@ -199,7 +212,113 @@ func portalMe(w http.ResponseWriter, r *http.Request) {
 		portalJSON(w, map[string]string{"error": "not logged in"})
 		return
 	}
-	portalJSON(w, map[string]string{"username": u.Username, "role": u.Role})
+	out := map[string]string{"username": u.Username, "role": u.Role}
+	// If this session is an admin "View as user" impersonation, tell the portal UI so it
+	// can show the "⬅ Return to Admin" banner.
+	if c, err := r.Cookie("ivs_session"); err == nil {
+		pSessMu.Lock()
+		adminTok, imp := pImpersonate[c.Value]
+		realAdmin := ""
+		if imp {
+			realAdmin = pSessions[adminTok]
+		}
+		pSessMu.Unlock()
+		if imp && realAdmin != "" {
+			out["impersonating"] = "1"
+			out["adminUser"] = realAdmin
+		}
+	}
+	portalJSON(w, out)
+}
+
+// portalImpersonate (admin only): POST {username} → open that user's dashboard while
+// KEEPING the admin session alive. It mints a fresh session for the target user, records
+// the admin's own token against it, and switches the cookie — so "Return to Admin" can
+// put the admin back with one click (no logout/re-login).
+func portalImpersonate(w http.ResponseWriter, r *http.Request) {
+	admin, ok := portalSessionUser(r)
+	if !ok || admin.Role != "admin" || !isLoopback(r) {
+		w.WriteHeader(403)
+		portalJSON(w, map[string]string{"error": "admin only — from the local console (tunnel)"})
+		return
+	}
+	var in struct{ Username string }
+	json.NewDecoder(r.Body).Decode(&in)
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" || strings.EqualFold(in.Username, admin.Username) {
+		w.WriteHeader(400)
+		portalJSON(w, map[string]string{"error": "pick a user to view as"})
+		return
+	}
+	// target must exist
+	pMu.Lock()
+	exists := false
+	for _, x := range pUsers {
+		if strings.EqualFold(x.Username, in.Username) {
+			exists = true
+			in.Username = x.Username // canonical case
+			break
+		}
+	}
+	pMu.Unlock()
+	if !exists {
+		w.WriteHeader(404)
+		portalJSON(w, map[string]string{"error": "user not found"})
+		return
+	}
+	adminTok := ""
+	if c, err := r.Cookie("ivs_session"); err == nil {
+		adminTok = c.Value
+	}
+	impTok := portalHash(in.Username + "imp" + portalID())
+	pSessMu.Lock()
+	pSessions[impTok] = in.Username   // this session resolves to the target user
+	pImpersonate[impTok] = adminTok   // remember the admin to restore later
+	pSessMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: "ivs_session", Value: impTok, Path: "/", HttpOnly: true, MaxAge: 86400 * 7})
+	portalJSON(w, map[string]string{"ok": "1", "redirect": "/portal"})
+}
+
+// portalReturnAdmin restores the admin session that started a "View as user" view and
+// sends the browser back to the admin dashboard. Safe: it only works when the current
+// session was created by an admin impersonation (recorded in pImpersonate) and that
+// admin token is still a valid admin — a regular user cannot use it to gain admin.
+func portalReturnAdmin(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("ivs_session")
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	pSessMu.Lock()
+	adminTok, imp := pImpersonate[c.Value]
+	adminUser := ""
+	if imp {
+		adminUser = pSessions[adminTok]
+	}
+	pSessMu.Unlock()
+	// verify the stored admin token still maps to a real admin account
+	isAdmin := false
+	if adminUser != "" {
+		pMu.Lock()
+		for _, x := range pUsers {
+			if x.Username == adminUser && x.Role == "admin" {
+				isAdmin = true
+				break
+			}
+		}
+		pMu.Unlock()
+	}
+	if !imp || !isAdmin {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	// drop the impersonation session and restore the admin cookie
+	pSessMu.Lock()
+	delete(pImpersonate, c.Value)
+	delete(pSessions, c.Value)
+	pSessMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: "ivs_session", Value: adminTok, Path: "/", HttpOnly: true, MaxAge: 86400 * 7})
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // portalLocked: the old 4:30 PM add/delete lock is removed — files can be added
@@ -442,9 +561,9 @@ func portalPhonesAPI(w http.ResponseWriter, r *http.Request) {
 // admin: create / list / delete users
 func portalAdminUsers(w http.ResponseWriter, r *http.Request) {
 	u, ok := portalSessionUser(r)
-	if !ok || u.Role != "admin" {
+	if !ok || u.Role != "admin" || !isLoopback(r) {
 		w.WriteHeader(403)
-		portalJSON(w, map[string]string{"error": "admin only"})
+		portalJSON(w, map[string]string{"error": "admin only — from the local console (tunnel)"})
 		return
 	}
 	if r.Method == "POST" {
@@ -541,7 +660,7 @@ func portalAdminUsers(w http.ResponseWriter, r *http.Request) {
 // admin-only User Management page
 func portalAdminUsersPage(w http.ResponseWriter, r *http.Request) {
 	u, ok := portalSessionUser(r)
-	if !ok || u.Role != "admin" {
+	if !ok || u.Role != "admin" || !isLoopback(r) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
@@ -565,6 +684,8 @@ func RegisterUserPortal() {
 	http.HandleFunc("/api/portal/invoiceFile", handlePortalInvoiceFile)
 	http.HandleFunc("/api/portal/phones", portalPhonesAPI)
 	http.HandleFunc("/api/portal/users", portalAdminUsers)
+	http.HandleFunc("/api/portal/impersonate", portalImpersonate) // admin "View as user"
+	http.HandleFunc("/portal/returnAdmin", portalReturnAdmin)     // back to admin dashboard
 	http.HandleFunc("/api/portal/uploadFile", handlePortalUploadFile)
 	fmt.Println("🌐 [Portal] User portal ready → /login   (admin/admin123)")
 }

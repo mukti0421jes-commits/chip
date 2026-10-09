@@ -93,6 +93,42 @@ func handleEndpointCachePush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "stored": true, "bundle": bundle})
 }
 
+// handleEndpointCacheServe returns the FULL stored .endpoint-cache.json so a local
+// browser userscript (RJ SLOT) can PULL it and sync endpoints without any extra
+// helper window. GET /api/endpointCache
+//
+// Loopback-only (same machine), CORS * so the browser can read it. No token is
+// required: the payload is only endpoint paths + public UUIDs (the same data the
+// userscript already captures from live traffic), never a secret.
+func handleEndpointCacheServe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if r.Method != "GET" {
+		w.WriteHeader(405)
+		return
+	}
+	if !isLoopback(r) {
+		w.WriteHeader(403)
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "endpoint-cache is loopback-only"})
+		return
+	}
+	raw := currentEndpointCache()
+	if len(raw) == 0 {
+		w.WriteHeader(404)
+		writeJSON(w, map[string]interface{}{"ok": false, "error": "no endpoint-cache pushed yet — run runfetch + push once"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	_, _ = w.Write(raw)
+}
+
 // handleEndpointCacheStatus reports what the bot currently holds.
 // GET /api/endpointCacheStatus
 func handleEndpointCacheStatus(w http.ResponseWriter, r *http.Request) {

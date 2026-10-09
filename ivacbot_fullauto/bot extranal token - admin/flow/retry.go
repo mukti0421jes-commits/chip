@@ -12,7 +12,16 @@ type StepResult struct {
 	Win       bool
 	Cancelled bool
 	Data      interface{}
-	Status    int // HTTP status of the attempt (0 = network/other). 429 → 20s wait.
+	Status    int  // HTTP status of the attempt (0 = network/other). 429 → 20s wait.
+	CipherFail bool // the SERVER rejected the request for a cipher/captcha-verification
+	// reason (encryption of `c` is wrong) — NOT a missing captcha token or a network
+	// error. Set only from the server response (isCipherFail). Drives the #1 PAUSE:
+	// RunStepSmart stops retrying and waits for a fresh ivacflow cipher+endpoint push.
+	RetryAfter time.Duration // server-scheduled wait parsed from a 429 body ("try after
+	// X minute Y seconds"). When >0 the retry waits EXACTLY this, not the fixed delay.
+	HardStop bool // an UNRECOVERABLE, do-not-retry condition (e.g. sign-in "too many
+	// attempts" server lockout). RunStepSmart returns immediately WITHOUT retrying, and
+	// the caller auto-stops the instance (manual restart only).
 }
 
 // StepFunc runs one attempt of a step. It should return Win=true on success and
@@ -119,6 +128,14 @@ type Runner struct {
 	ReservationID    string
 	PaymentURL      string
 
+	// appointmentSetupDone: the POST /appointment that sets up the upload context has
+	// succeeded once this session. The upload sub-flow is retried as a whole (e.g.
+	// after an over-view hiccup); re-POSTing /appointment on each retry risks resetting
+	// the server-side appointment so over-view would see it empty → 400. RJ SLOT creates
+	// it exactly once, so we guard it the same way — uploaded applicants persist on the
+	// server across the retries.
+	appointmentSetupDone bool
+
 	otpVal string // OTP fetched by the SMS/email fetcher
 	// otpStale holds every OTP this run must never verify with: the code that was
 	// already sitting on sms.php when this sign-in started (the PREVIOUS session's
@@ -137,6 +154,31 @@ type Runner struct {
 	// ("Full Auto → live scan try কতবার"). 0 means unlimited (retry until success or
 	// Stop), preserving the old behavior when the dashboard leaves it unset.
 	LiveScanTries int
+
+	// ReloginMode marks a run that is RE-LOGGING IN after a session expired (auto-off →
+	// wait → relogin). ONLY in this mode does a signin 429 honor the server's own "try
+	// after X min Y sec" schedule (RunStepSmart). Normal signin/reserve retries ignore
+	// it and keep the configured delay. Default false.
+	ReloginMode bool
+
+	// authPhase turns true once sign-in + OTP verify have succeeded. Only THEN is a
+	// 401 treated as an expired access token (session death) — a 401 during sign-in is
+	// a credential/cipher issue, not an expiry. sessionDead latches when Do sees that
+	// 401, so the token-using steps bail instead of retrying with a dead token, and
+	// RunFullAuto returns errSessionExpired for the handler's relogin loop.
+	authPhase   bool
+	sessionDead bool
+
+	// scanAborted is set by Scan() when Full Auto's LIVE-ONLY scan fails (no fallback):
+	// RunFullAuto checks it right after Scan() and stops before signin, so the instance
+	// never runs on store/built-in config. Play All (CacheOnly) never sets this.
+	scanAborted bool
+
+	// CacheOnly (Play All) makes Scan() skip the live bundle download entirely and
+	// run straight from the last-good store (cached cipher + endpoints), then the
+	// pushed endpoint-cache, then the built-in fallback. Nothing hits the network for
+	// the scan. Default false = normal Full Auto (live scan first).
+	CacheOnly bool
 
 	// scannedBundle is the live bundle basename this run resolved against (full scan
 	// or reused snapshot). Used to persist a fresh last-good snapshot on success.
@@ -166,6 +208,29 @@ type Runner struct {
 	// the "UPDATE SUCCESSFULLY" announcement right before sign-in starts.
 	OnScanComplete func(ok bool, detail string)
 
+	// OnCipherFail is fired when signin/reserve is rejected with a cipher-related
+	// error (HTTP 400 or "captcha verification failed"). The caller re-applies the
+	// NEWEST ivacflow push (cipher skip/len/key/algo + endpoints) to this run's
+	// Config and returns true if a fresh config was applied — the next retry then
+	// uses ivacflow's correct cipher/endpoints. Returns false when ivacflow has not
+	// pushed yet, in which case the retry loop simply waits and asks again. Nil = no
+	// ivacflow fallback wired (behaves exactly as before).
+	OnCipherFail func() bool
+	// IvacflowVersion returns a counter that increments on every ivacflow push. The
+	// #1 PAUSE uses it to tell a NEW correct-cipher push apart from the same one it
+	// already tried: while paused it applies OnCipherFail only when this number has
+	// moved past lastCipherVer. Nil = no version gating (best-effort apply-and-resume).
+	IvacflowVersion func() uint64
+	// lastCipherVer is the ivacflow version this runner last applied via the cipher
+	// fix, so a pause waits for a strictly newer push instead of re-applying the same.
+	lastCipherVer uint64
+	// CipherResumeStagger spreads the signin RESUME across instances after a shared
+	// ivacflow push: when 30 paused instances all see the same new cipher at once,
+	// resuming together would fire 30 signins in the same instant → HTTP 429. Each
+	// instance waits its own (index-based) stagger before resuming, so the herd is
+	// spread out. 0 = resume immediately (single instance / not set).
+	CipherResumeStagger time.Duration
+
 	// LiveDelaySec (optional) returns the CURRENT retry delay in seconds for a step,
 	// read fresh from the dashboard controller on every retry, so a value the user
 	// changes mid-run takes effect on the next retry. Return <0 to fall back to Mode.
@@ -186,7 +251,32 @@ func (r *Runner) Do(req Request) (Response, error) {
 	if r.stopCtx != nil {
 		req.Ctx = r.stopCtx
 	}
-	return r.Doer.Do(req)
+	resp, err := r.Doer.Do(req)
+	// After auth, a 401 means the access token expired mid-flow → latch sessionDead so
+	// the token-using steps stop retrying a dead token and the run relogs in.
+	if err == nil && resp.Status == 401 {
+		r.mu.Lock()
+		auth := r.authPhase
+		if auth {
+			r.sessionDead = true
+		}
+		r.mu.Unlock()
+	}
+	return resp, err
+}
+
+// SessionDead reports whether a post-auth 401 latched (the access token expired).
+func (r *Runner) SessionDead() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessionDead
+}
+
+// beginAuthPhase marks that sign-in + verify are done, so 401s now mean expiry.
+func (r *Runner) beginAuthPhase() {
+	r.mu.Lock()
+	r.authPhase = true
+	r.mu.Unlock()
 }
 
 // SetOTP stores an OTP fetched by the SMS/email fetcher (thread-safe). A stale
@@ -315,15 +405,42 @@ func (r *Runner) RunStepSmart(name StepName, fn StepFunc) StepResult {
 		if r.Stopped() {
 			return StepResult{Cancelled: true}
 		}
+		// UNRECOVERABLE lockout (e.g. sign-in "too many attempts") → never retry; return
+		// so the caller can auto-stop the instance. Retrying would only extend the lockout.
+		if res.HardStop {
+			return res
+		}
+		// Access token died mid-flow (post-auth 401) → stop retrying a dead token; let
+		// RunFullAuto see it and trigger the relogin.
+		if r.SessionDead() {
+			return res
+		}
+		// #1 PAUSE/RESUME: the SERVER rejected this for a cipher/verification reason —
+		// the encryption (`c`) is wrong. Do NOT keep hammering with the wrong cipher.
+		// Pause and wait until ivacflow_FINAL pushes a NEWER correct cipher+endpoints,
+		// then resume THIS step (for signin that is exactly "restart from signin").
+		// Engages only when the ivacflow fallback is wired (Full Auto); else falls
+		// through to the normal retry. A missing captcha token / network error never
+		// sets CipherFail, so those keep their normal behavior.
+		if res.CipherFail && r.OnCipherFail != nil {
+			if r.pauseForCipherFix(name) {
+				continue // fresh cipher applied → retry immediately (no extra delay)
+			}
+			return StepResult{Cancelled: true} // Stop pressed while paused
+		}
 		if !r.Mode.Single {
 			r.log("✗ " + string(name) + " failed — retry OFF")
 			return res
 		}
-		// Retry gap = the step's configured delay (dashboard retry-delay controller,
-		// via Mode.StepDelays), so the UI value actually drives the wait. 429 is a
-		// rate-limit — log it, but still honor the configured delay.
+		// Retry gap: when RELOGIN mode is on (a session-expiry re-login) AND the server
+		// sent a 429 with its own "try after X min Y sec" schedule, WAIT EXACTLY THAT so
+		// the re-login lands when the server allows it. This applies ONLY to the
+		// relogin path — normal signin/verify/reserve retries keep the configured delay.
 		d := r.delayFor(name)
-		if res.Status == 429 {
+		if r.ReloginMode && res.RetryAfter > 0 {
+			d = res.RetryAfter
+			r.log("⏳ " + string(name) + " (relogin): server 429 — '" + d.String() + "' por retry (schedule mene, agei noy)")
+		} else if res.Status == 429 {
 			r.log("↻ " + string(name) + " retry — HTTP 429, waiting " + d.String())
 		} else {
 			r.log("↻ " + string(name) + " retry — waiting " + d.String())
@@ -331,6 +448,108 @@ func (r *Runner) RunStepSmart(name StepName, fn StepFunc) StepResult {
 		r.interruptibleSleep(d)
 	}
 	return StepResult{Cancelled: true}
+}
+
+// RunStepSmartUntil is RunStepSmart with a hard DEADLINE: it retries the step until
+// it wins or Stop is pressed, but gives up once time passes `deadline`, returning the
+// last (non-win) result. Used for the OTP verify step so a run that never receives an
+// OTP (auto or manual) stops after OTPVerifyLifetime instead of looping forever.
+// res.Win reports success; when it returns not-won and not-cancelled, the deadline
+// was hit (r.timedOut is left for the caller to distinguish via Stopped()).
+func (r *Runner) RunStepSmartUntil(name StepName, fn StepFunc, deadline time.Time) StepResult {
+	for !r.Stopped() {
+		res := fn(r)
+		if res.Win {
+			r.log("✓ " + string(name))
+			return res
+		}
+		if r.Stopped() {
+			return StepResult{Cancelled: true}
+		}
+		if !r.Mode.Single {
+			r.log("✗ " + string(name) + " failed — retry OFF")
+			return res
+		}
+		if !time.Now().Before(deadline) {
+			// window over — give up (caller treats a non-win, non-cancelled result as
+			// the deadline having elapsed).
+			return res
+		}
+		d := r.delayFor(name)
+		// never sleep past the deadline, so the give-up is punctual.
+		if left := time.Until(deadline); left < d {
+			d = left
+		}
+		if d <= 0 {
+			return res
+		}
+		r.interruptibleSleep(d)
+	}
+	return StepResult{Cancelled: true}
+}
+
+// pauseForCipherFix implements the #1 PAUSE: on a cipher/verification failure it
+// first tries to apply an ivacflow config NEWER than the one already tried (resume
+// at once if there is one); otherwise it PAUSES — no more attempts on this step —
+// and polls until a newer ivacflow_FINAL push arrives, then applies it and resumes.
+// Returns true to resume the step, false if Stop was pressed while paused.
+func (r *Runner) pauseForCipherFix(name StepName) bool {
+	if r.tryCipherFix(name) {
+		return r.staggerResume(name)
+	}
+	r.log("⏸ " + string(name) + ": encryption vul (captcha verification failed) — loop PAUSE. " +
+		"Bhul cipher diye ar cheshta hobe na; ivacflow_FINAL theke SOTHIK cipher+endpoint push asha porjonto wait korchi…")
+	for !r.Stopped() {
+		r.interruptibleSleep(2 * time.Second)
+		if r.Stopped() {
+			return false
+		}
+		if r.tryCipherFix(name) {
+			return r.staggerResume(name)
+		}
+	}
+	return false
+}
+
+// staggerResume delays this instance's resume by its own CipherResumeStagger so that
+// many instances waking on the SAME ivacflow push don't all fire signin in the same
+// instant (→ HTTP 429). Interruptible: Stop during the stagger returns false.
+func (r *Runner) staggerResume(name StepName) bool {
+	if r.CipherResumeStagger > 0 && !r.Stopped() {
+		r.log("⏱ " + string(name) + ": resume stagger " + r.CipherResumeStagger.String() +
+			" — ek shathe onek instance signin na kore chhoriye jacche")
+		r.interruptibleSleep(r.CipherResumeStagger)
+	}
+	return !r.Stopped()
+}
+
+// tryCipherFix applies the newest ivacflow push, but only when it is STRICTLY newer
+// than the one this runner last applied in the pause (so it does not re-apply the
+// same wrong cipher in a tight loop). Returns true when a fresh config was applied.
+// With no version hook wired it falls back to a best-effort single apply.
+func (r *Runner) tryCipherFix(name StepName) bool {
+	if r.OnCipherFail == nil {
+		return false
+	}
+	if r.IvacflowVersion != nil {
+		ver := r.IvacflowVersion()
+		if ver == r.lastCipherVer {
+			return false // same push already tried → keep waiting for a newer one
+		}
+		if r.OnCipherFail() {
+			r.lastCipherVer = ver
+			r.log("▶ " + string(name) + ": notun ivacflow cipher+endpoint (v" + itoa(int(ver)) +
+				") apply kora holo — " + string(name) + " theke abar auto flow chalu")
+			return true
+		}
+		return false
+	}
+	// no version gating available — best-effort apply-and-resume (legacy behavior)
+	if r.OnCipherFail() {
+		r.log("▶ " + string(name) + ": ivacflow cipher+endpoint apply kora holo — abar cheshta")
+		return true
+	}
+	return false
 }
 
 // interruptibleSleep waits for d, but returns early if Stop is called. It sleeps

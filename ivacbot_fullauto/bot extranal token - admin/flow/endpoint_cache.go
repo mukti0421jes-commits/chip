@@ -20,9 +20,11 @@ import (
 
 type endpointCacheFile struct {
 	Endpoints []struct {
-		Method   string `json:"method"`
-		Path     string `json:"path"`
-		NormPath string `json:"normPath"`
+		Method   string   `json:"method"`
+		Path     string   `json:"path"`
+		NormPath string   `json:"normPath"`
+		Body     string   `json:"body"` // decoded body field names, e.g. "phone,password,c" (may be "", "null", or "FormData(...)")
+		Hdrs     []string `json:"hdrs"` // decoded custom header names, e.g. ["x-sec-navigation-state"]
 	} `json:"endpoints"`
 	UUIDs struct {
 		SlotUUID   string `json:"SLOT_UUID"`
@@ -134,6 +136,8 @@ func (c *Config) ApplyEndpointCache(raw []byte, liveBundle string, log func(stri
 	}
 	// Capture the FULL reserve + initiate paths (uuid + current suffix) so those two
 	// endpoints follow any IVAC path/suffix change instead of using a built-in suffix.
+	// Also capture the decoded body-field / header NAMES for signin + reserve, which
+	// the drift adapter (endpoint_spec.go) uses to follow an IVAC field/header rename.
 	for _, e := range cf.Endpoints {
 		p := strings.TrimSpace(e.Path)
 		if p == "" {
@@ -142,6 +146,10 @@ func (c *Config) ApplyEndpointCache(raw []byte, liveBundle string, log func(stri
 		lp, np := strings.ToLower(p), normSep(p)
 		if strings.Contains(lp, "/slots/") && strings.Contains(np, "reserveslot") {
 			c.CacheReservePath = p
+			c.setEndpointSpec("reserve", e.Body, e.Hdrs)
+		}
+		if strings.Contains(lp, "/auth/") && strings.Contains(np, "signin") {
+			c.setEndpointSpec("signin", e.Body, e.Hdrs)
 		}
 		if strings.Contains(lp, "/payment/") && strings.Contains(lp, "initiate") {
 			// prefer the dg-epay uuid path; fall back to any initiate (e.g. ssl) path

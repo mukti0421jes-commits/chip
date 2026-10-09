@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "IVAC Session Login",
+  "version": "1.1.0",
+  "description": "Log in to IVAC in this browser using a session from the bot dashboard — and auto-route through the same IP so the session stays stable.",
+  "permissions": ["scripting", "activeTab", "storage", "proxy", "webRequest", "webRequestAuthProvider"],
+  "host_permissions": [
+    "https://appointment.ivacbd.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "<all_urls>"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://appointment.ivacbd.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "IVAC Session Login",
+    "default_popup": "popup.html"
+  }
+}

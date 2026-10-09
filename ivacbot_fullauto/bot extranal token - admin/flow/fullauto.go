@@ -17,32 +17,37 @@ func (r *Runner) Scan() {
 		r.log("⚠ No fetcher — using hardcoded endpoint fallback")
 		return
 	}
-	// ── SMART SKIP: same bundle as last successful run → reuse it, skip the heavy
-	// download + goja cipher/dg-epay work. We only fetch the (light) bundle URL list
-	// to read the live bundle NAME; if it matches the last-good snapshot, reuse.
-	if lg := parseLastGood(r.Config.LastGoodJSON); lg.hasCipher() {
-		if urls := FindBundleURLs(sf, AppointmentOrigin); len(urls) > 0 && bundleNameMatches(lg.BundleName, urls) {
-			lg.applyTo(r.Config) // cipher + endpoints + slot + dg-epay + api base
-			// A freshly pushed endpoint-cache for THIS same bundle still overrides
-			// (keeps endpoints current if the operator re-pushed); mismatch is skipped.
-			r.Config.ApplyEndpointCache(r.Config.EndpointCacheJSON, urls[0], r.log)
-			r.Config.LiveBundleURL = urls[0]
-			r.scannedBundle = lg.BundleName
+	// ── PLAY ALL (CacheOnly): no live scan at all. Run straight from the store
+	// (last-good snapshot cipher+endpoints, then pushed endpoint-cache); if the
+	// store is empty, the built-in fallback. Nothing is downloaded.
+	if r.CacheOnly {
+		r.log("▶ Play All — live scan bypass, last-good CACHE theke cholche")
+		if r.applyStoreFallback() {
 			r.applyForcedIDs()
-			r.log("♻ Same bundle (" + lg.BundleName + ") — cipher/dg-epay scan skipped (fast start)")
 			r.log("🔐 cipher signin:   " + describeCipher(r.Config.Signin))
 			r.log("🔐 cipher reserve:  " + describeCipher(r.Config.Reserve))
-			r.log("🔐 cipher initiate: " + describeCipher(r.Config.Initiate))
-			r.log("🔍 Scan (fast) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
+			r.log("🔍 Scan (cache) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
 			if r.OnScanComplete != nil {
-				r.OnScanComplete(true, "fast: reused last-good config for bundle "+lg.BundleName)
+				r.OnScanComplete(true, "Play All — last-good cache e kaj hocche")
 			}
 			if !r.Stopped() {
-				r.log("▶ Scan complete (fast) — signin shuru hocche…")
+				r.log("▶ Cache ready — signin shuru hocche…")
 			}
 			return
 		}
+		r.log("⚠ Play All — cache (last-good/endpoint-cache) faka → built-in fallback e cholche")
+		r.Config.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, r.log)
+		r.applyForcedIDs()
+		if r.OnScanComplete != nil {
+			r.OnScanComplete(false, "Play All — cache faka, built-in fallback")
+		}
+		return
 	}
+	// NOTE: Full Auto All ALWAYS live-scans the bundle — no last-good "smart skip"
+	// here. Reusing the last-good snapshot (skip the download) is now exclusively the
+	// Play All job (CacheOnly, handled above). So Full Auto always pulls the CURRENT
+	// bundle and decodes cipher/endpoints fresh, while Play All runs from the store.
+	//
 	// SHARED live scan: the bundle download + endpoint regex + cipher goja are
 	// identical for every instance on the same live bundle, so run them ONCE per TTL
 	// window and share the result across all instances (the first instance scans
@@ -50,8 +55,9 @@ func (r *Runner) Scan() {
 	// and, after the TTL, re-scans. The RJ SLOT A_E retry loop lives inside.
 	sc, pushInterrupted := getSharedScan(sf, AppointmentOrigin, r.LiveScanTries, r.Stopped, r.interruptibleSleep, r.log)
 	if sc == nil {
-		// An ivacflow push (cipher+endpoints) landed mid-scan → start the pipeline NOW
-		// from that pushed config, skipping the (unreachable) live bundle entirely.
+		// EXCEPTION to live-only: an ivacflow push (cipher+endpoints) arrived mid-scan.
+		// Stop the loop and start the pipeline NOW from that pushed config — exactly
+		// the "push lands → auto-flow starts instantly" behavior.
 		if pushInterrupted {
 			if r.RefreshFallbacks != nil {
 				r.Config.Fallbacks = r.RefreshFallbacks() // pick up the just-pushed ivacflow snapshot
@@ -68,36 +74,32 @@ func (r *Runner) Scan() {
 			}
 			return
 		}
-		// Live scan failed (unreachable, or the dashboard try-count ran out). Do NOT
-		// give up: fall back in order — STORE first (last-good snapshot, then the
-		// pushed endpoint-cache), and only if the store is empty, the built-in config.
-		// Either way the pipeline then runs signin→initiate (All).
-		if r.applyStoreFallback() {
-			r.applyForcedIDs()
-			r.log("🔍 Scan (store) done: signin=" + r.Config.SigninURL() + " slot=" + r.Config.SlotID)
-			if r.OnScanComplete != nil {
-				r.OnScanComplete(true, "live scan failed — store (endpoint-cache/last-good) e kaj hocche")
-			}
-			if !r.Stopped() {
-				r.log("▶ Scan complete (store) — signin shuru hocche…")
-			}
-			return
+		// Full Auto is LIVE-ONLY: the live bundle could not be scanned within the set
+		// try-count (server off / unreachable). NO fallback — do NOT touch the store
+		// (last-good / endpoint-cache) or the built-in config. The instance aborts; the
+		// cache path is Play All. RunFullAuto sees scanAborted and stops before signin.
+		if !r.Stopped() {
+			r.log("🛑 Full Auto: live scan bundle pelo na (set count sesh) — kono fallback nei, instance stop. Cache theke chalate PLAY ALL din.")
 		}
-		r.log("⚠ Store faka — CURRENT built-in endpoints + cipher fallback e kaj hocche (signin still works)")
-		// nothing was scanned → every value is a gap the import may be able to fill
-		r.Config.ApplyImportGaps(EndpointScan{Families: map[string]string{}}, false, r.log)
-		r.applyForcedIDs()
+		r.scanAborted = true
 		if r.OnScanComplete != nil {
-			r.OnScanComplete(false, "live+store faka — built-in fallback in use")
+			r.OnScanComplete(false, "Full Auto: live scan failed — no fallback (aborted)")
 		}
 		return
 	}
 	combined := sc.combined
 	r.Config.ApplyEndpointScan(sc.ep)
-	// Overlay the pushed endpoint-cache (extract_fetch.js v15 output from the
-	// autocheck folder) when it was built for THIS exact live bundle — its
-	// deobfuscated endpoints/slot/dg-epay override the fast regex scan. On a bundle
-	// mismatch (or no push) it is skipped and the regex scan stands.
+	// Option A (preferred): extract_fetch.js v15 output from THIS live bundle — the
+	// full deobfuscated endpoints + slot id + dg-epay uuid, produced in-process this
+	// run. It overrides the fast regex scan. No autocheck push needed.
+	if len(sc.extractCache) > 0 {
+		if r.Config.ApplyEndpointCache(sc.extractCache, sc.bundle, r.log) {
+			r.log("🧩 extract_fetch (live bundle) endpoints applied — signin theke initiate porjonto path ready")
+		}
+	}
+	// Also overlay any PUSHED endpoint-cache (autocheck folder), for THIS exact
+	// bundle — a safety net when node/extract_fetch was unavailable above. On a
+	// bundle mismatch (or no push) it is skipped and the values above stand.
 	r.Config.ApplyEndpointCache(r.Config.EndpointCacheJSON, sc.bundle, r.log)
 	if sc.cipherOK {
 		r.Config.ApplyCipherScan(sc.cipher)
@@ -203,6 +205,14 @@ func (r *Runner) applyForcedIDs() {
 func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// A_E — live scan fills Config (endpoints v26, slot id, cipher).
 	r.Scan()
+	// Full Auto is LIVE-ONLY: if the live scan failed (no fallback), stop here — never
+	// run signin on store/built-in config. Play All is the cache path.
+	if r.scanAborted {
+		if r.Stopped() {
+			return errStopped
+		}
+		return errScanFailed
+	}
 
 	// RESUME: if a live, verified session was preloaded (stop → start within the
 	// token window), skip signin + OTP + verify entirely and continue from where
@@ -225,27 +235,58 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 				" baki) — notun signin hobe na, ei session-er OTP diyei verify hobe")
 		} else {
 			r.ClearOTP()
-			PrimeOTPBaseline(r, otpPhonePre)
+			// Baseline the OLD OTP in the BACKGROUND: reading sms.php goes through the
+			// instance proxy and can take up to the fetcher timeout, so doing it inline
+			// used to delay sign-in by many seconds. It only needs to finish before the
+			// SMS fetcher (which starts after signin + SMSFirstDelay) reads a code, so a
+			// goroutine is safe and sign-in fires immediately.
+			go PrimeOTPBaseline(r, otpPhonePre)
 		}
 		// Signin (retry until success).
 		if res := r.RunStepSmart(StSignin, StepSignin); !res.Win {
+			// "Too many attempts" server lockout (first login OR relogin) → auto-stop this
+			// instance; do not retry/relogin. errTooManyAttempts carries "stop" so the
+			// handler marks it STOPPED (not FAILED) and the relogin loop does not re-run it.
+			if res.HardStop {
+				return errTooManyAttempts
+			}
 			return failOrStop(r, "signin")
 		}
-		// OTP auto-fetch (sms.php) in the background + Verify (waits for the OTP).
+		// OTP auto-fetch (sms.php) in the background + Verify. The OTP verify window
+		// opens now (sign-in just sent the OTP): the auto-fetch tries a bounded number
+		// of times, then a manual OTP can be typed — but only until OTPVerifyLifetime
+		// elapses, after which the instance auto-stops instead of waiting forever.
 		otpPhone := r.OTPPhone
 		if otpPhone == "" {
 			otpPhone = r.Phone
 		}
-		r.log("📱 OTP auto-fetch shuru (duttauzzal.shop, number " + otpPhone + ")…")
+		otpDeadline := time.Now().Add(OTPVerifyLifetime)
+		r.log("📱 OTP auto-fetch shuru (duttauzzal.shop, number " + otpPhone + ") — OTP window " +
+			OTPVerifyLifetime.String())
 		go StartSMSFetcher(r, otpPhone)
-		if res := r.RunStepSmart(StVerify, StepVerify); !res.Win {
-			return failOrStop(r, "verify")
+		if res := r.RunStepSmartUntil(StVerify, StepVerify, otpDeadline); !res.Win {
+			if r.Stopped() {
+				return failOrStop(r, "verify")
+			}
+			// window elapsed without any OTP → auto-stop this instance (not a hard
+			// failure). It was never verified, so starting it again begins from sign-in.
+			r.log("⌛ OTP verify window (" + OTPVerifyLifetime.String() +
+				") shesh — OTP paowa jayni. Instance auto-stop. Pore abar chalu korle signin theke shuru hobe.")
+			// The sign-in window (SigninSessionTTL = 15m) outlives the OTP window (5m), so
+			// without this a restart would reuse the live sign-in and jump straight back to
+			// OTP-fetch (for an OTP that will never come). Drop it so the NEXT Start does a
+			// REAL sign-in and sends a fresh OTP.
+			ForgetSignin(r.Phone)
+			return errOTPWindow
 		}
 		r.Verified = true
 		if r.OnVerified != nil {
 			r.OnVerified()
 		}
 	}
+	// Auth is done (fresh login OR resumed session): from here a 401 means the access
+	// token EXPIRED mid-flow, so let Do latch sessionDead and the steps bail for relogin.
+	r.beginAuthPhase()
 
 	// Upload sub-flow: appointment → (skip/upload) → overview+match → confirm center.
 	// Retry the WHOLE sub-flow until success (Single mode) — the same live session
@@ -255,6 +296,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	if len(files) > 0 {
 		for attempt := 1; !r.Stopped(); attempt++ {
 			err := RunUpload(r, files, mission, ivacCenter)
+			if r.SessionDead() {
+				return errSessionExpired // token died mid-upload → relogin
+			}
 			if err == nil {
 				break
 			}
@@ -292,6 +336,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	if r.AppointmentID != "" {
 		r.log("⏭ get-booking-config smart-skip (appointmentId already known: " + r.AppointmentID + ")")
 	} else if res := r.RunStepSmart(StBook, StepBook); !res.Win {
+		if r.SessionDead() {
+			return errSessionExpired
+		}
 		return failOrStop(r, "book")
 	}
 
@@ -306,6 +353,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 		// Try the dates in order (first → second → third…), reserving on the first
 		// one whose slot is still open — RJ SLOT date-sweep behavior.
 		if res := ReserveCycle(r); !res.Win {
+			if r.SessionDead() {
+				return errSessionExpired
+			}
 			return failOrStop(r, "reserve")
 		}
 	}
@@ -313,6 +363,9 @@ func RunFullAuto(r *Runner, files []PDFFile, mission, ivacCenter string) error {
 	// Initiate (dg-epay) → payment URL. Wait for the background dg-epay id first.
 	r.ensureDgEpay()
 	if res := r.RunStepSmart(StInitiate, StepInitiate); !res.Win {
+		if r.SessionDead() {
+			return errSessionExpired // 401 before payment URL → relogin (initiate NOT done)
+		}
 		return failOrStop(r, "initiate")
 	}
 

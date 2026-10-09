@@ -31,6 +31,9 @@ func RunPhaseA(r *Runner, bundle string) error {
 		if r.Stopped() {
 			return errors.New("stopped at signin")
 		}
+		if res.HardStop { // "too many attempts" lockout — stop, don't retry/relogin
+			return errTooManyAttempts
+		}
 		return errors.New("signin failed")
 	}
 

@@ -12,8 +12,19 @@ const (
 	SMSServer       = "https://duttauzzal.shop/sms.php"
 	SMSFirstDelay   = 4000 * time.Millisecond // SMS_FIRST_DELAY_MS
 	SMSPollInterval = 2000 * time.Millisecond // SMS_POLL_INTERVAL_MS
-	SMSMaxAttempts  = 40                       // SMS_MAX_ATTEMPTS
+	SMSMaxAttempts  = 40                       // SMS_MAX_ATTEMPTS (legacy; kept for compatibility)
+	// SMSAutoMaxAttempts caps the AUTO OTP fetch per instance: it polls the php SMS
+	// server at most this many times. If no fresh OTP arrives within these tries, the
+	// auto-fetch loop for THAT instance stops and the flow waits for a manually typed
+	// OTP (within OTPVerifyLifetime). Requested behaviour: max 10 auto tries.
+	SMSAutoMaxAttempts = 10
 )
+
+// OTPVerifyLifetime is the total window (measured from a successful sign-in, i.e.
+// when the OTP was sent) in which the OTP must be verified — first by the auto-fetch,
+// then by a manually typed code. After it elapses the instance auto-stops; starting
+// it again later begins from sign-in (for a not-yet-verified instance).
+const OTPVerifyLifetime = 5 * time.Minute
 
 var otpDigits = regexp.MustCompile(`^\d{4,8}$`)
 

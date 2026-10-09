@@ -107,6 +107,7 @@ func LoadIvacflowConfig() {
 	}
 	importMu.Lock()
 	ivacflowCfg = imp
+	bumpIvacflowVersion()
 	if st, serr := os.Stat(ivacflowConfigFile); serr == nil {
 		ivacflowAt = st.ModTime()
 	}
@@ -158,7 +159,12 @@ func handleIvacflowPush(w http.ResponseWriter, r *http.Request) {
 	}
 	importMu.Lock()
 	ivacflowCfg, ivacflowAt = imp, time.Now()
+	bumpIvacflowVersion()
 	importMu.Unlock()
+	// Surface the just-pushed ids in the dashboard Slot/dg-epay boxes right away, so a
+	// push OVERWRITES the previous auto value immediately (not only after the next run).
+	// setDetectedIDs ignores empty fields, so a push carrying just one id keeps the other.
+	setDetectedIDs(imp.SlotID, imp.DgepayID)
 	// the next run should scan afresh and see this capture, not reuse a cached scan
 	flow.ClearScanCache()
 	// If this push carries BOTH a cipher and endpoints, wake any in-flight live-scan
