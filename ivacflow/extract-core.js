@@ -13,7 +13,7 @@ function extract(S, opts) {
 
   const out = {
     extractedAt: new Date().toISOString(),
-    apiBase: first(/(https?:\/\/[a-zA-Z0-9.\-]+\/iams\/api\/v\d+)/) || first(/(https?:\/\/[a-zA-Z0-9.\-]+\/api\/v\d+)/),
+    apiBase: first(/(https?:\/\/[a-zA-Z0-9.\-]+\/[a-z0-9_-]+\/api\/v\d+)/) || first(/(https?:\/\/[a-zA-Z0-9.\-]+\/api\/v\d+)/),
     endpoints: {},
     slotId: first(/\/slots\/([0-9a-zA-Z-]{30,40})\/reserve[-_]slot/),
     dgepayUuid: '',

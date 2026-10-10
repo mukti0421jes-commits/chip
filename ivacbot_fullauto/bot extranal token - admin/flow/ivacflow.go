@@ -3,6 +3,7 @@ package flow
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -415,15 +416,21 @@ func tokensSubset(want, have map[string]bool) bool {
 	return true
 }
 
-// stripAPIPrefix removes a leading /iams/api/v<N> so an endpoint literal is the
-// bare path Config.join() expects. ivacflow is inconsistent about this: most
-// entries are bare, but reserveSlot/paymentInitiate carry the prefix.
+// apiBasePathRe matches an API base path prefix of the shape "/<segment>/api/v<N>"
+// — e.g. "/iams/api/v1", but ALSO "/xyz/api/v2" if IVAC ever renames the "iams"
+// segment or bumps the version. The segment name is NOT hardcoded, so a base rename
+// flows through automatically.
+var apiBasePathRe = regexp.MustCompile(`/[a-z0-9_-]+/api/v\d+`)
+
+// stripAPIPrefix removes a leading "/<seg>/api/v<N>" so an endpoint literal is the
+// bare path Config.join() expects. ivacflow is inconsistent: most entries are bare,
+// but reserveSlot/paymentInitiate carry the prefix. Structure-proof — it does not
+// assume the "iams" segment, so an api-base rename (iams→…, v1→v2…) still strips
+// correctly and no double prefix is produced. A path with no such prefix (already
+// bare) is returned unchanged.
 func stripAPIPrefix(p string) string {
-	if i := strings.Index(p, "/iams/api/"); i >= 0 {
-		rest := p[i+len("/iams/api/"):]
-		if j := strings.Index(rest, "/"); j >= 0 {
-			return rest[j:]
-		}
+	if loc := apiBasePathRe.FindStringIndex(p); loc != nil {
+		return p[loc[1]:]
 	}
 	return p
 }

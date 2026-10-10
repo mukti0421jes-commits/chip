@@ -678,7 +678,9 @@ function extractFromCaptured(entries, final) {
   // carries the full origin + /iams/api/v<N> prefix, so there is no "not detected"
   // case to fall back on. (origin + api prefix of the first real /iams request.)
   for (const e of entries) {
-    const m = String(e.url || '').match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/i);
+    // Structure-proof: one optional segment before /api/v<N>, segment name NOT fixed
+    // to "iams" — so an api-base rename (iams→…) or version bump is captured live.
+    const m = String(e.url || '').match(/^(https?:\/\/[^/]+(?:\/[a-z0-9_-]+)?\/api\/v\d+)/i);
     if (m) { extracted.apiBase = m[1]; break; }
   }
   // Use runtime-captured IDs first, then from entries, then from static extraction
@@ -1381,10 +1383,10 @@ function findChromeExe() {
           try {
             const apiBase = performance.getEntriesByType('resource')
               .map(r => r.name)
-              .find(n => /ivacbd\.com.*\/iams\/api/i.test(n) || /\/iams\/api/i.test(n));
+              .find(n => /ivacbd\.com.*\/api\//i.test(n) || /\/[a-z0-9_-]+\/api\//i.test(n));
             let base = '';
             if (apiBase) {
-              const m = apiBase.match(/^(https?:\/\/[^/]+\/iams\/api\/v\d+)/);
+              const m = apiBase.match(/^(https?:\/\/[^/]+(?:\/[a-z0-9_-]+)?\/api\/v\d+)/i);
               if (m) base = m[1];
             }
             if (!base) base = 'https://appointment.ivacbd.com/iams/api/v1';
