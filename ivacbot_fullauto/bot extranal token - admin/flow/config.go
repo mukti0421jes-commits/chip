@@ -79,6 +79,12 @@ type Config struct {
 	Reserve  *PurposeCipher
 	Initiate *PurposeCipher
 
+	// CipherCode is ivacflow's generated cipher.js (exposes encryptToken(token,purpose)),
+	// produced by running the live bundle's OWN cipher. When present it is the PRIMARY
+	// encryptor — run directly so ANY captured algorithm works without a Go reimpl; the
+	// per-version Go path (EncryptByVersion) is the fallback. Empty = Go path only.
+	CipherCode string
+
 	// Future-proof toggles: today upload + initiate send a RAW captcha x-token.
 	// If IVAC later requires those tokens ENCRYPTED (like signin/reserve), flip the
 	// matching flag ON and the step encrypts with the scanned cipher instead. Both
@@ -140,6 +146,10 @@ type PurposeCipher struct {
 	Skip    int
 	Length  int
 	Version int
+	// Purpose names the role ("Signin"/"Reserve"/"Initiate") for ivacflow's pushed
+	// encryptToken(token, purpose) router, so the bot can run the pushed cipher code
+	// for this role. Empty for a non-ivacflow (scan) cipher → Go reimplementation used.
+	Purpose string
 }
 
 // NewConfig returns a Config with current known-good fallbacks in place. The live
