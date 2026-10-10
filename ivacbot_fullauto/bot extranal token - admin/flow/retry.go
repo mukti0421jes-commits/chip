@@ -251,6 +251,10 @@ func (r *Runner) Do(req Request) (Response, error) {
 	if r.stopCtx != nil {
 		req.Ctx = r.stopCtx
 	}
+	// Prefer the headers ivacflow captured LIVE for this step over the step's built-in
+	// set (no-op when nothing was pushed or no step matches). Keeps the bot from
+	// carrying a hardcoded header set; the step still supplies the per-call values.
+	r.Config.applyLiveHeaders(&req)
 	resp, err := r.Doer.Do(req)
 	// After auth, a 401 means the access token expired mid-flow → latch sessionDead so
 	// the token-using steps stop retrying a dead token and the run relogs in.
