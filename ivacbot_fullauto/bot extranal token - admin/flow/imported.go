@@ -63,6 +63,8 @@ type Imported struct {
 	Signin   *PurposeCipher
 	Reserve  *PurposeCipher
 	Initiate *PurposeCipher
+	// CipherCode is ivacflow's generated cipher.js (encryptToken(token,purpose)).
+	CipherCode string
 	// Records is the raw per-endpoint record set, kept for the dashboard's
 	// "what was captured, and when" view.
 	Records map[string]ImportedRecord
@@ -269,6 +271,9 @@ func (c *Config) ApplyIvacflowForce(imp *Imported) bool {
 		c.Initiate = imp.Initiate
 		applied = true
 	}
+	if imp.CipherCode != "" {
+		c.CipherCode = imp.CipherCode // pushed cipher code → run directly (any algo)
+	}
 	for k, v := range imp.Headers {
 		switch k {
 		case "x-sec-navigation-state":
@@ -435,6 +440,9 @@ func (c *Config) fillFrom(imp *Imported, s EndpointScan, cipherOK bool, say func
 		}
 		if imp.Initiate != nil {
 			c.Initiate = imp.Initiate
+		}
+		if imp.CipherCode != "" {
+			c.CipherCode = imp.CipherCode // run the pushed cipher directly (any algo)
 		}
 		c.noteSource("cipher", imp.Origin)
 		say(tag + "cipher config (scan resolve korte pareni)")

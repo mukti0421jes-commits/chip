@@ -378,5 +378,14 @@ func (c *Config) EncryptForPurpose(token string, p *PurposeCipher) string {
 	if p == nil || p.Key == "" {
 		return token
 	}
+	// PRIMARY: run ivacflow's pushed cipher code directly (handles ANY captured
+	// algorithm, no Go reimplementation). Only engages when a code was pushed AND this
+	// cipher carries its purpose name; any failure falls through to the Go path, so a
+	// known bundle behaves byte-identically and this can only ADD coverage.
+	if c != nil && c.CipherCode != "" && p.Purpose != "" {
+		if out, ok := runPushedCipher(c.CipherCode, token, p.Purpose); ok {
+			return out
+		}
+	}
 	return EncryptByVersion(p.Version, token, p.Key, p.Skip, p.Length)
 }
