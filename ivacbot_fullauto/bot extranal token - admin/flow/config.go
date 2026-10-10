@@ -2,6 +2,7 @@ package flow
 
 import (
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -44,6 +45,15 @@ type Config struct {
 	// ivacflow value yet, so the normal scan/cache/default precedence applies.
 	IvacflowSlotID   string
 	IvacflowDgepayID string
+
+	// IvacflowReservePath / IvacflowInitiatePath are the FULL live-captured reserve /
+	// initiate paths from ivacflow (bare, api-prefix stripped), used VERBATIM — no
+	// reconstruction, no hardcoded suffix. ivacflow actually RUNS the bundle, so these
+	// carry exactly what the live site serves (e.g. "dg_epay" vs "dg-epay",
+	// "reserve-slot" vs "reserve_slot", or an entirely new gateway). Empty = ivacflow
+	// pushed no full path, so the slot/dg-epay-id + scan/cache/fallback precedence applies.
+	IvacflowReservePath  string
+	IvacflowInitiatePath string
 
 	// Fallbacks are captured configs consulted IN ORDER, after the live scan and
 	// before the built-in defaults: ivacflow first (it runs the bundle, so it is
@@ -235,19 +245,44 @@ func (c *Config) BookURL() string { return c.join(c.ep("/appointment/get-booking
 // is used verbatim — so a suffix change on IVAC's side is followed automatically.
 // Otherwise it reconstructs /slots/<slotId>/reserve-slot (built-in behavior).
 func (c *Config) ReserveURLFor() string {
+	// ivacflow's FULL live-captured reserve path wins, used verbatim — no hardcoded
+	// prefix/suffix, so whatever the live site serves is followed exactly.
+	if c.IvacflowReservePath != "" {
+		return c.join(c.IvacflowReservePath)
+	}
 	// ivacflow push is authoritative (user setting): its slot id wins over the
-	// cached path, a manual override and the scan. Proven suffix is kept.
+	// cached path, a manual override and the scan. (Reached only when ivacflow gave an
+	// id but no full path.) Suffix is the live-observed default.
 	if c.IvacflowSlotID != "" {
-		return c.join("/slots/" + c.IvacflowSlotID + "/reserve-slot")
+		return c.join("/slots/" + bareID(c.IvacflowSlotID) + "/reserve-slot")
 	}
 	if c.CacheReservePath != "" {
 		return c.join(c.CacheReservePath)
 	}
-	slot := c.SlotID
+	slot := bareID(c.SlotID)
 	if slot == "" {
 		slot = "{slotId}"
 	}
 	return c.join("/slots/" + slot + "/reserve-slot")
+}
+
+// bareID returns just the id, stripping any surrounding path a value may have been
+// pasted/stored with (e.g. "<uuid>/dg_epay/initiate" or ".../payment/<uuid>/..."),
+// so a URL builder never doubles the suffix (".../dg_epay/initiate/dg_epay/initiate").
+func bareID(v string) string {
+	v = strings.TrimSpace(v)
+	if !strings.Contains(v, "/") {
+		return v
+	}
+	for _, re := range []*regexp.Regexp{dgepayFromURLRe, slotFromURLRe} {
+		if m := re.FindStringSubmatch(v); m != nil {
+			return m[1]
+		}
+	}
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		return v[:i]
+	}
+	return v
 }
 
 // InitiateURLFor builds the payment-initiate URL: /payment/<dg-epay uuid>/dg-epay/
@@ -257,26 +292,33 @@ func (c *Config) ReserveURLFor() string {
 // bundle. A manual dashboard override (ForcedDgepayID) wins; else the scanned /
 // fallback DgepayID is used.
 func (c *Config) InitiateURLFor() string {
-	// ivacflow push is authoritative (user setting): its dg-epay uuid wins over the
-	// manual override, the cached path and the scan. Proven suffix is kept.
-	if c.IvacflowDgepayID != "" {
-		return c.join("/payment/" + c.IvacflowDgepayID + "/dg-epay/initiate")
+	// ivacflow's FULL live-captured initiate path wins, used verbatim — this is the
+	// one true source. The gateway segment (dg_epay / dg-epay / ssl) and the whole
+	// suffix come straight from what ivacflow saw on the live site, so nothing here is
+	// reconstructed or hardcoded.
+	if c.IvacflowInitiatePath != "" {
+		return c.join(c.IvacflowInitiatePath)
 	}
-	// Manual dashboard override always wins.
+	// Reached only when a capture gave an id but no full path. The id is sanitized to
+	// a bare uuid first (bareID) so a value pasted with its suffix cannot double it.
+	if c.IvacflowDgepayID != "" {
+		return c.join("/payment/" + bareID(c.IvacflowDgepayID) + "/dg_epay/initiate")
+	}
+	// Manual dashboard override.
 	if c.ForcedDgepayID != "" {
-		return c.join("/payment/" + c.ForcedDgepayID + "/dg-epay/initiate")
+		return c.join("/payment/" + bareID(c.ForcedDgepayID) + "/dg_epay/initiate")
 	}
 	// Full initiate path captured for THIS exact bundle (endpoint-cache/last-good) —
-	// used verbatim so a suffix/gateway change (dg-epay → ssl, etc.) is followed.
+	// used verbatim so a suffix/gateway change is followed.
 	if c.CacheInitiatePath != "" {
 		return c.join(c.CacheInitiatePath)
 	}
 	if c.DgepayID != "" {
-		return c.join("/payment/" + c.DgepayID + "/dg-epay/initiate")
+		return c.join("/payment/" + bareID(c.DgepayID) + "/dg_epay/initiate")
 	}
 	// last resort: whatever initiate path the extractor decoded.
 	if c.InitiatePath != "" {
 		return c.join(c.InitiatePath)
 	}
-	return c.join("/payment/{dgepayId}/dg-epay/initiate")
+	return c.join("/payment/{dgepayId}/dg_epay/initiate")
 }

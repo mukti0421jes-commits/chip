@@ -20,20 +20,26 @@ function extract(S, opts) {
     initiatePath: '',
   };
 
+  // Separator/version-tolerant: IVAC varies the version prefix (v5_…) and flips
+  // between '-' and '_' between words (upload-file vs upload_file, over_view vs
+  // over-view, verify_Signin_Otp vs verifySigninOtp). Each pattern allows an
+  // optional [a-z0-9_]* version chunk after the segment prefix and treats word
+  // separators as [-_]?, so a renamed bundle still resolves to the real path.
   const EPS = [
-    ['signin', /(\/auth\/[a-z0-9-]*sign-?in[a-z0-9-]*)/i],
+    ['signin', /(\/auth\/[a-z0-9_-]*sign[-_]?in[a-z0-9_-]*)/i],
     ['signup', /(\/auth\/signup)(?![a-z/])/i],
     ['signupConsent', /(\/auth\/signup\/consent)/i],
     ['signupStatus', /(\/auth\/signup\/status)/i],
     ['signupOtp', /(\/otp\/signup[a-zA-Z0-9_-]*)/i],
-    ['verifySigninOtp', /(\/otp\/verifySigninOtp[a-z0-9_-]*)/i],
-    ['verifyOtp', /(\/otp\/verify-otp[a-z0-9_-]*)/i],
-    ['uploadFile', /(\/file\/upload_file[a-z0-9_-]*)/i],
-    ['overView', /(\/file\/over-view[a-z0-9_-]*)/i],
-    ['getBookingConfig', /(\/appointment\/get-booking-config[a-z0-9_-]*)/i],
-    ['bookingConfig', /(\/appointment\/appointment-booking-config[a-z0-9_-]*)/i],
-    ['fileConfirmation', /(\/file\/file-confirmation[a-z0-9_-]*)/i],
-    ['paymentAmount', /(\/file\/payment-amount[a-z0-9_-]*)/i],
+    // signin OTP-verify first (more specific), then the generic verify-otp.
+    ['verifySigninOtp', /(\/otp\/[a-z0-9_]*verify[-_]?signin[-_]?otp)/i],
+    ['verifyOtp', /(\/otp\/[a-z0-9_]*verify[-_]?otp)(?![a-z])/i],
+    ['uploadFile', /(\/file\/upload[-_]file[a-z0-9_-]*)/i],
+    ['overView', /(\/file\/over[-_]view[a-z0-9_-]*)/i],
+    ['getBookingConfig', /(\/appointment\/get[-_]booking[-_]config[a-z0-9_-]*)/i],
+    ['bookingConfig', /(\/appointment\/appointment[-_]booking[-_]config[a-z0-9_-]*)/i],
+    ['fileConfirmation', /(\/file\/file[-_]confirmation[a-z0-9_-]*)/i],
+    ['paymentAmount', /(\/file\/payment[-_]amount[a-z0-9_-]*)/i],
   ];
   for (const [name, re] of EPS) { const m = re.exec(S); if (m) out.endpoints[name] = m[1]; }
 
@@ -177,8 +183,8 @@ function extract(S, opts) {
         try {
           const v = vm.runInContext('(function(){' + scopeWrappers(c).join('\n') + '\nreturn (' + c + ');})()', ctx, { timeout: 2000 });
           if (typeof v !== 'string') continue;
-          const m = /payment\/[0-9a-zA-Z_-]+(?:\/dg-epay)?\/initiate/.exec(v);
-          if (m) { if (m[0].includes('/dg-epay/initiate')) return m[0]; if (!ssl) ssl = m[0]; }
+          const m = /payment\/[0-9a-zA-Z_-]+(?:\/dg[-_]epay)?\/initiate/.exec(v);
+          if (m) { if (m[0].match(/\/dg[-_]epay\/initiate/)) return m[0]; if (!ssl) ssl = m[0]; }
         } catch (e) {}
       }
       return ssl;
@@ -193,7 +199,7 @@ function extract(S, opts) {
       try {
         const v = vm.runInContext('(function(){' + scopeWrappers(c).join('\n') + '\nreturn (' + c + ');})()', ctx, { timeout: 2000 });
         if (typeof v !== 'string') return null;
-        const m = /payment\/[0-9a-zA-Z_-]+(?:\/dg-epay)?\/initiate/.exec(v);
+        const m = /payment\/[0-9a-zA-Z_-]+(?:\/dg[-_]epay)?\/initiate/.exec(v);
         return m ? m[0] : null;
       } catch (e) { return null; }
     };
@@ -203,7 +209,7 @@ function extract(S, opts) {
     if (prelude.length) {
       const ctx = {}; vm.createContext(ctx);
       let ok = true; try { vm.runInContext(prelude.join(';\n') + ';', ctx, { timeout: 5000 }); } catch (e) { ok = false; }
-      if (ok) for (const c of cands) { const r = tryEval(c, ctx); if (r) { if (r.includes('/dg-epay/initiate')) return r; if (!ssl) ssl = r; } }
+      if (ok) for (const c of cands) { const r = tryEval(c, ctx); if (r) { if (r.match(/\/dg[-_]epay\/initiate/)) return r; if (!ssl) ssl = r; } }
     }
     if (ssl) return ssl;
     // (b) fallback: per-candidate small prelude (big bundles where the combined
@@ -215,16 +221,16 @@ function extract(S, opts) {
       if (!p2.length && !scopeWrappers(c).length) continue;
       const ctx = {}; vm.createContext(ctx);
       try { vm.runInContext(p2.join(';\n') + ';', ctx, { timeout: 4000 }); } catch (e) { continue; }
-      const r = tryEval(c, ctx); if (r) { if (r.includes('/dg-epay/initiate')) return r; if (!ssl) ssl = r; }
+      const r = tryEval(c, ctx); if (r) { if (r.match(/\/dg[-_]epay\/initiate/)) return r; if (!ssl) ssl = r; }
     }
     return ssl;
   }
 
   function decodeInitiatePath() {
     const r1 = decodePass(false);              // original (fast, proven on inline builds)
-    if (r1 && r1.includes('/dg-epay/initiate')) return r1;
+    if (r1 && r1.match(/\/dg[-_]epay\/initiate/)) return r1;
     const r2 = decodePass(true);               // extended (delegated builds)
-    return (r2 && r2.includes('/dg-epay/initiate')) ? r2 : (r1 || r2);
+    return (r2 && r2.match(/\/dg[-_]epay\/initiate/)) ? r2 : (r1 || r2);
   }
 
   if (!out.apiBase) { out.apiBase = 'https://api.ivacbd.com/iams/api/v1'; out.apiBaseNote = 'default (not plaintext in bundle; this base is stable)'; }
@@ -235,7 +241,7 @@ function extract(S, opts) {
   const ip = opts.skipInitiate ? '' : decodeInitiatePath();
   if (ip) {
     out.initiatePath = '/' + ip.replace(/^\//, '');
-    const u = /payment\/([0-9a-zA-Z_-]{20,40})\/dg-epay\/initiate/.exec(ip);
+    const u = /payment\/([0-9a-zA-Z_-]{20,40})\/dg[-_]epay\/initiate/.exec(ip);
     if (u) out.dgepayUuid = u[1];
   }
   return out;

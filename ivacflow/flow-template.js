@@ -9,24 +9,24 @@
 // each step: key into extracted.endpoints (epKey) OR a literal path; method;
 // header field names; body field names (with placeholder values).
 const STEPS = [
-  { name: 'SIGN IN', method: 'POST', epKey: 'signin', fallback: '/iams/api/v1/auth/v3-sign-in',
+  { name: 'SIGN IN', method: 'POST', epKey: 'signin',
     headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json', 'x-sec-navigation-state': '{{ivac:navState}}' },
     body: { phone: '{{ivac:phone}}', password: '{{ivac:password}}', c: '{{ivac:captcha}}' } },
 
-  { name: 'VERIFY OTP', method: 'POST', epKey: 'verifyOtp', fallback: '/iams/api/v1/otp/verifySigninOtp',
+  { name: 'VERIFY OTP', method: 'POST', epKey: 'verifyOtp',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json' },
     body: { requestId: '{{ivac:requestId}}', phone: '{{ivac:phone}}', code: '{{ivac:otp}}', otpChannel: 'PHONE' } },
 
-  { name: 'FILE CONFIRMATION', method: 'GET', epKey: 'fileConfirmation', fallback: '/iams/api/v1/file/file-confirmation_and_slot_status',
+  { name: 'FILE CONFIRMATION', method: 'GET', epKey: 'fileConfirmation',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'OVERVIEW', method: 'POST', epKey: 'overView', fallback: '/iams/api/v1/file/over-view',
+  { name: 'OVERVIEW', method: 'POST', epKey: 'overView',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
   { name: 'APPOINTMENT', method: 'POST', literal: '/iams/api/v1/appointment',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'PRIMARY UPLOAD', method: 'POST', epKey: 'uploadFile', fallback: '/iams/api/v1/file/upload_file',
+  { name: 'PRIMARY UPLOAD', method: 'POST', epKey: 'uploadFile',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}',
       'content-type': 'multipart/form-data; boundary=----WebKitFormBoundary{{ivac:boundary}}',
       'x-sec-runtime-state': '{{ivac:runtimeState}}', 'x-token': '{{ivac:captcha}}' },
@@ -38,21 +38,21 @@ const STEPS = [
   { name: 'CENTER LIST', method: 'GET', literal: '/iams/api/v1/ivac-centers/2',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'CONFIG', method: 'POST', epKey: 'bookingConfig', fallback: '/iams/api/v1/appointment/appointment-booking-config',
+  { name: 'CONFIG', method: 'POST', epKey: 'bookingConfig',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json' },
     body: { mission: '{{ivac:mission}}', ivacCenter: '{{ivac:ivacCenter}}' } },
 
-  { name: 'AMOUNT', method: 'GET', epKey: 'getBookingConfig', fallback: '/iams/api/v1/appointment/get-booking-config',
+  { name: 'AMOUNT', method: 'GET', epKey: 'getBookingConfig',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'RESERVE', method: 'POST', slotPath: true, fallback: '/iams/api/v1/slots/reserve-slot',
+  { name: 'RESERVE', method: 'POST', slotPath: true,
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json', 'x-v-request-meta': '{{ivac:reqMeta}}' },
     body: { c: '{{ivac:captcha}}', appointmentDate: '{{ivac:appointmentDate}}' } },
 
-  { name: 'PAYMENT AMOUNT', method: 'GET', epKey: 'paymentAmount', fallback: '/iams/api/v1/file/payment-amount',
+  { name: 'PAYMENT AMOUNT', method: 'GET', epKey: 'paymentAmount',
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}' }, body: null },
 
-  { name: 'PAYMENT INITIATE', method: 'POST', initiatePath: true, fallback: '/iams/api/v1/payment/dg-epay/initiate',
+  { name: 'PAYMENT INITIATE', method: 'POST', initiatePath: true,
     headers: { accept: 'application/json, text/plain, */*', authorization: 'Bearer {{ivac:token}}', 'content-type': 'application/json' },
     body: { reservationId: '{{ivac:reservationId}}', amount: '{{ivac:amount}}' } },
 ];
@@ -119,7 +119,7 @@ function buildTemplate(ex, liveByPath) {
       else { path = ''; found = false; }
     } else if (s.epKey && eps[s.epKey]) { path = norm(eps[s.epKey]); found = true; }
     // Not captured from a real request → report it empty + found:false, never a
-    // hard-coded guess. (The `fallback` fields on STEPS are now unused.)
+    // hard-coded guess. (The per-step `fallback` literals have been removed.)
     else { path = ''; found = false; }
     const live = found ? liveFor(path, s.method) : null;
     const headers = templatizeHeaders(live && live.headers, s.headers);

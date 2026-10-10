@@ -64,7 +64,7 @@ function require(m){
 // dgEpayPathRe captures the dg-epay UUID from the decoded initiate path. The live
 // uuid is NOT strictly hex (it is obfuscated, e.g. "23228961-2326-3s28-861f-
 // 465bb28337a3" — note the 's'), so allow any alnum in each group.
-var dgEpayPathRe = regexp.MustCompile(`/payment/([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})/dg-epay/initiate`)
+var dgEpayPathRe = regexp.MustCompile(`/payment/([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})/dg[-_]epay/initiate`)
 
 // ScanDgEpay runs the embedded extractor on the given bundle text and returns the
 // resolved dg-epay gateway UUID (empty string if not resolvable, so the caller keeps

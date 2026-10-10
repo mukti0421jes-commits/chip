@@ -18,4 +18,4 @@ const (
 func ReserveURL(slotID string) string { return APIBase + "/slots/" + slotID + "/reserve-slot" }
 
 // InitiateURL builds the dg-epay initiate endpoint with the scanned payment id.
-func InitiateURL(dgepayID string) string { return APIBase + "/payment/" + dgepayID + "/dg-epay/initiate" }
+func InitiateURL(dgepayID string) string { return APIBase + "/payment/" + dgepayID + "/dg_epay/initiate" }

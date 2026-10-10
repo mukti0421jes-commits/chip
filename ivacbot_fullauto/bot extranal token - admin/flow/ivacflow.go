@@ -56,7 +56,48 @@ type IvacflowStep struct {
 	Found   bool              `json:"found"`
 	Probed  bool              `json:"probed"`
 	Headers map[string]string `json:"headers"`
-	Body    map[string]string `json:"body"`
+	Body    flexBody          `json:"body"`
+}
+
+// flexBody tolerates every shape ivacflow may send for a step's "body": a JSON
+// OBJECT (the field-name map we want), null, "" or any other string, a number, or
+// an array. Only the object form carries field names; anything else decodes to an
+// empty map. Without this, one step whose body is a string makes json.Unmarshal of
+// the WHOLE push fail ("cannot unmarshal string into ... body of type
+// map[string]string") → HTTP 400 → the push is rejected and never applied, so the
+// bot silently keeps stale manual/built-in slot & dg-epay ids.
+type flexBody map[string]string
+
+func (b *flexBody) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		*b = nil
+		return nil
+	}
+	if s[0] == '{' {
+		raw := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(s), &raw); err != nil {
+			*b = nil
+			return nil // tolerate: a malformed object is not worth failing the whole push
+		}
+		m := make(map[string]string, len(raw))
+		for k, v := range raw {
+			val := strings.TrimSpace(string(v))
+			// unquote a simple JSON string value; keep non-strings as their raw form.
+			if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+				var sv string
+				if json.Unmarshal([]byte(val), &sv) == nil {
+					val = sv
+				}
+			}
+			m[k] = val
+		}
+		*b = m
+		return nil
+	}
+	// string / number / array / bool → no usable field-name map; ignore it.
+	*b = nil
+	return nil
 }
 
 // ivacflowEndpointKeys maps ivacflow's friendly endpoint names onto the family
@@ -174,6 +215,19 @@ func ParseIvacflow(raw []byte) (*Imported, error) {
 			imp.DgepayID = m[1]
 			break
 		}
+	}
+
+	// Capture the FULL reserve / initiate paths verbatim (api-prefix stripped) so the
+	// bot uses exactly what the live site serves — gateway segment and suffix included
+	// — with no reconstruction or hardcoded "dg-epay"/"reserve-slot". paymentInitiate
+	// is the live-captured endpoint; the legacy initiatePath field is a last resort.
+	if u := strings.TrimSpace(s.Config.Endpoints["reserveSlot"]); u != "" {
+		imp.ReservePath = stripAPIPrefix(u)
+	}
+	if u := strings.TrimSpace(s.Config.Endpoints["paymentInitiate"]); u != "" {
+		imp.InitiatePath = stripAPIPrefix(u)
+	} else if u := strings.TrimSpace(s.Config.InitiatePath); u != "" {
+		imp.InitiatePath = stripAPIPrefix(u)
 	}
 
 	for _, r := range s.Config.Ciphers.Roles {

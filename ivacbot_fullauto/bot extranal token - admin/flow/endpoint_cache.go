@@ -152,8 +152,8 @@ func (c *Config) ApplyEndpointCache(raw []byte, liveBundle string, log func(stri
 			c.setEndpointSpec("signin", e.Body, e.Hdrs)
 		}
 		if strings.Contains(lp, "/payment/") && strings.Contains(lp, "initiate") {
-			// prefer the dg-epay uuid path; fall back to any initiate (e.g. ssl) path
-			if strings.Contains(lp, "dg-epay") || c.CacheInitiatePath == "" {
+			// prefer the dg-epay uuid path (hyphen or underscore); fall back to any initiate (e.g. ssl) path
+			if strings.Contains(lp, "dg-epay") || strings.Contains(lp, "dg_epay") || c.CacheInitiatePath == "" {
 				c.CacheInitiatePath = p
 			}
 		}

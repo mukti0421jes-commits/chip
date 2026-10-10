@@ -47,8 +47,13 @@ type Imported struct {
 	Families map[string]string // endpoint family code -> live literal
 	Headers  map[string]string // fixed headers observed on real requests
 	SlotID   string            // from a recorded /slots/<id>/reserve-slot URL
-	DgepayID string            // from a recorded /payment/<uuid>/dg-epay/initiate URL
+	DgepayID string            // from a recorded /payment/<uuid>/dg[-_]epay/initiate URL
 	APIBase  string            // ivacflow only; "" when not reported
+	// ReservePath / InitiatePath are the FULL live-captured paths (bare, api-prefix
+	// stripped) ivacflow observed — used verbatim by the URL builders, so no suffix is
+	// ever reconstructed or hardcoded. Empty when the capture carried only an id.
+	ReservePath  string
+	InitiatePath string
 	// BundleName is the bundle this capture describes (ivacflow only). It is the
 	// freshness test: a capture for a different bundle is stale by definition.
 	BundleName string
@@ -77,7 +82,7 @@ type ImportedRecord struct {
 // hex-only pattern silently rejects the real value.
 var (
 	slotFromURLRe   = regexp.MustCompile(`/slots/([0-9a-zA-Z-]{36})/reserve[-_]slot`)
-	dgepayFromURLRe = regexp.MustCompile(`/payment/([0-9a-zA-Z-]{36})/dg-epay/initiate`)
+	dgepayFromURLRe = regexp.MustCompile(`/payment/([0-9a-zA-Z-]{36})/dg[-_]epay/initiate`)
 )
 
 // perCallHeaders are never imported: they belong to one single request, not to
@@ -238,11 +243,19 @@ func (c *Config) ApplyIvacflowForce(imp *Imported) bool {
 	}
 	if imp.SlotID != "" {
 		c.SlotID = imp.SlotID
+		c.IvacflowSlotID = imp.SlotID
 		applied = true
+	}
+	if imp.ReservePath != "" {
+		c.IvacflowReservePath = imp.ReservePath // full live path, used verbatim
 	}
 	if imp.DgepayID != "" {
 		c.DgepayID = imp.DgepayID
+		c.IvacflowDgepayID = imp.DgepayID
 		applied = true
+	}
+	if imp.InitiatePath != "" {
+		c.IvacflowInitiatePath = imp.InitiatePath // full live path, used verbatim (no hardcoded dg-epay)
 	}
 	if imp.Signin != nil && imp.Signin.Key != "" {
 		c.Signin = imp.Signin
@@ -392,6 +405,9 @@ func (c *Config) fillFrom(imp *Imported, s EndpointScan, cipherOK bool, say func
 			c.noteSource("slotId", imp.Origin)
 			if king {
 				c.IvacflowSlotID = imp.SlotID // sticky: wins in ReserveURLFor over cache/manual/scan
+				if imp.ReservePath != "" {
+					c.IvacflowReservePath = imp.ReservePath // full live path, used verbatim (no hardcoded suffix)
+				}
 			}
 		}
 	}
@@ -407,6 +423,9 @@ func (c *Config) fillFrom(imp *Imported, s EndpointScan, cipherOK bool, say func
 		c.DgepayID = imp.DgepayID
 		c.noteSource("dgepayId", imp.Origin)
 		c.IvacflowDgepayID = imp.DgepayID // sticky: wins in InitiateURLFor over cache/manual/scan
+		if imp.InitiatePath != "" {
+			c.IvacflowInitiatePath = imp.InitiatePath // full live path, used verbatim (no hardcoded dg-epay)
+		}
 	}
 
 	if !cipherOK && imp.Signin != nil && c.Source["cipher"] != SrcIvacflow {

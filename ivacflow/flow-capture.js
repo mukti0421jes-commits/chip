@@ -95,10 +95,12 @@ function extractBundleIds(bundleSrc, deep) {
         }
         const joined = allDecoded.join('|');
         // Look for payment UUID pattern
-        const payMatch = joined.match(/payment\/([0-9a-f-]{30,40})\/dg-epay\/initiate/);
+        const payMatch = joined.match(/\/?payment\/([0-9a-zA-Z_-]{20,40})\/dg[-_]epay\/initiate/);
         if (payMatch) {
           ids.dgepayUuid = payMatch[1];
-          ids.paymentEndpoint = '/payment/' + payMatch[1] + '/dg-epay/initiate';
+          // verbatim matched path (gateway segment as the bundle wrote it) — never
+          // reassembled with a hardcoded "/dg-epay/"; whatever the site uses flows through.
+          ids.paymentEndpoint = '/' + payMatch[0].replace(/^\/+/, '');
           return ids;
         }
         // Also look for slotId if not yet found
@@ -291,8 +293,8 @@ function mockBodyFor(url) {
     };
   }
 
-  // ── OTP verify ──
-  if (/\/otp\/verify/i.test(nurl)) {
+  // ── OTP verify ── (version/separator-tolerant: /otp/v5_verify_Signin_Otp etc.)
+  if (/\/otp\/[a-z0-9_-]*verify/i.test(nurl)) {
     flowState.otpVerified = true;
     return {
       data: {
@@ -535,7 +537,7 @@ function mockBodyFor(url) {
   }
 
   // ── Payment initiate (capture dgepayUuid from URL) ──
-  if (/\/payment\/.*\/(dg-epay|ssl)\/initiate/i.test(nurl) || /\/payment\/.*\/initiate/i.test(nurl)) {
+  if (/\/payment\/.*\/(dg[-_]epay|ssl)\/initiate/i.test(nurl) || /\/payment\/.*\/initiate/i.test(nurl)) {
     const pm = url.match(/\/payment\/([0-9a-zA-Z_-]{20,40})\//);
     if (pm) flowState.capturedDgepayUuid = pm[1];
     flowState.paymentInitiated = true;
@@ -722,10 +724,16 @@ function extractFromCaptured(entries, final) {
       const slotMatch = /\/slots\/([0-9a-f-]{20,40})\/reserve[-_]slot/i.exec(urlPath);
       if (slotMatch) extracted.slotId = slotMatch[1];
     }
-    if (/\/payment\/.*\/dg-epay\/initiate/.test(np)) extracted.endpoints.paymentInitiate = urlPath;
+    if (/\/payment\/.*\/dg[-_]epay\/initiate/.test(np)) extracted.endpoints.paymentInitiate = urlPath;
     if (/\/payment\/.*initiate/.test(np)) extracted.endpoints.paymentInitiate = extracted.endpoints.paymentInitiate || urlPath;
     if (/\/auth\/.*sign-?in/i.test(np)) extracted.endpoints.signin = urlPath;
-    if (/\/otp\/verify/i.test(np)) extracted.endpoints.verifyOtp = urlPath;
+    // OTP verify: version/separator-tolerant. IVAC renamed it with a version prefix and
+    // mixed separators (e.g. /otp/v5_verify_Signin_Otp, /otp/v5_verify-otp), so the old
+    // "/otp/verify" match missed it entirely. Match any /otp/…verify… path, and PREFER the
+    // signin-specific one (the VERIFY step in the signin flow) if several ever appear.
+    if (/\/otp\/[a-z0-9_-]*verify/i.test(urlPath)) {
+      if (/signin/i.test(urlPath) || !extracted.endpoints.verifyOtp) extracted.endpoints.verifyOtp = urlPath;
+    }
     if (/\/file\/upload/i.test(np)) extracted.endpoints.uploadFile = urlPath;
     if (/\/file\/over-?view/i.test(np)) extracted.endpoints.overView = urlPath;
     if (/\/file\/file-confirmation/i.test(np)) extracted.endpoints.fileConfirmation = urlPath;
@@ -748,11 +756,10 @@ function extractFromCaptured(entries, final) {
   // slotId and dgepayUuid come ONLY from the real intercepted requests the app
   // fires (captured above). No static bundle-grep fallback: if the live flow did
   // not reach reserve / payment-initiate, these stay empty (honest) rather than
-  // guessed. initiatePath is just reassembled from the real captured uuid.
-  if (extracted.dgepayUuid && !extracted.initiatePath) extracted.initiatePath = '/payment/' + extracted.dgepayUuid + '/dg-epay/initiate';
-  // If the walk captured an initiate call with no uuid segment (older bundles
-  // where the server hadn't added the uuid yet), use that plain path as-is
-  // instead of forcing a {uuid} placeholder.
+  // guessed. initiatePath is NEVER reassembled from a hardcoded gateway segment —
+  // it is only ever the verbatim path the live request used (set at the initMatch
+  // above, or the captured paymentInitiate here). Whatever the site serves
+  // (dg_epay / dg-epay / ssl) flows through unchanged.
   if (!extracted.initiatePath && extracted.endpoints.paymentInitiate) {
     extracted.initiatePath = extracted.endpoints.paymentInitiate;
   }

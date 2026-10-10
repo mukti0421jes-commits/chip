@@ -32,8 +32,8 @@ var (
 	reArrRef     = regexp.MustCompile(`=(\w+)\(\)`)
 	reCandidate  = regexp.MustCompile(`"[^"]{0,12}"(?:\+(?:\w+\([^()]*\)|"[^"]*"|\w+\(\w+\)))+`)
 	reScopeOpen  = regexp.MustCompile(`function\*?\s*\w*\s*\([^)]*\)\s*\{|=>\s*\{`)
-	reInitPath   = regexp.MustCompile(`payment/[0-9a-zA-Z_-]+(?:/dg-epay)?/initiate`)
-	reInitUUID   = regexp.MustCompile(`payment/([0-9a-zA-Z_-]{20,40})/dg-epay/initiate`)
+	reInitPath   = regexp.MustCompile(`payment/[0-9a-zA-Z_-]+(?:/dg[-_]epay)?/initiate`)
+	reInitUUID   = regexp.MustCompile(`payment/([0-9a-zA-Z_-]{20,40})/dg[-_]epay/initiate`)
 )
 
 // ScanDgEpayUUID decodes the live dg-epay gateway UUID out of the bundle (via
@@ -184,8 +184,8 @@ func ScanInitiatePath(bundle string) (path string) {
 			continue
 		}
 		if m := reInitPath.FindString(got); m != "" {
-			if strings.Contains(m, "/dg-epay/initiate") {
-				return m // prefer the real dg-epay+uuid path
+			if strings.Contains(m, "/dg-epay/initiate") || strings.Contains(m, "/dg_epay/initiate") {
+				return m // prefer the real dg-epay+uuid path (hyphen or underscore)
 			}
 			if sslPath == "" {
 				sslPath = m // decoy / alternate gateway; keep as fallback
