@@ -1,0 +1,444 @@
+package flow
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+)
+
+// ==================== IVACFLOW SNAPSHOT ====================
+//
+// ivacflow is a separate Node + Playwright tool: it downloads the live bundle,
+// hosts it locally, and walks signin→initiate headlessly with MOCK data. Because
+// it actually RUNS the code instead of pattern-matching it, it resolves the two
+// values a text scan cannot — the reserve slot id and the dg-epay uuid — plus
+// the endpoints and cipher config.
+//
+// It pushes its snapshot to the bot (POST /api/ivacflowPush) the moment an
+// extraction finishes. The snapshot has a different shape from the RJ SLOT
+// userscript export, so it gets its own parser here; both end up as *Imported
+// and feed the same gap-filling path.
+
+// ivacflowSnapshot mirrors ivacflow's values.json / /api/state payload.
+type ivacflowSnapshot struct {
+	Config *struct {
+		ExtractedAt  string            `json:"extractedAt"`
+		APIBase      string            `json:"apiBase"`
+		Endpoints    map[string]string `json:"endpoints"`
+		AllEndpoints []string          `json:"allEndpoints"` // every path ivacflow saw, incl. ones it did not categorize under a friendly key
+		SlotID       string            `json:"slotId"`
+		DgepayUUID   string            `json:"dgepayUuid"`
+		InitiatePath string            `json:"initiatePath"`
+		Ciphers      struct {
+			Roles []struct {
+				Role    string  `json:"role"`
+				Version flexInt `json:"version"`
+				Algo    string  `json:"algo"`
+				Skip    flexInt `json:"skip"`
+				Len     flexInt `json:"len"`
+				Key     string  `json:"key"`
+			} `json:"roles"`
+		} `json:"ciphers"`
+	} `json:"config"`
+	Template   []IvacflowStep `json:"template"`
+	BundleName string         `json:"bundleName"`
+	At         string         `json:"at"`
+}
+
+// IvacflowStep is one entry of ivacflow's request template: the method, path,
+// headers and body FIELD NAMES it observed for a step. Values are placeholders
+// (e.g. "{{ivac:phone}}"), never real data.
+type IvacflowStep struct {
+	Name    string            `json:"name"`
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Found   bool              `json:"found"`
+	Probed  bool              `json:"probed"`
+	Headers map[string]string `json:"headers"`
+	Body    flexBody          `json:"body"`
+}
+
+// flexBody tolerates every shape ivacflow may send for a step's "body": a JSON
+// OBJECT (the field-name map we want), null, "" or any other string, a number, or
+// an array. Only the object form carries field names; anything else decodes to an
+// empty map. Without this, one step whose body is a string makes json.Unmarshal of
+// the WHOLE push fail ("cannot unmarshal string into ... body of type
+// map[string]string") → HTTP 400 → the push is rejected and never applied, so the
+// bot silently keeps stale manual/built-in slot & dg-epay ids.
+type flexBody map[string]string
+
+func (b *flexBody) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		*b = nil
+		return nil
+	}
+	if s[0] == '{' {
+		raw := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(s), &raw); err != nil {
+			*b = nil
+			return nil // tolerate: a malformed object is not worth failing the whole push
+		}
+		m := make(map[string]string, len(raw))
+		for k, v := range raw {
+			val := strings.TrimSpace(string(v))
+			// unquote a simple JSON string value; keep non-strings as their raw form.
+			if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+				var sv string
+				if json.Unmarshal([]byte(val), &sv) == nil {
+					val = sv
+				}
+			}
+			m[k] = val
+		}
+		*b = m
+		return nil
+	}
+	// string / number / array / bool → no usable field-name map; ignore it.
+	*b = nil
+	return nil
+}
+
+// ivacflowEndpointKeys maps ivacflow's friendly endpoint names onto the family
+// codes the flow's Config.ep() lookups use.
+var ivacflowEndpointKeys = map[string]string{
+	"signin":           "/auth/v2-sign-in",
+	"verifySigninOtp":  "/otp/verifySigninOtp",
+	"verifyOtp":        "/otp/verify-otp",
+	"signupOtp":        "/otp/signupOtp",
+	"uploadFile":       "/file/upload_file_v2",
+	"overView":         "/file/over-view-v3",
+	"getBookingConfig": "/appointment/get-booking-config",
+	"bookingConfig":    "/appointment/appointment-booking-config",
+	"fileConfirmation": "/file/file-confirmation_and_slot_status",
+	"paymentAmount":    "/file/payment-amount",
+}
+
+// LooksLikeIvacflow reports whether raw is an ivacflow snapshot rather than an
+// RJ SLOT export, so one endpoint can accept either.
+func LooksLikeIvacflow(raw []byte) bool {
+	var probe struct {
+		Type   string `json:"_t"`
+		Config *struct {
+			ExtractedAt string `json:"extractedAt"`
+		} `json:"config"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return false
+	}
+	return probe.Type == "" && probe.Config != nil
+}
+
+// algoToCipherVersion maps an ivacflow cipher ALGORITHM NAME to the numeric
+// EncryptByVersion version, so a push that carries "algo" but version 0 still
+// encrypts correctly. Returns 0 when the name is unknown (caller then falls back).
+func algoToCipherVersion(algo string) int {
+	switch strings.ToLower(strings.TrimSpace(algo)) {
+	case "chacha", "chacha20":
+		return 1
+	case "bitmix":
+		return 2
+	case "cellular", "ca":
+		return 3
+	case "rc4":
+		return 4
+	case "lfsr":
+		return 5
+	case "poly", "polynomial":
+		return 6
+	case "sbox", "s-box":
+		return 7
+	case "lcg":
+		return 8
+	case "modsq", "modsquare", "modular", "modularsquaring", "mod-square":
+		return 9
+	case "logistic":
+		return 10
+	}
+	return 0
+}
+
+// ParseIvacflow reads an ivacflow snapshot into the same *Imported the RJ SLOT
+// path produces, so both share one gap-filling code path.
+func ParseIvacflow(raw []byte) (*Imported, error) {
+	dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(string(raw))))
+	var s ivacflowSnapshot
+	if err := dec.Decode(&s); err != nil {
+		return nil, errors.New("invalid JSON: " + err.Error())
+	}
+	if s.Config == nil {
+		return nil, errors.New(`not an ivacflow snapshot (no "config" object)`)
+	}
+
+	imp := &Imported{
+		Origin:     SrcIvacflow,
+		Families:   map[string]string{},
+		Headers:    map[string]string{},
+		SlotID:     strings.TrimSpace(s.Config.SlotID),
+		DgepayID:   strings.TrimSpace(s.Config.DgepayUUID),
+		APIBase:    strings.TrimSpace(s.Config.APIBase),
+		BundleName: normalizeBundleName(s.BundleName),
+		Template:   s.Template,
+	}
+	if t, err := time.Parse(time.RFC3339, s.Config.ExtractedAt); err == nil {
+		imp.At = t
+	}
+
+	for key, lit := range s.Config.Endpoints {
+		code, ok := ivacflowEndpointKeys[key]
+		if !ok || lit == "" {
+			continue
+		}
+		// ivacflow prefixes some entries with the api base path; the family map
+		// wants the bare path.
+		imp.Families[code] = stripAPIPrefix(lit)
+	}
+
+	// ivacflow sometimes LISTS an endpoint in allEndpoints but does NOT categorize
+	// it under a friendly key in `endpoints` — the OTP-verify endpoint
+	// ("/otp/v5_verify_Signin_Otp") is the known case. Fill any family the bot needs
+	// that is still missing, by matching the family's own tokens against allEndpoints.
+	// Version/separator/case-proof, so a future rename flows through with no code
+	// change. Never overwrites a value that `endpoints` already supplied.
+	fillFamiliesFromAll(imp.Families, s.Config.AllEndpoints)
+
+	// Cross-check the two ids against the full URLs ivacflow also records — a
+	// recorded URL is the strongest evidence either tool produces.
+	if u := s.Config.Endpoints["reserveSlot"]; u != "" {
+		if m := slotFromURLRe.FindStringSubmatch(u); m != nil {
+			imp.SlotID = m[1]
+		}
+	}
+	for _, u := range []string{s.Config.Endpoints["paymentInitiate"], s.Config.InitiatePath} {
+		if m := dgepayFromURLRe.FindStringSubmatch(u); m != nil {
+			imp.DgepayID = m[1]
+			break
+		}
+	}
+
+	// Capture the FULL reserve / initiate paths verbatim (api-prefix stripped) so the
+	// bot uses exactly what the live site serves — gateway segment and suffix included
+	// — with no reconstruction or hardcoded "dg-epay"/"reserve-slot". paymentInitiate
+	// is the live-captured endpoint; the legacy initiatePath field is a last resort.
+	if u := strings.TrimSpace(s.Config.Endpoints["reserveSlot"]); u != "" {
+		imp.ReservePath = stripAPIPrefix(u)
+	}
+	if u := strings.TrimSpace(s.Config.Endpoints["paymentInitiate"]); u != "" {
+		imp.InitiatePath = stripAPIPrefix(u)
+	} else if u := strings.TrimSpace(s.Config.InitiatePath); u != "" {
+		imp.InitiatePath = stripAPIPrefix(u)
+	}
+
+	for _, r := range s.Config.Ciphers.Roles {
+		if r.Key == "" {
+			continue
+		}
+		// Resolve the cipher VERSION. ivacflow sometimes pushes a key + skip + len but
+		// a 0/missing numeric version (it may only know the algo NAME). Version 0 maps
+		// to EncryptByVersion's default = RAW token → IVAC rejects it with "Captcha
+		// verification failed". So: 1) use the numeric version if given, 2) else map
+		// the algo name, 3) else fall back to the current bundle's known version.
+		ver := int(r.Version)
+		if ver == 0 {
+			ver = algoToCipherVersion(r.Algo)
+		}
+		if ver == 0 {
+			ver = fallbackCipherVersion
+		}
+		skip, ln := int(r.Skip), int(r.Len)
+		if skip == 0 {
+			skip = fallbackCipherSkip
+		}
+		if ln == 0 {
+			ln = fallbackCipherLength
+		}
+		p := &PurposeCipher{Key: r.Key, Skip: skip, Length: ln, Version: ver}
+		switch strings.ToLower(r.Role) {
+		case "signin":
+			imp.Signin = p
+		case "reserve":
+			imp.Reserve = p
+		case "initiate":
+			imp.Initiate = p
+		}
+	}
+	// ivacflow often reports one key that serves every purpose.
+	if imp.Signin != nil {
+		if imp.Reserve == nil {
+			imp.Reserve = imp.Signin
+		}
+		if imp.Initiate == nil {
+			imp.Initiate = imp.Signin
+		}
+	}
+
+	// Fixed headers observed in the template (placeholder values are skipped —
+	// "{{ivac:navState}}" is a slot to fill, not a value).
+	for _, st := range s.Template {
+		for k, v := range st.Headers {
+			lk := strings.ToLower(k)
+			if v == "" || perCallHeaders[lk] || strings.Contains(v, "{{") {
+				continue
+			}
+			if imp.Headers[lk] == "" {
+				imp.Headers[lk] = v
+			}
+		}
+	}
+	return imp, nil
+}
+
+// fillFamiliesFromAll fills any ivacflow family code the bot needs that `endpoints`
+// did not supply, by finding the best-matching path in allEndpoints. Matching is by
+// TOKEN SET of the last path segment (camelCase + separators split, version tokens
+// like "v5" dropped, case-folded), so "/otp/verifySigninOtp" matches
+// "/otp/v5_verify_Signin_Otp" whatever the separators or version. The best match is
+// the candidate in the same first-segment group whose token set contains all of the
+// family's tokens and is smallest (so "verifyOtp" does not grab the longer
+// "verify_Signin_Otp"). Existing families are never overwritten.
+func fillFamiliesFromAll(fam map[string]string, all []string) {
+	if fam == nil || len(all) == 0 {
+		return
+	}
+	for _, code := range ivacflowEndpointKeys {
+		if fam[code] != "" {
+			continue
+		}
+		grp := firstSeg(code)
+		want := endpointTokens(lastSeg(code))
+		if len(want) == 0 {
+			continue
+		}
+		best, bestLen := "", 1<<30
+		for _, p := range all {
+			if firstSeg(p) != grp {
+				continue
+			}
+			have := endpointTokens(lastSeg(p))
+			if !tokensSubset(want, have) {
+				continue
+			}
+			if len(have) < bestLen {
+				best, bestLen = p, len(have)
+			}
+		}
+		if best != "" {
+			fam[code] = stripAPIPrefix(best)
+		}
+	}
+}
+
+func firstSeg(p string) string {
+	p = stripAPIPrefix(p)
+	p = strings.TrimPrefix(p, "/")
+	if i := strings.IndexByte(p, '/'); i >= 0 {
+		return strings.ToLower(p[:i])
+	}
+	return strings.ToLower(p)
+}
+
+func lastSeg(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	p = strings.TrimRight(p, "/")
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// endpointTokens splits a segment into lowercase word tokens on separators AND
+// camelCase boundaries, dropping version tokens ("v5", "v321").
+func endpointTokens(s string) map[string]bool {
+	out := map[string]bool{}
+	cur := make([]byte, 0, len(s))
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		t := string(cur)
+		cur = cur[:0]
+		if isVersionTok(t) {
+			return
+		}
+		out[t] = true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_' || c == '-' || c == ' ' || c == '.' || c == '/':
+			flush()
+		case c >= 'A' && c <= 'Z':
+			if i > 0 {
+				flush()
+			}
+			cur = append(cur, c-'A'+'a')
+		default:
+			cur = append(cur, c)
+		}
+	}
+	flush()
+	return out
+}
+
+func isVersionTok(t string) bool {
+	if len(t) < 2 || t[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func tokensSubset(want, have map[string]bool) bool {
+	for t := range want {
+		if !have[t] {
+			return false
+		}
+	}
+	return true
+}
+
+// stripAPIPrefix removes a leading /iams/api/v<N> so an endpoint literal is the
+// bare path Config.join() expects. ivacflow is inconsistent about this: most
+// entries are bare, but reserveSlot/paymentInitiate carry the prefix.
+func stripAPIPrefix(p string) string {
+	if i := strings.Index(p, "/iams/api/"); i >= 0 {
+		rest := p[i+len("/iams/api/"):]
+		if j := strings.Index(rest, "/"); j >= 0 {
+			return rest[j:]
+		}
+	}
+	return p
+}
+
+// normalizeBundleName collapses whitespace in a bundle filename. ivacflow's
+// snapshot sometimes carries padding inside the name, which would break an
+// exact comparison against the file the bot downloaded.
+func normalizeBundleName(n string) string {
+	return strings.Join(strings.Fields(n), "")
+}
+
+// BundleMatches reports whether this capture describes the bundle the bot is
+// running against. Both names are normalized and compared on their hash part,
+// so padding or a path prefix does not matter. An empty name on either side
+// means "unknown" — treated as a match, since there is nothing to contradict.
+func (i *Imported) BundleMatches(liveURL string) bool {
+	if i == nil || i.BundleName == "" || liveURL == "" {
+		return true
+	}
+	live := normalizeBundleName(liveURL)
+	if j := strings.LastIndex(live, "/"); j >= 0 {
+		live = live[j+1:]
+	}
+	if j := strings.Index(live, "?"); j >= 0 {
+		live = live[:j]
+	}
+	return strings.EqualFold(live, i.BundleName) ||
+		strings.Contains(live, i.BundleName) || strings.Contains(i.BundleName, live)
+}

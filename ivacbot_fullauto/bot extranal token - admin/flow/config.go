@@ -1,0 +1,324 @@
+package flow
+
+import (
+	"os"
+	"regexp"
+	"strings"
+)
+
+// envOn reports whether an env var is set to an enabling value (1/true/yes/on).
+func envOn(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// Config is the live, scan-driven configuration the flow runs against. Everything
+// the site changes (endpoint versions, slot id, dg-epay id, encryption secrets,
+// dynamic headers) lives here. It is filled by the live scan; hardcoded canonical
+// values act only as a fallback when the scan hasn't resolved a piece yet.
+//
+// This is the Go equivalent of RJ SLOT's RJ_DYN + encConfig + API_BASE_URL.
+type Config struct {
+	APIBase   string            // detectApiBaseUrl(), default APIBase const
+	Endpoints map[string]string // family code -> current bundle literal (scanned)
+	SlotID    string            // reserve slot uuid (scanned)
+	DgepayID  string            // legacy dg-epay payment-method uuid (obsolete after the SSL switch)
+	// InitiatePath is the full payment-initiate path pulled from the bundle by the
+	// extractor. IVAC switched the gateway from dg-epay (/payment/<uuid>/dg-epay/
+	// initiate) to SSLCommerz (/payment/ssl/initiate — a FIXED path, no uuid). The
+	// extractor decodes whichever the current build uses; default is the SSL path.
+	InitiatePath string
+
+	// Manual overrides from the dashboard. When non-empty these WIN over the live
+	// scan (used when the scan can't resolve an id, or to force a specific one).
+	ForcedSlotID   string
+	ForcedDgepayID string
+
+	// ivacflow push is AUTHORITATIVE for these two ids (user setting): when an
+	// ivacflow capture carries a slot id / dg-epay uuid, it wins over EVERYTHING —
+	// the live scan, the endpoint-cache path, a manual override and the built-in
+	// default. These sticky fields hold that value so nothing downstream (a later
+	// scan, ensureDgEpay, a cache apply) can quietly clobber it. Empty = no
+	// ivacflow value yet, so the normal scan/cache/default precedence applies.
+	IvacflowSlotID   string
+	IvacflowDgepayID string
+
+	// IvacflowReservePath / IvacflowInitiatePath are the FULL live-captured reserve /
+	// initiate paths from ivacflow (bare, api-prefix stripped), used VERBATIM — no
+	// reconstruction, no hardcoded suffix. ivacflow actually RUNS the bundle, so these
+	// carry exactly what the live site serves (e.g. "dg_epay" vs "dg-epay",
+	// "reserve-slot" vs "reserve_slot", or an entirely new gateway). Empty = ivacflow
+	// pushed no full path, so the slot/dg-epay-id + scan/cache/fallback precedence applies.
+	IvacflowReservePath  string
+	IvacflowInitiatePath string
+
+	// Fallbacks are captured configs consulted IN ORDER, after the live scan and
+	// before the built-in defaults: ivacflow first (it runs the bundle, so it is
+	// the more reliable of the two), then the RJ SLOT recorder capture. They are a
+	// SAFETY NET only — ApplyImportGaps fills from them exclusively where THIS
+	// run's live scan resolved nothing. See imported.go / ivacflow.go.
+	Fallbacks []*Imported
+	// LiveBundleURL is the bundle this run actually downloaded, used to tell a
+	// capture that describes the CURRENT bundle from one that has gone stale.
+	LiveBundleURL string
+	// Source records where each resolved value came from ("manual"/"scan"/
+	// "import"/"built-in"), so the dashboard can show a gap before a run starts.
+	Source map[string]string
+
+	// dynamic headers learned from the bundle / site traffic
+	NavState     string // x-sec-navigation-state
+	RuntimeState string // x-sec-runtime-state
+	VRequestMeta string // x-v-request-meta  (default "windos.s")
+	DeviceID     string // x-device-id (random 20-char, persisted; getDeviceId)
+
+	// encryption config per purpose (from resolveBundleConfigs)
+	Signin   *PurposeCipher
+	Reserve  *PurposeCipher
+	Initiate *PurposeCipher
+
+	// Future-proof toggles: today upload + initiate send a RAW captcha x-token.
+	// If IVAC later requires those tokens ENCRYPTED (like signin/reserve), flip the
+	// matching flag ON and the step encrypts with the scanned cipher instead. Both
+	// default false, so current behavior is unchanged until explicitly enabled
+	// (env IVAC_ENCRYPT_UPLOAD / IVAC_ENCRYPT_INITIATE = 1).
+	EncryptUpload   bool
+	EncryptInitiate bool
+
+	// EndpointCacheJSON is the latest `.endpoint-cache.json` pushed from the
+	// autocheck folder (extract_fetch.js v15 output). Applied during Scan, but only
+	// when its bundleName matches the live bundle. Empty = not pushed / not used.
+	EndpointCacheJSON []byte
+
+	// CacheReservePath / CacheInitiatePath are the FULL reserve/initiate paths (with
+	// the live slot/dg-epay uuid AND the current suffix) captured from the endpoint
+	// cache or last-good snapshot for this exact bundle. When set, ReserveURLFor /
+	// InitiateURLFor use them verbatim instead of reconstructing with a built-in
+	// suffix — so an IVAC path/suffix change is followed automatically.
+	CacheReservePath  string
+	CacheInitiatePath string
+
+	// LastGoodJSON is the snapshot of the last SUCCESSFUL scan (last_good_config.json).
+	// If the live bundle name still matches this snapshot, Scan reuses it and skips
+	// the heavy download + goja cipher/dg-epay work (smart-skip). Empty = none yet.
+	LastGoodJSON []byte
+
+	// EndpointSpec holds the decoded body-field-name list + header-name list per
+	// logical endpoint ("signin","reserve") from the endpoint cache (extract_fetch.js
+	// v15). Used ONLY by the drift adapter (endpoint_spec.go): when the live spec
+	// differs from the proven default, the body keys / header names are remapped
+	// positionally so an IVAC field/header RENAME is followed instead of breaking the
+	// request. Empty (or spec == proven default) = proven builder, byte-for-byte.
+	EndpointSpec map[string]EndpointSpec
+}
+
+// EndpointSpec is one endpoint's decoded request shape from the endpoint cache: the
+// ordered body field NAMES and the custom header NAMES. The step still builds the
+// VALUES; only the names come from here, so an IVAC rename is followed.
+type EndpointSpec struct {
+	Body []string // ordered body field names, e.g. ["phone","password","c"]
+	Hdrs []string // custom header names, e.g. ["x-sec-navigation-state"]
+}
+
+// anyCipher returns the first available scanned cipher (all purposes share one key
+// on current IVAC bundles). Used when a step needs to encrypt but has no cipher of
+// its own (e.g. upload). Returns nil if none is set → EncryptForPurpose sends raw.
+func (c *Config) anyCipher() *PurposeCipher {
+	for _, p := range []*PurposeCipher{c.Initiate, c.Signin, c.Reserve} {
+		if p != nil && p.Key != "" {
+			return p
+		}
+	}
+	return nil
+}
+
+// PurposeCipher is one resolved cipher config (key/skip/length/version).
+type PurposeCipher struct {
+	Key     string
+	Skip    int
+	Length  int
+	Version int
+}
+
+// NewConfig returns a Config with current known-good fallbacks in place. The live
+// scan overwrites these when the bundle is reachable; when the site's Cloudflare
+// 403s the bundle fetch, these keep the pipeline on the CURRENT endpoints/uuids
+// (captured from the live bundle 2026-08) instead of stale ones.
+func NewConfig() *Config {
+	return &Config{
+		APIBase: "https://api.ivacbd.com/iams/api/v1",
+		// Built-in fallback endpoints — refreshed to the CURRENT live bundle
+		// (muwjfj8w / 2026-10-06, byte-verified by scanning the bundle). Used only when
+		// the live scan AND every pushed store (ivacflow / endpoint-cache / last-good)
+		// are unavailable, so signin still targets the right URLs.
+		Endpoints: map[string]string{
+			"/auth/v2-sign-in":                        "/auth/v4-sign_in",
+			"/file/upload_file_v2":                    "/file/upload-file-v453",
+			"/file/over-view-v3":                      "/file/over-view-v412",
+			"/otp/verify-otp":                         "/otp/verify_otp_v5",
+			"/otp/verifySigninOtp":                    "/otp/verify-Signin_Otp",
+			"/file/file-confirmation_and_slot_status": "/file/file_confirmation-and_slot-status",
+		},
+		SlotID:       "", // BLANK by design: filled by live scan, then overwritten by an ivacflow push if they differ. No stale hardcoded id.
+		DgepayID:     "", // BLANK by design: filled by live scan / resolve, then overwritten by an ivacflow push if they differ.
+		VRequestMeta: "windos.s",
+		// x-sec-* security headers (RJ SLOT constants). WITHOUT a valid nav-state
+		// the server accepts the request but returns {data:null,"Success"} — no
+		// session — so these must be sent on sign-in / upload.
+		NavState:     "80d51dc5-af20-46fa-a7bb-e6a8f3f80065",
+		RuntimeState: "v3.5s4c8831.9a53.27ed.b579.042a2c0cee5a",
+		// cipher fallback (from live bundle muwjfj8w 2026-10-06: version 5 / skip 6 /
+		// len 26 — byte-verified by scanning the bundle) so signin/reserve can still
+		// encrypt the captcha token into body `c` when the bundle is unreachable.
+		Signin:   &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
+		Reserve:  &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
+		Initiate: &PurposeCipher{Key: fallbackCipherKey, Skip: fallbackCipherSkip, Length: fallbackCipherLength, Version: fallbackCipherVersion},
+		// OFF by default (current RAW behavior). Turn ON only if a future bundle
+		// requires encrypted upload/initiate tokens — no rebuild needed, just env.
+		EncryptUpload:   envOn("IVAC_ENCRYPT_UPLOAD"),
+		EncryptInitiate: envOn("IVAC_ENCRYPT_INITIATE"),
+	}
+}
+
+// fallbackCipherKey is the current bundle's captcha-token cipher key (live bundle
+// muwjfj8w, 2026-10-06 — byte-verified by decoding the bundle with the resolver).
+const fallbackCipherKey = "Am)flu36I&4fx+RRQ|7TbqT[Yw>Cn=9wGs=lra58O_6ld]XXW.9ZhwZ|Ec!It}1c"
+
+// Current bundle's captcha cipher PARAMETERS (byte-verified from muwjfj8w 2026-10-06).
+// fallbackCipherVersion is ALSO used to repair an ivacflow push that carries a key
+// but a 0/invalid version (which would otherwise send the token RAW → IVAC returns
+// "Captcha verification failed").
+const (
+	fallbackCipherVersion = 5  // EncryptByVersion case 5 (genLFSR) — this bundle's algo
+	fallbackCipherSkip    = 6
+	fallbackCipherLength  = 26
+)
+
+// ApplyEndpointScan merges a plain-regex scan result into the config.
+func (c *Config) ApplyEndpointScan(s EndpointScan) {
+	if s.APIBase != "" {
+		c.APIBase = s.APIBase
+	}
+	for k, v := range s.Families {
+		c.Endpoints[k] = v
+	}
+	if s.SlotID != "" {
+		c.SlotID = s.SlotID
+	}
+}
+
+// ep returns the scanned live literal for a family code, or the canonical code
+// itself as fallback (mirrors RJ SLOT: rewrite to the bundle's current literal,
+// fall back to the hardcoded family code when nothing was scanned).
+func (c *Config) ep(familyCode string) string {
+	if v, ok := c.Endpoints[familyCode]; ok && v != "" {
+		return v
+	}
+	return familyCode
+}
+
+// join concatenates the API base and a path, avoiding a double slash.
+func (c *Config) join(path string) string {
+	base := strings.TrimRight(c.APIBase, "/")
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + path
+}
+
+// ── URL resolvers (scanned literal → full URL), used by the request builders ──
+
+// SigninURL → .../auth/v26-sign-in (whatever the bundle currently uses).
+func (c *Config) SigninURL() string { return c.join(c.ep("/auth/v2-sign-in")) }
+
+// VerifyURL → .../otp/verifySigninOtp.
+func (c *Config) VerifyURL() string { return c.join(c.ep("/otp/verifySigninOtp")) }
+
+// BookURL → .../appointment/get-booking-config.
+func (c *Config) BookURL() string { return c.join(c.ep("/appointment/get-booking-config")) }
+
+// ReserveURLFor builds the reserve URL. If the endpoint-cache/last-good captured the
+// FULL reserve path for this exact bundle (CacheReservePath, e.g. it carries the
+// live slot uuid AND the current suffix, be it reserve-slot or reserve_slot), that
+// is used verbatim — so a suffix change on IVAC's side is followed automatically.
+// Otherwise it reconstructs /slots/<slotId>/reserve-slot (built-in behavior).
+func (c *Config) ReserveURLFor() string {
+	// ivacflow's FULL live-captured reserve path wins, used verbatim — no hardcoded
+	// prefix/suffix, so whatever the live site serves is followed exactly.
+	if c.IvacflowReservePath != "" {
+		return c.join(c.IvacflowReservePath)
+	}
+	// ivacflow push is authoritative (user setting): its slot id wins over the
+	// cached path, a manual override and the scan. (Reached only when ivacflow gave an
+	// id but no full path.) Suffix is the live-observed default.
+	if c.IvacflowSlotID != "" {
+		return c.join("/slots/" + bareID(c.IvacflowSlotID) + "/reserve-slot")
+	}
+	if c.CacheReservePath != "" {
+		return c.join(c.CacheReservePath)
+	}
+	slot := bareID(c.SlotID)
+	if slot == "" {
+		slot = "{slotId}"
+	}
+	return c.join("/slots/" + slot + "/reserve-slot")
+}
+
+// bareID returns just the id, stripping any surrounding path a value may have been
+// pasted/stored with (e.g. "<uuid>/dg_epay/initiate" or ".../payment/<uuid>/..."),
+// so a URL builder never doubles the suffix (".../dg_epay/initiate/dg_epay/initiate").
+func bareID(v string) string {
+	v = strings.TrimSpace(v)
+	if !strings.Contains(v, "/") {
+		return v
+	}
+	for _, re := range []*regexp.Regexp{dgepayFromURLRe, slotFromURLRe} {
+		if m := re.FindStringSubmatch(v); m != nil {
+			return m[1]
+		}
+	}
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		return v[:i]
+	}
+	return v
+}
+
+// InitiateURLFor builds the payment-initiate URL: /payment/<dg-epay uuid>/dg-epay/
+// initiate — confirmed byte-exact against a live browser request. The dg-epay uuid
+// is an obfuscated, non-hex value assembled at runtime (e.g. "23228961-2326-3s28-
+// 861f-465bb28337a3" — note the 's'), so it never appears as plaintext in the
+// bundle. A manual dashboard override (ForcedDgepayID) wins; else the scanned /
+// fallback DgepayID is used.
+func (c *Config) InitiateURLFor() string {
+	// ivacflow's FULL live-captured initiate path wins, used verbatim — this is the
+	// one true source. The gateway segment (dg_epay / dg-epay / ssl) and the whole
+	// suffix come straight from what ivacflow saw on the live site, so nothing here is
+	// reconstructed or hardcoded.
+	if c.IvacflowInitiatePath != "" {
+		return c.join(c.IvacflowInitiatePath)
+	}
+	// Reached only when a capture gave an id but no full path. The id is sanitized to
+	// a bare uuid first (bareID) so a value pasted with its suffix cannot double it.
+	if c.IvacflowDgepayID != "" {
+		return c.join("/payment/" + bareID(c.IvacflowDgepayID) + "/dg_epay/initiate")
+	}
+	// Manual dashboard override.
+	if c.ForcedDgepayID != "" {
+		return c.join("/payment/" + bareID(c.ForcedDgepayID) + "/dg_epay/initiate")
+	}
+	// Full initiate path captured for THIS exact bundle (endpoint-cache/last-good) —
+	// used verbatim so a suffix/gateway change is followed.
+	if c.CacheInitiatePath != "" {
+		return c.join(c.CacheInitiatePath)
+	}
+	if c.DgepayID != "" {
+		return c.join("/payment/" + bareID(c.DgepayID) + "/dg_epay/initiate")
+	}
+	// last resort: whatever initiate path the extractor decoded.
+	if c.InitiatePath != "" {
+		return c.join(c.InitiatePath)
+	}
+	return c.join("/payment/{dgepayId}/dg_epay/initiate")
+}

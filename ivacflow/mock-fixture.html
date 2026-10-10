@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  mock-fixture.html — a stand-in for the FULL IVAC flow, to PROVE the harness
+  walks EVERY step with mock data:
+    signin -> OTP verify -> file UPLOAD -> over-view -> booking-config
+           -> file-confirmation -> payment-amount -> reserve -> dg-epay initiate
+  Every fetch hits the same /iams/api/... paths the real app uses, so the
+  harness intercepts + mocks each one and the flow advances step by step.
+-->
+<html>
+<head><meta charset="utf-8"><title>MOCK IVAC (full flow)</title></head>
+<body>
+  <h3 id="stage">stage: signin</h3>
+  <form id="signin">
+    <input type="tel" name="phone" placeholder="phone">
+    <input type="password" name="password" placeholder="password">
+    <input type="hidden" name="cf-turnstile-response">
+    <button type="submit">Sign In</button>
+  </form>
+  <form id="otp" style="display:none">
+    <input name="otp" maxlength="6" inputmode="numeric" placeholder="otp">
+    <button type="submit">Verify</button>
+  </form>
+  <div id="pay" style="display:none"><button id="paybtn">Pay Now</button></div>
+
+<script>
+const API = 'https://api.ivacbd.com/iams/api/v1';
+const SLOT = '139fd4d2-27c9-4758-a623-368583e830bs';
+const DG   = '23228961-2326-3s28-861f-465bb28337a3';
+
+// fake "cipher": real app does base64+RC4 of the turnstile token; we base64 so
+// the captured body has the same SHAPE (field "c").
+function cipher(token, payload){ return btoa(token + '|' + JSON.stringify(payload)); }
+function tsToken(){
+  if (window.turnstile && window.turnstile.getResponse) return window.turnstile.getResponse();
+  const el = document.querySelector('input[name="cf-turnstile-response"]');
+  return el ? el.value : '';
+}
+function setStage(s){ document.getElementById('stage').textContent = 'stage: ' + s; }
+
+async function jsonPost(path, body, headers){
+  const r = await fetch(API + path, { method:'POST',
+    headers: Object.assign({'content-type':'application/json'}, headers||{}),
+    body: JSON.stringify(body) });
+  return r.json();
+}
+// multipart upload — proves the harness captures a FILE upload step too
+async function uploadFile(token, bearer){
+  const fd = new FormData();
+  fd.append('file', new Blob(['%PDF-1.4 mock passport'], {type:'application/pdf'}), 'passport.pdf');
+  fd.append('c', cipher(token, {kind:'passport'}));
+  const r = await fetch(API + '/file/upload_file_v321', { method:'POST',
+    headers: { 'x-token': token, 'authorization': 'Bearer ' + bearer },
+    body: fd });
+  return r.json();
+}
+
+document.getElementById('signin').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = e.target, token = tsToken();
+  const res = await jsonPost('/auth/v3-sign-in',
+    { phone: f.phone.value, c: cipher(token, {phone:f.phone.value, password:f.password.value}) },
+    { 'x-token': token, 'x-sec-navigation-state': 'signin' });
+  if (res && res.successFlag){
+    window.__tok = res.data.accessToken;
+    f.style.display='none'; document.getElementById('otp').style.display=''; setStage('otp');
+  }
+});
+
+document.getElementById('otp').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const otp = e.target.otp.value, token = tsToken(), bearer = window.__tok || '';
+  // 1) verify OTP
+  const v = await jsonPost('/otp/verify-otp', { otp, c: cipher(token,{otp}) },
+    { 'x-token': token, 'authorization': 'Bearer ' + bearer });
+  if (!(v && v.successFlag)) return;
+  setStage('upload');
+  // 2) FILE UPLOAD (multipart) — mock data passes it too
+  const up = await uploadFile(token, bearer);
+  const fileId = (up && up.data && up.data.fileId) || 'mock-file-id';
+  // 3) over-view
+  await jsonPost('/file/over-view-v421', { fileId }, { 'authorization':'Bearer '+bearer });
+  setStage('booking');
+  // 4) booking config
+  await jsonPost('/appointment/appointment-booking-config', { fileId }, { 'authorization':'Bearer '+bearer });
+  // 5) file confirmation + slot status
+  await jsonPost('/file/file-confirmation-and-slot_status',
+    { fileId, c: cipher(token,{fileId}) }, { 'x-token': token, 'authorization':'Bearer '+bearer });
+  // 6) payment amount
+  await jsonPost('/file/payment-amount', { fileId }, { 'authorization':'Bearer '+bearer });
+  setStage('reserve');
+  // 7) reserve slot
+  const rr = await jsonPost('/slots/'+SLOT+'/reserve-slot',
+    { c: cipher(token,{slotId:SLOT, date:'2026-09-15'}) }, { 'x-token': token, 'authorization':'Bearer '+bearer });
+  const rid = (rr && rr.data && rr.data.reservationId) || 'rid';
+  // 8) dg-epay initiate
+  await jsonPost('/payment/'+DG+'/dg-epay/initiate',
+    { reservationId: rid, amount: 8200 }, { 'authorization':'Bearer '+bearer });
+  e.target.style.display='none'; document.getElementById('pay').style.display=''; setStage('payment');
+});
+</script>
+</body>
+</html>
