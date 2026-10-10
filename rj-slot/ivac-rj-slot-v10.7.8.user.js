@@ -7359,12 +7359,14 @@ async function stepInitiate(signal) {
     try {
         const initiateXToken = initiateToken;
         const useNative = document.getElementById('chk-initiate-net')?.checked !== false;
-        // Payment/initiate is a protected call — the API's WAF rejects (403) requests that don't carry
-        // the same security headers the site sends on other API calls. Mirror them: x-sec-navigation-state
-        // (signin), x-sec-runtime-state (upload) and x-v-request-meta (reserve), all live-captured.
+        // Payment/initiate per the bundle sends ONLY x-token (plus the axios defaults:
+        // authorization, content-type, accept). It does NOT carry the sec-state headers —
+        // those belong to other steps (x-sec-navigation-state→signin, x-sec-runtime-state→
+        // upload, x-v-request-meta→reserve). Sending them here was wrong and the WAF
+        // ("spellbound") still 403'd, so initiate now mirrors the bundle: x-token only.
         const initHeaders = useNative
-            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'x-sec-navigation-state':_navState(), 'x-sec-runtime-state':_runtimeState(), 'x-v-request-meta':_vReqMeta(), 'x-token':initiateXToken }
-            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-sec-navigation-state':_navState(), 'x-sec-runtime-state':_runtimeState(), 'x-v-request-meta':_vReqMeta(), 'x-token':initiateXToken };
+            ? { 'accept':'application/json, text/plain, */*', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'x-token':initiateXToken }
+            : { 'accept':'application/json, text/plain, */*', 'accept-language':'en-US,en;q=0.9', 'authorization':`Bearer ${sessionState.accessToken}`, 'cache-control':'no-cache, no-store, must-revalidate', 'content-type':'application/json', 'pragma':'no-cache', 'priority':'u=1, i', 'sec-ch-ua':'"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"', 'sec-ch-ua-mobile':'?0', 'sec-ch-ua-platform':'"Windows"', 'sec-fetch-dest':'empty', 'sec-fetch-mode':'cors', 'sec-fetch-site':'same-site', 'origin':'https://appointment.ivacbd.com', 'x-token':initiateXToken };
         const r = await H2.fetchH2Critical(initiateUrl, { method: 'POST', signal, forceGM: !useNative, headers: initHeaders, referrer: API_REFERRER, body: JSON.stringify({ appointmentId }) });
         const ct = r.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await r.json() : await r.text().then(t => { try { return JSON.parse(t); } catch(e) { return { raw: t }; } });
