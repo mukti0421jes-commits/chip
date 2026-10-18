@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ PDF — Edit</title>
+<link rel="stylesheet" href="rj-theme.css">
+<style>
+  .toolbar{position:sticky;top:58px;z-index:4;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .toolbar .sp{margin-left:auto}
+  .zoom{display:flex;align-items:center;gap:6px}
+  .pagewrap{background:#e9eef4;border-radius:12px;padding:16px;overflow:auto}
+  .page{position:relative;margin:0 auto 18px;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.15)}
+  .page canvas{display:block}
+  .tlayer{position:absolute;inset:0;transform-origin:0 0}
+  .tlayer .t{position:absolute;white-space:pre;background:transparent;outline:none;line-height:1;cursor:text;border-radius:2px}
+  .tlayer.editing .t:hover{box-shadow:0 0 0 1px rgba(59,130,246,.6)}
+  .tlayer .t:focus{box-shadow:0 0 0 2px rgba(59,130,246,.8);background:#fff;color:#000!important}
+  .tlayer .t.sel{box-shadow:0 0 0 2px #f59e0b;background:rgba(245,158,11,.18)}
+  .newbox.sel{box-shadow:0 0 0 2px #f59e0b}
+  .newbox{position:absolute;color:#000;background:rgba(255,255,255,.7);border:1px dashed var(--brand);padding:2px 4px;outline:none;cursor:move;min-width:24px;font-size:14px}
+  .pagenum{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--brand);margin:0 0 4px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ PDF Editor</b><small>Edit · PDF</small></div></div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span class="mode">MODE · EDIT PDF</span>
+    <button class="home" id="home">← হোম</button>
+  </div>
+</header>
+
+<div class="wrap" style="max-width:900px">
+  <div id="empty">
+    <h1>PDF আপলোড করুন</h1>
+    <p class="lead">ফাইল আপলোড হওয়ার পর প্রতিটি লেখা ক্লিক করে এডিট করতে পারবেন, নতুন লেখা যোগ করতে পারবেন, তারপর ডাউনলোড।</p>
+    <div class="card">
+      <div class="drop" id="drop"><div class="ic">⤒</div><div style="font-weight:800;font-size:18px">এখানে ফাইল টেনে আনুন বা ক্লিক করুন</div><div class="note" style="background:none;border:none;color:var(--muted);margin-top:4px">শুধুমাত্র .pdf ফাইল · সর্বোচ্চ মান বজায় থাকে</div></div>
+      <input type="file" id="file" accept="application/pdf" class="hidden">
+    </div>
+    <div class="note">🔒 আপনার দেওয়া সকল তথ্যই সুরক্ষিত — সব ব্রাউজারেই থাকে।</div>
+  </div>
+
+  <div id="editor" class="hidden">
+    <div class="toolbar">
+      <button id="tEdit" class="btn-soft">✎ লেখা এডিট: চালু</button>
+      <button id="tNew">＋ নতুন লেখা</button>
+      <button id="tDel">🗑 মুছুন</button>
+      <div class="zoom sp"><button id="zOut">−</button><span id="zVal" style="font-weight:700">100%</span><button id="zIn">＋</button></div>
+      <button id="tReset">↺ রিসেট</button>
+      <button class="btn-soft" id="tApply">✔ Apply / সংরক্ষণ</button>
+      <button class="btn-primary" id="tDownload">↓ Download</button>
+    </div>
+    <div class="pagewrap" id="pages"></div>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="lib/pdf-lib.min.js"></script>
+<script type="module" src="pdf-edit.js"></script>
+</body>
+</html>

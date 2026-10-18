@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ PDF — Edit Invoice</title>
+<link rel="stylesheet" href="rj-theme.css">
+<style>
+  .layout{display:flex;gap:16px;align-items:flex-start}
+  .preview{flex:1;background:#e9eef4;border-radius:12px;padding:14px;overflow:auto;min-height:300px}
+  .preview .page{position:relative;margin:0 auto;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.15)}
+  .preview canvas{display:block}
+  .pagenum{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--brand);margin:0 0 6px}
+  .form{width:340px;flex-shrink:0}
+  .form .fld{margin-bottom:8px}
+  .form label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .form input{width:100%;margin-top:3px}
+  .form .dot{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block}
+  .ztop{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-bottom:8px}
+  .drop2{cursor:pointer}
+  @media(max-width:760px){.layout{flex-direction:column}.form{width:100%}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ PDF Editor</b><small>Edit · Invoice</small></div></div>
+  <div style="display:flex;gap:10px;align-items:center"><span class="mode">INVOICE · IVAC</span><button class="home" id="home">← হোম</button></div>
+</header>
+<div class="wrap" style="max-width:1000px">
+  <div id="empty">
+    <h1>Payment Invoice এডিট করুন</h1>
+    <p class="lead">IVAC পেমেন্ট ইনভয়েস PDF দিন — তথ্য নিজে থেকে ধরে নেবে, এডিট করে প্রিভিউ দেখে ডাউনলোড করুন।</p>
+    <div class="card"><div class="drop" id="drop"><div class="ic">🧾</div><div style="font-weight:800;font-size:18px">এখানে ইনভয়েস PDF টেনে আনুন বা ক্লিক করুন</div><div class="note" style="background:none;border:none;color:var(--muted);margin-top:4px">শুধুমাত্র .pdf ফাইল</div></div>
+    <input type="file" id="file" accept="application/pdf" class="hidden"></div>
+    <div class="note">🔒 সম্পূর্ণ প্রসেসিং আপনার ব্রাউজারেই হয় — কোনো ফাইল সার্ভারে যায় না।</div>
+  </div>
+
+  <div id="editor" class="hidden">
+    <div class="ztop"><button id="zOut">−</button><span id="zVal" style="font-weight:700">100%</span><button id="zIn">＋</button><button id="other" style="margin-left:8px">↻ অন্য ফাইল</button></div>
+    <div class="layout">
+      <div class="preview" id="pages"></div>
+      <div class="form card">
+        <div style="display:flex;align-items:center;margin-bottom:6px"><b>🧾 ইনভয়েস তথ্য</b></div>
+        <div class="note" style="margin-bottom:10px">যে ঘরগুলো কালারে সবুজ ডট আছে, সেগুলোতে নতুন লেখা দিন। বারকোড ছবি অপরিবর্তিত থাকবে; শুধু নম্বরটা বদলাবে।</div>
+        <div id="fields"></div>
+        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn-soft" id="preview" style="flex:1">► প্রিভিউ</button><button id="revert" title="আসল ফিরিয়ে আনুন">↺</button></div>
+        <button class="btn-primary" id="save" style="width:100%;margin-top:8px;padding:12px">💾 Save & Download</button>
+        <div id="status"></div>
+      </div>
+    </div>
+  </div>
+  <footer>© 2026 RJ Automation</footer>
+</div>
+<script src="lib/pdf-lib.min.js"></script>
+<script type="module" src="invoice.js"></script>
+</body>
+</html>

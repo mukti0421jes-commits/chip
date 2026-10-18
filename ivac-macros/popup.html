@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<title>Ivac Macros</title>
+<style>
+  body {
+    width: 380px;
+    font-family: "Noto Sans Bengali", Arial, sans-serif;
+    background: #fdf6ec;
+    margin: 0;
+    padding: 14px;
+    color: #333;
+  }
+  h2 {
+    margin: 0 0 4px 0;
+    color: #d35400;
+    font-size: 18px;
+  }
+  .sub {
+    font-size: 12px;
+    color: #777;
+    margin-bottom: 10px;
+  }
+  textarea {
+    width: 100%;
+    height: 220px;
+    box-sizing: border-box;
+    font-family: monospace;
+    font-size: 11px;
+    padding: 6px;
+    border: 1px solid #e0c9a6;
+    border-radius: 6px;
+    resize: vertical;
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  button {
+    flex: 1;
+    padding: 9px;
+    border: none;
+    border-radius: 6px;
+    background: #e67e22;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button.secondary {
+    background: #95a5a6;
+  }
+  button:hover { opacity: 0.9; }
+  #status {
+    margin-top: 8px;
+    font-size: 12px;
+    min-height: 16px;
+  }
+  .ok { color: #27ae60; }
+  .err { color: #c0392b; }
+  .toggleRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+    padding: 8px;
+    background: #fff2e0;
+    border-radius: 6px;
+  }
+  .note {
+    font-size: 11px;
+    color: #8a6d3b;
+    background: #fcf3cf;
+    border: 1px solid #f0d98c;
+    padding: 6px 8px;
+    border-radius: 6px;
+    margin-top: 10px;
+    line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+  <h2>Ivac Macros</h2>
+  <div class="sub">Indian Visa Online ফর্ম অটো-ফিল সহায়ক</div>
+
+  <textarea id="dataBox" placeholder="এখানে আবেদনকারীর তথ্য (JSON) পেস্ট করুন..."></textarea>
+
+  <div class="row">
+    <button id="saveBtn">💾 সেভ করুন</button>
+    <button id="loadSampleBtn" class="secondary">নমুনা দেখুন</button>
+  </div>
+
+  <div class="toggleRow">
+    <span>অটো-ফিল চালু</span>
+    <label>
+      <input type="checkbox" id="enableToggle"> সক্রিয়
+    </label>
+  </div>
+
+  <div class="toggleRow">
+    <span>প্রতিটা পেজে Continue অটো-ক্লিক</span>
+    <label>
+      <input type="checkbox" id="autoContinueToggle"> সক্রিয়
+    </label>
+  </div>
+
+  <div class="note" style="background:#fde3e3;border-color:#f5b7b1;color:#943126;">
+    ⚠️ Continue অটো-ক্লিক চালু করলে প্রতিটা পেজ ডেটা ফিল হয়ে <b>স্বয়ংক্রিয়ভাবে পরের পেজে চলে যাবে</b> —
+    রিভিউ করার সুযোগ পাবেন না। CAPTCHA, ফাইল আপলোড, এবং Confirm Details পেজ এর বাইরে থাকবে (সবসময় ম্যানুয়াল)।
+  </div>
+
+  <div id="status"></div>
+
+  <div class="note">
+    ⚠️ CAPTCHA এবং ছবি/PDF ফাইল আপলোড ব্রাউজারের নিরাপত্তার কারণে সবসময় ম্যানুয়ালি করতে হবে।
+    বাকি সব ফিল্ড পেজ লোড হলে নিজে থেকে ফিল হয়ে যাবে। প্রতিটা পেজে Continue বাটনও আপনি নিজে চাপবেন।
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

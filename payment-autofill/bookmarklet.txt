@@ -1,0 +1,17 @@
+javascript:(function(){
+var NUM='4477123456789012';
+var EXP='12/32';
+var CVC='280';
+var NAME='UZZAL DUTTA';
+var AUTOPAY=true;
+function docs(){var a=[document];(function w(d){var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{var x=f[i].contentDocument;if(x){a.push(x);w(x);}}catch(e){}}})(document);return a;}
+var D=docs();
+function find(id,ph){for(var i=0;i<D.length;i++){var e=D[i].getElementById(id)||D[i].querySelector('input[placeholder="'+ph+'"]');if(e)return e;}return null;}
+function nativeSet(el,val){var s=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value').set;s.call(el,'');if(el._valueTracker)el._valueTracker.setValue('');el.dispatchEvent(new Event('input',{bubbles:true}));for(var i=0;i<val.length;i++){var c=val.charAt(i);el.dispatchEvent(new KeyboardEvent('keydown',{key:c,bubbles:true}));s.call(el,el.value+c);if(el._valueTracker)el._valueTracker.setValue('');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new KeyboardEvent('keyup',{key:c,bubbles:true}));}el.dispatchEvent(new Event('change',{bubbles:true}));}
+function fill(el,val,cb){if(!el){cb();return;}el.focus();try{el.click();el.focus();}catch(e){}requestAnimationFrame(function(){var od=el.ownerDocument;var ok=false;if(od.activeElement===el){try{od.execCommand('selectAll',false,null);od.execCommand('delete',false,null);ok=od.execCommand('insertText',false,val);}catch(e){ok=false;}}if(!ok||el.value.replace(/\s/g,'')===''){nativeSet(el,val);}el.dispatchEvent(new Event('blur',{bubbles:true}));setTimeout(cb,250);});}
+function payBtn(){var p=null;for(var k=0;k<D.length&&!p;k++){p=D[k].querySelector('[data-payment-button="true"]')||Array.prototype.find.call(D[k].querySelectorAll('button'),function(b){return /\bpay\b/i.test(b.textContent||b.getAttribute('aria-label')||'');});}return p;}
+var num=find('card-number-input','Card Number');
+if(!num){alert('Card ঘর পাওয়া যায়নি — সম্ভবত cross-origin iframe, bookmarklet দিয়ে ভরানো যাবে না।');return;}
+var steps=[[num,NUM],[find('card-expiry-input','MM/YY'),EXP],[find('card-cvc-input','CVC/CVV'),CVC],[find('card-holder-name-input','Card Holder Name'),NAME]];
+var i=0;(function nx(){if(i<steps.length){fill(steps[i][0],steps[i][1],function(){i++;nx();});return;}if(AUTOPAY){var t=0;(function tryPay(){var p=payBtn();if(p&&!p.disabled&&p.getAttribute('aria-disabled')!=='true'){p.click();return;}if(t++<20)setTimeout(tryPay,300);})();}})();
+})();

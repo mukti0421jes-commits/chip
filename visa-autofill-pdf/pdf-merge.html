@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ PDF — Merge</title>
+<link rel="stylesheet" href="rj-theme.css">
+<style>
+  .frow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card);margin-bottom:8px;cursor:grab}
+  .frow.drag{opacity:.4}
+  .frow .no{width:26px;height:26px;border-radius:7px;background:var(--grad);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px}
+  .frow .fi{width:34px;height:34px;border-radius:8px;background:#eef2ff;color:#4f46e5;display:flex;align-items:center;justify-content:center}
+  .frow .nm{font-weight:700;word-break:break-all}.frow .meta{color:var(--muted);font-size:12px}
+  .frow .rng{margin-left:auto;text-align:right}
+  .frow .rng label{font-size:11px;color:var(--muted)}
+  .frow .rng input{width:120px;padding:5px;font-size:12px}
+  .frow .x{border:1px solid var(--line);background:#fff;border-radius:8px;padding:4px 9px}
+  .stat{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:10px;padding:10px 12px;font-size:13px;margin:8px 0}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ PDF Editor</b><small>Merge · PDF</small></div></div>
+  <div style="display:flex;gap:10px;align-items:center"><span class="mode">MODE · MERGE</span><button class="home" id="home">← হোম</button></div>
+</header>
+<div class="wrap" style="max-width:820px">
+  <h1>PDF মার্জ করুন</h1>
+  <p class="lead">একাধিক PDF ফাইল যোগ করুন, ক্রম টেনে সাজান এবং একটি ফাইলে মিলিয়ে নিন। চাইলে প্রতিটি ফাইলের নির্দিষ্ট পেজও বেছে নেওয়া যাবে।</p>
+  <div class="card"><div class="drop" id="drop"><div class="ic">⊕</div><div style="font-weight:800;font-size:18px">এখানে PDF ফাইল টেনে আনুন বা ক্লিক করুন</div><div class="note" style="background:none;border:none;color:var(--muted);margin-top:4px">একসাথে একাধিক .pdf ফাইল দেওয়া যাবে</div></div>
+  <input type="file" id="file" accept="application/pdf" multiple class="hidden"></div>
+  <div class="note">🔒 সম্পূর্ণ প্রসেসিং আপনার ব্রাউজারেই হয় — কোনো ফাইল সার্ভারে যায় না।</div>
+
+  <div id="loaded" class="hidden">
+    <div style="display:flex;align-items:center;margin-top:12px"><span class="note" style="background:none;border:none;color:var(--brand);padding:0">• টেনে ক্রম পরিবর্তন করুন · পেজ রেঞ্জ ফাঁকা রাখলে পুরো ফাইল নেওয়া হবে</span>
+      <div style="margin-left:auto;display:flex;gap:8px"><button class="btn-soft" id="add">＋ আরো যোগ করুন</button><button id="clear">✕ সব মুছুন</button></div>
+    </div>
+    <div id="list" style="margin-top:10px"></div>
+    <div class="stat">মোট ফাইল: <b id="stFiles">0</b> &nbsp; আনুমানিক পেজ: <b id="stPages">0</b> &nbsp; মোট সাইজ: <b id="stSize">0 KB</b></div>
+    <label style="font-weight:700;font-size:13px">আউটপুট ফাইলের নাম</label>
+    <div style="display:flex;align-items:center;gap:6px;margin:6px 0 12px"><input id="outname" value="merged" style="flex:1"><span class="meta" style="color:var(--muted)">.pdf</span></div>
+    <button class="btn-primary" id="merge" style="width:100%;padding:14px">⊕ PDF মার্জ করুন</button>
+    <div id="status"></div>
+  </div>
+  <footer>© 2026 RJ Automation</footer>
+</div>
+<script src="lib/pdf-lib.min.js"></script>
+<script type="module" src="pdf-merge.js"></script>
+</body>
+</html>

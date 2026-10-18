@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Tool — 2x2 ছবি ও Passport PDF</title>
+<script src="lib/selfie_segmentation.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
+<style>
+  body { font: 15px/1.6 sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin: 14px 0; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .modes { display: flex; gap: 10px; }
+  .modes button { flex: 1; padding: 12px; font-size: 15px; border: 2px solid #1565c0; background: #fff; color: #1565c0; border-radius: 8px; cursor: pointer; }
+  .modes button.active { background: #1565c0; color: #fff; }
+  #file { margin: 12px 0; }
+  canvas { max-width: 100%; background: #eee; border: 1px solid #ccc; border-radius: 6px; }
+  #preview { display: block; margin: 10px auto; }
+  .sliders label { display: block; margin: 6px 0 2px; font-size: 13px; color: #555; }
+  .sliders input { width: 100%; }
+  #download { display: none; width: 100%; padding: 14px; font-size: 16px; background: #2e7d32; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+  #status { color: #1565c0; min-height: 22px; font-size: 14px; }
+  .err { color: #b71c1c !important; }
+  .hint { font-size: 13px; color: #666; }
+</style>
+</head>
+<body>
+<h1>📸 Photo Tool</h1>
+
+<div class="card">
+  <div class="modes">
+    <button id="modePhoto" class="active">🧑 ছবি — 2×2 inch JPEG (≤200KB)</button>
+    <button id="modePassport">🛂 Passport — 5×7 inch PDF (≤500KB)</button>
+  </div>
+  <input type="file" id="file" accept="image/*">
+  <div id="status">ছবি select করুন…</div>
+</div>
+
+<div class="card" id="cornerCard" style="display:none">
+  <p class="hint" style="margin-top:0">ছবির ৪টি কোণা লাল বিন্দু টেনে ঠিক করুন — বাঁকা থাকলে সোজা হয়ে যাবে।</p>
+  <canvas id="cornerCanvas" style="touch-action:none; cursor:crosshair"></canvas>
+  <div style="display:flex; gap:8px; margin-top:10px">
+    <button id="applyCrop" style="flex:2; padding:12px; background:#1565c0; color:#fff; border:none; border-radius:8px; font-size:15px; cursor:pointer">✂ সোজা করে Crop করুন</button>
+    <button id="skipCrop" style="flex:1; padding:12px; background:#fff; color:#555; border:1px solid #999; border-radius:8px; font-size:14px; cursor:pointer">পুরো ছবিই নিন</button>
+  </div>
+</div>
+
+<div class="card" id="adjustCard" style="display:none">
+  <canvas id="preview"></canvas>
+  <div class="sliders" id="photoSliders">
+    <label>Zoom (মুখ ছোট/বড়)</label>
+    <input type="range" id="zoom" min="60" max="180" value="100">
+    <label>উপর/নিচ</label>
+    <input type="range" id="shiftY" min="-40" max="40" value="0">
+    <label>ডান/বাম</label>
+    <input type="range" id="shiftX" min="-40" max="40" value="0">
+    <label>Brightness</label>
+    <input type="range" id="bright" min="80" max="130" value="105">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+      <input type="checkbox" id="magic" checked style="width:auto"> ✨ Magic retouch (auto-levels + sharp + noise কমানো)
+    </label>
+  </div>
+  <div class="sliders" id="colourSliders">
+    <label>🎨 রঙের ঘনত্ব (Colour / saturation)</label>
+    <input type="range" id="sat" min="70" max="150" value="112">
+    <label>🌡️ উষ্ণতা (Warm ⇄ Cool)</label>
+    <input type="range" id="warmth" min="-30" max="30" value="4">
+  </div>
+  <button id="download"></button>
+  <p class="hint" id="sizeHint"></p>
+</div>
+
+<p class="hint">সবকিছু আপনার browser-এর ভেতরেই হয় — ছবি কোথাও upload হয় না।
+প্রথমবার AI model load হতে কয়েক সেকেন্ড লাগতে পারে (internet লাগবে)।</p>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const status = (t, err) => { $("status").textContent = t; $("status").className = err ? "err" : ""; };
+
+let mode = "photo";           // "photo" | "passport"
+let srcImg = null;            // loaded HTMLImageElement
+let personCanvas = null;      // photo mode: subject on white bg (full res)
+let crop = null;              // {cx, cy, side} auto-detected crop square
+let outBlob = null;
+
+$("modePhoto").onclick = () => setMode("photo");
+$("modePassport").onclick = () => setMode("passport");
+function setMode(m) {
+  mode = m;
+  $("modePhoto").classList.toggle("active", m === "photo");
+  $("modePassport").classList.toggle("active", m === "passport");
+  $("photoSliders").style.display = m === "photo" ? "" : "none";
+  if (srcImg) process();
+}
+
+$("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  status("ছবি load হচ্ছে…");
+  srcImg = await loadImage(f);
+  openCornerStage();
+};
+
+// ---------------- corner stage (mark, straighten, crop) ----------------
+
+let workingImg = null; // canvas actually fed to the pipelines
+let corners = null;    // [{x,y}x4] TL,TR,BR,BL in source coords
+let dragIdx = -1;
+
+function openCornerStage() {
+  $("adjustCard").style.display = "none";
+  corners = autoDetectCorners(srcImg);
+  drawCornerUI();
+  $("cornerCard").style.display = "";
+  status("কোণাগুলো ঠিক করে '✂ সোজা করে Crop করুন' চাপুন");
+}
+
+function cornerScale() {
+  const c = $("cornerCanvas");
+  return c.getBoundingClientRect().width / srcImg.width;
+}
+
+function drawCornerUI() {
+  const c = $("cornerCanvas");
+  c.width = srcImg.width; c.height = srcImg.height;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(srcImg, 0, 0);
+  const r = Math.max(10, srcImg.width * 0.015);
+  ctx.strokeStyle = "#e53935"; ctx.lineWidth = Math.max(2, r / 4);
+  ctx.beginPath();
+  corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle = "#e53935";
+  corners.forEach((p) => { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill(); });
+}
+
+function evtPos(ev) {
+  const rect = $("cornerCanvas").getBoundingClientRect();
+  const s = srcImg.width / rect.width;
+  return { x: (ev.clientX - rect.left) * s, y: (ev.clientY - rect.top) * s };
+}
+
+$("cornerCanvas").addEventListener("pointerdown", (ev) => {
+  const p = evtPos(ev);
+  let best = -1, bestD = Infinity;
+  corners.forEach((q, i) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  // tap anywhere: the nearest dot jumps there, then follows the drag —
+  // four taps mark the four corners even when auto-detect fails
+  dragIdx = best;
+  corners[best] = {
+    x: Math.max(0, Math.min(srcImg.width, p.x)),
+    y: Math.max(0, Math.min(srcImg.height, p.y)),
+  };
+  drawCornerUI();
+  ev.target.setPointerCapture(ev.pointerId);
+});
+$("cornerCanvas").addEventListener("pointermove", (ev) => {
+  if (dragIdx < 0) return;
+  const p = evtPos(ev);
+  corners[dragIdx] = {
+    x: Math.max(0, Math.min(srcImg.width, p.x)),
+    y: Math.max(0, Math.min(srcImg.height, p.y)),
+  };
+  drawCornerUI();
+});
+$("cornerCanvas").addEventListener("pointerup", () => (dragIdx = -1));
+
+$("applyCrop").onclick = () => {
+  workingImg = perspectiveWarp(srcImg, corners);
+  $("cornerCard").style.display = "none";
+  process();
+};
+$("skipCrop").onclick = () => {
+  workingImg = mkCanvas(srcImg.width, srcImg.height);
+  workingImg.getContext("2d").drawImage(srcImg, 0, 0);
+  $("cornerCard").style.display = "none";
+  process();
+};
+
+// Auto-guess the photo/document corners. Tries several binarizations
+// (relative and absolute "white paper" rules), erodes each to break thin
+// bridges to bright bedsheet stripes, and keeps the most rectangular
+// component. Falls back to the full frame.
+function autoDetectCorners(img) {
+  const S = 800;
+  const sc = Math.min(1, S / Math.max(img.width, img.height));
+  const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
+  const c = mkCanvas(w, h);
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h), sat = new Float32Array(w * h);
+  let mean = 0;
+  for (let i = 0; i < w * h; i++) {
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+    lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+    sat[i] = Math.max(r, g, b) - Math.min(r, g, b);
+    mean += lum[i] - 0.8 * sat[i];
+  }
+  mean /= w * h;
+  let sd = 0;
+  for (let i = 0; i < w * h; i++) sd += (lum[i] - 0.8 * sat[i] - mean) ** 2;
+  sd = Math.sqrt(sd / (w * h));
+
+  const rules = [
+    (i) => lum[i] - 0.8 * sat[i] > mean + 0.5 * sd,
+    (i) => lum[i] - 0.8 * sat[i] > mean + 0.9 * sd,
+    (i) => lum[i] > 165 && sat[i] < 55,   // white paper, absolute
+    (i) => lum[i] > 200 && sat[i] < 85,   // very bright paper
+  ];
+
+  let best = null, bestScore = 0;
+  for (const rule of rules) {
+    let bin = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) bin[i] = rule(i) ? 1 : 0;
+    bin = erode(bin, w, h);
+    for (const comp of rectComponents(bin, w, h)) {
+      if (comp.score > bestScore) { bestScore = comp.score; best = comp; }
+    }
+  }
+  if (!best) {
+    // nothing passed the strict rectangle tests: still land the dots on
+    // the biggest bright object so they start near the photo instead of
+    // at the frame corners (easier to fine-tune by tapping/dragging)
+    let bin = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) bin[i] = rules[0](i) ? 1 : 0;
+    bin = erode(bin, w, h);
+    const blob = largestComponent(bin, w, h);
+    if (blob) {
+      let tl = null, tr = null, br = null, bl = null;
+      let vTL = Infinity, vTR = -Infinity, vBR = -Infinity, vBL = Infinity;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!blob[y * w + x]) continue;
+          const s1 = x + y, s2 = x - y;
+          if (s1 < vTL) { vTL = s1; tl = { x, y }; }
+          if (s1 > vBR) { vBR = s1; br = { x, y }; }
+          if (s2 > vTR) { vTR = s2; tr = { x, y }; }
+          if (s2 < vBL) { vBL = s2; bl = { x, y }; }
+        }
+      }
+      if (tl) best = { tl, tr, br, bl };
+    }
+  }
+  if (!best) {
+    return [
+      { x: 0, y: 0 }, { x: img.width, y: 0 },
+      { x: img.width, y: img.height }, { x: 0, y: img.height },
+    ];
+  }
+  return [best.tl, best.tr, best.br, best.bl].map((p) => ({ x: p.x / sc, y: p.y / sc }));
+}
+
+// one-pass 4-neighbour erosion: breaks thin bridges between regions
+function erode(bin, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      out[p] = bin[p] & bin[p - 1] & bin[p + 1] & bin[p - w] & bin[p + w];
+    }
+  }
+  return out;
+}
+
+// Label components of bin and return the rectangular-looking ones with
+// their corner quads and a quality score.
+function rectComponents(bin, w, h) {
+  const labels = new Int32Array(w * h);
+  const stack = new Int32Array(w * h);
+  let nextLabel = 1;
+  const out = [];
+  const quadArea = (q) => {
+    const pts = [q.tl, q.tr, q.br, q.bl];
+    let a = 0;
+    for (let i = 0; i < 4; i++) {
+      const p1 = pts[i], p2 = pts[(i + 1) % 4];
+      a += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(a) / 2;
+  };
+  for (let start = 0; start < w * h; start++) {
+    if (!bin[start] || labels[start]) continue;
+    let sp = 0, size = 0;
+    let tl = null, tr = null, br = null, bl = null;
+    let vTL = Infinity, vTR = -Infinity, vBR = -Infinity, vBL = Infinity;
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    stack[sp++] = start;
+    labels[start] = nextLabel;
+    while (sp) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      const s1 = x + y, s2 = x - y;
+      if (s1 < vTL) { vTL = s1; tl = { x, y }; }
+      if (s1 > vBR) { vBR = s1; br = { x, y }; }
+      if (s2 > vTR) { vTR = s2; tr = { x, y }; }
+      if (s2 < vBL) { vBL = s2; bl = { x, y }; }
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (x > 0 && bin[p - 1] && !labels[p - 1]) { labels[p - 1] = nextLabel; stack[sp++] = p - 1; }
+      if (x < w - 1 && bin[p + 1] && !labels[p + 1]) { labels[p + 1] = nextLabel; stack[sp++] = p + 1; }
+      if (y > 0 && bin[p - w] && !labels[p - w]) { labels[p - w] = nextLabel; stack[sp++] = p - w; }
+      if (y < h - 1 && bin[p + w] && !labels[p + w]) { labels[p + w] = nextLabel; stack[sp++] = p + w; }
+    }
+    const lbl = nextLabel;
+    nextLabel++;
+    if (size < w * h * 0.015) continue;
+    // clutter (papers, boxes) usually touches the frame border; the
+    // printed photo lies fully inside the shot
+    const m2 = Math.max(3, Math.round(Math.min(w, h) * 0.015));
+    if (minX <= m2 || minY <= m2 || maxX >= w - 1 - m2 || maxY >= h - 1 - m2) continue;
+    const qa = quadArea({ tl, tr, br, bl });
+    if (qa < 1) continue;
+    // component mask over its bbox
+    const m = new Uint8Array(w * h);
+    const x0 = Math.max(0, minX - 2), x1 = Math.min(w - 1, maxX + 2);
+    const y0 = Math.max(0, minY - 2), y1 = Math.min(h - 1, maxY + 2);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++)
+        if (labels[y * w + x] === lbl) m[y * w + x] = 1;
+    // point-in-quad via cross products (corners are in clockwise order)
+    const pts = [tl, tr, br, bl];
+    const inQuad = (x, y) => {
+      for (let i = 0; i < 4; i++) {
+        const a = pts[i], b2 = pts[(i + 1) % 4];
+        if ((b2.x - a.x) * (y - a.y) - (b2.y - a.y) * (x - a.x) < 0) return false;
+      }
+      return true;
+    };
+    let quadCnt = 0, maskIn = 0;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!inQuad(x, y)) continue;
+        quadCnt++;
+        maskIn += m[y * w + x];
+      }
+    }
+    if (!quadCnt) continue;
+    // round shapes bulge outside their extreme-corner quad; rectangles don't
+    const outFrac = (size - maskIn) / size;
+    if (outFrac > 0.12) continue;
+    // inside the quad: bright sheet + the printed subject (dark)
+    const cover = maskIn / quadCnt;
+    if (cover < 0.35) continue;
+    // edge continuity: sample just inside each edge; allow ONE broken edge
+    // (the subject often touches the print's bottom border)
+    const cx = (tl.x + tr.x + br.x + bl.x) / 4, cy = (tl.y + tr.y + br.y + bl.y) / 4;
+    const edgeCov = [[tl, tr], [tr, br], [br, bl], [bl, tl]].map(([a, b2]) => {
+      let hit = 0, tot = 0;
+      for (let t = 0.06; t <= 0.94; t += 0.04) {
+        let px = a.x + (b2.x - a.x) * t, py = a.y + (b2.y - a.y) * t;
+        px += (cx - px) * 0.05; py += (cy - py) * 0.05;
+        tot++;
+        if (m[Math.round(py) * w + Math.round(px)]) hit++;
+      }
+      return hit / tot;
+    }).sort((a, b2) => b2 - a);
+    if (edgeCov[2] < 0.75 || edgeCov[3] < 0.08) continue;
+    // subject-sized dark region inside the quad is strong evidence of a
+    // printed photo — prefer those candidates
+    const darkFrac = 1 - cover;
+    const subjectBoost = darkFrac > 0.08 && darkFrac < 0.55 ? 2.5 : 1;
+    out.push({ tl, tr, br, bl, score: Math.sqrt(size) * cover * subjectBoost });
+  }
+  return out;
+}
+
+
+// 4-point perspective transform: maps the marked quad to a straight
+// rectangle (bilinear-sampled), like a scanner app.
+function perspectiveWarp(img, quad) {
+  const [tl, tr, br, bl] = quad;
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let outW = Math.round(Math.max(dist(tl, tr), dist(bl, br)));
+  let outH = Math.round(Math.max(dist(tl, bl), dist(tr, br)));
+  const cap = 2400 / Math.max(outW, outH);
+  if (cap < 1) { outW = Math.round(outW * cap); outH = Math.round(outH * cap); }
+
+  // homography H: (u,v) in output rect -> (x,y) in source
+  const H = homography(
+    [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }],
+    quad
+  );
+
+  const sc = mkCanvas(img.width, img.height);
+  sc.getContext("2d").drawImage(img, 0, 0);
+  const srcD = sc.getContext("2d").getImageData(0, 0, img.width, img.height).data;
+  const out = mkCanvas(outW, outH);
+  const octx = out.getContext("2d");
+  const outImg = octx.createImageData(outW, outH);
+  const od = outImg.data;
+  const sw = img.width, sh = img.height;
+  for (let v = 0; v < outH; v++) {
+    for (let u = 0; u < outW; u++) {
+      const den = H[6] * u + H[7] * v + 1;
+      const x = (H[0] * u + H[1] * v + H[2]) / den;
+      const y = (H[3] * u + H[4] * v + H[5]) / den;
+      const o = (v * outW + u) * 4;
+      if (x < 0 || y < 0 || x >= sw - 1 || y >= sh - 1) {
+        od[o] = od[o + 1] = od[o + 2] = 255; od[o + 3] = 255;
+        continue;
+      }
+      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
+      for (let ch = 0; ch < 3; ch++) {
+        const p00 = srcD[(y0 * sw + x0) * 4 + ch], p10 = srcD[(y0 * sw + x0 + 1) * 4 + ch];
+        const p01 = srcD[((y0 + 1) * sw + x0) * 4 + ch], p11 = srcD[((y0 + 1) * sw + x0 + 1) * 4 + ch];
+        od[o + ch] = p00 * (1 - fx) * (1 - fy) + p10 * fx * (1 - fy) + p01 * (1 - fx) * fy + p11 * fx * fy;
+      }
+      od[o + 3] = 255;
+    }
+  }
+  octx.putImageData(outImg, 0, 0);
+  return out;
+}
+
+// homography mapping 4 src points -> 4 dst points; returns [h0..h7], h8=1
+function homography(src, dst) {
+  // build 8x9 system A·h = b
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x: u, y: v } = src[i];
+    const { x, y } = dst[i];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
+  }
+  // gaussian elimination
+  for (let col = 0; col < 8; col++) {
+    let piv = col;
+    for (let r = col + 1; r < 8; r++) if (Math.abs(A[r][col]) > Math.abs(A[piv][col])) piv = r;
+    [A[col], A[piv]] = [A[piv], A[col]]; [b[col], b[piv]] = [b[piv], b[col]];
+    for (let r = 0; r < 8; r++) {
+      if (r === col || A[r][col] === 0) continue;
+      const f = A[r][col] / A[col][col];
+      for (let k = col; k < 8; k++) A[r][k] -= f * A[col][k];
+      b[r] -= f * b[col];
+    }
+  }
+  return A.map((row, i) => b[i] / row[i]);
+}
+
+let reRenderTimer = null;
+["zoom", "shiftY", "shiftX", "bright", "magic", "sat", "warmth"].forEach((id) => {
+  $(id).oninput = () => {
+    if (mode === "photo") { if (personCanvas) renderPhoto(); return; }
+    // passport: debounce, re-run the (heavier) PDF build
+    clearTimeout(reRenderTimer);
+    if (workingImg || srcImg) reRenderTimer = setTimeout(processPassport, 250);
+  };
+});
+
+// Manual colour grade applied last so the user's tweak is always what
+// ends up in the file (temperature + saturation around luma).
+function applyColour(c) {
+  const warmth = +$("warmth").value;      // -30 (cool) .. +30 (warm)
+  const sat = +$("sat").value / 100;      // 0.70 .. 1.50
+  if (warmth === 0 && Math.abs(sat - 1) < 0.001) return;
+  const ctx = c.getContext("2d");
+  const im = ctx.getImageData(0, 0, c.width, c.height);
+  const d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i] + warmth, g = d[i + 1], b = d[i + 2] - warmth;
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;
+    d[i] = r < 0 ? 0 : r > 255 ? 255 : r;
+    d[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+    d[i + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
+  }
+  ctx.putImageData(im, 0, 0);
+}
+
+function loadImage(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function process() {
+  $("adjustCard").style.display = "none";
+  outBlob = null;
+  try {
+    if (mode === "photo") await processPhoto();
+    else await processPassport();
+  } catch (err) {
+    status("সমস্যা হয়েছে: " + err.message, true);
+  }
+}
+
+// ---------------- photo mode (2x2 in, white bg, <=200KB JPEG) ----------------
+
+let segmenter = null;
+function getSegmenter() {
+  if (segmenter) return segmenter;
+  segmenter = new SelfieSegmentation({
+    locateFile: (f) => "lib/" + f,
+  });
+  segmenter.setOptions({ modelSelection: 0 });
+  return segmenter;
+}
+
+function segment(img) {
+  return new Promise((resolve, reject) => {
+    const seg = getSegmenter();
+    seg.onResults((r) => resolve(r.segmentationMask));
+    seg.send({ image: img }).catch(reject);
+  });
+}
+
+async function processPhoto() {
+  const inputImg = workingImg || srcImg;
+  status("AI background remove করছে…");
+  // work at a manageable resolution
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(inputImg.width, inputImg.height));
+  const w = Math.round(inputImg.width * scale), h = Math.round(inputImg.height * scale);
+  const work = mkCanvas(w, h);
+  work.getContext("2d").drawImage(inputImg, 0, 0, w, h);
+
+  const mask = await segment(work);
+
+  // Clean the raw AI mask into a crisp Photoshop-style cutout:
+  // hard threshold -> keep only the largest blob -> fill holes -> feather.
+  const rawC = mkCanvas(w, h);
+  const rctx = rawC.getContext("2d");
+  rctx.drawImage(mask, 0, 0, w, h);
+  const raw = rctx.getImageData(0, 0, w, h).data;
+
+  const bin = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) bin[i] = raw[i * 4] > 140 ? 1 : 0;
+
+  const clean = largestComponent(bin, w, h);
+  if (!clean) throw new Error("ছবিতে মানুষ খুঁজে পাওয়া যায়নি");
+  fillHoles(clean, w, h);
+
+  // rebuild mask canvas from the cleaned bitmap, lightly feathered
+  const cleanImg = rctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const v = clean[i] ? 255 : 0;
+    cleanImg.data[i * 4] = v;
+    cleanImg.data[i * 4 + 1] = v;
+    cleanImg.data[i * 4 + 2] = v;
+    cleanImg.data[i * 4 + 3] = v;
+  }
+  rctx.putImageData(cleanImg, 0, 0);
+  const maskC = mkCanvas(w, h);
+  const mctx = maskC.getContext("2d");
+  mctx.filter = "blur(1.2px)";
+  mctx.drawImage(rawC, 0, 0);
+
+  personCanvas = mkCanvas(w, h);
+  const pctx = personCanvas.getContext("2d");
+  pctx.drawImage(work, 0, 0);
+  pctx.globalCompositeOperation = "destination-in";
+  pctx.drawImage(maskC, 0, 0);
+  pctx.globalCompositeOperation = "destination-over";
+  pctx.fillStyle = "#fff";
+  pctx.fillRect(0, 0, w, h);
+
+  // auto-crop from the cleaned mask bounds (head-and-shoulders framing)
+  let top = h, left = w, right = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (clean[y * w + x]) {
+        if (y < top) top = y;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+  }
+  if (right <= left) throw new Error("ছবিতে মানুষ খুঁজে পাওয়া যায়নি");
+  const cx = (left + right) / 2;
+  const personW = right - left;
+  // passport-style: head + shoulders; side ≈ 1.35 × person width,
+  // top of head sits ~12% below the frame top
+  let side = Math.min(personW * 1.35, w, h);
+  let cy = top - 0.12 * side + side / 2;
+  crop = { cx, cy, side };
+
+  status("হয়ে গেছে — প্রয়োজনে slider দিয়ে ঠিক করুন, তারপর Download চাপুন");
+  $("adjustCard").style.display = "";
+  renderPhoto();
+}
+
+async function renderPhoto() {
+  const OUT = 1200; // 2in × 600dpi base; size targeting may scale further
+  const zoom = $("zoom").value / 100;
+  const sx = $("shiftX").value / 100, sy = $("shiftY").value / 100;
+  const side = crop.side / zoom;
+  const x = crop.cx - side / 2 + sx * side;
+  const y = crop.cy - side / 2 + sy * side;
+
+  const out = mkCanvas(OUT, OUT);
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, OUT, OUT);
+  ctx.filter = `brightness(${$("bright").value}%) contrast(104%) saturate(105%)`;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(personCanvas, x, y, side, side, 0, 0, OUT, OUT);
+
+  if ($("magic").checked) magicRetouch(out);
+  applyColour(out);
+
+  showPreview(out, 300);
+  // visa portals reject tiny files: keep the JPEG between 150KB and 200KB
+  const r = await jpegInRange(out, 150 * 1024, 200 * 1024);
+  outBlob = r.blob;
+  $("download").style.display = "block";
+  $("download").textContent = "⬇ Download JPEG (2×2 inch)";
+  $("sizeHint").textContent = `${r.px}×${r.px}px (2×2 inch) — size: ${(outBlob.size / 1024).toFixed(0)} KB`;
+  $("download").onclick = () => saveBlob(outBlob, "photo-2x2.jpg");
+}
+
+// ✨ auto-levels + unsharp mask over a lightly denoised base
+function magicRetouch(c) {
+  const w = c.width, h = c.height, ctx = c.getContext("2d");
+  const blurC = mkCanvas(w, h);
+  const bctx = blurC.getContext("2d");
+  bctx.filter = "blur(2px)";
+  bctx.drawImage(c, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h), bl = bctx.getImageData(0, 0, w, h);
+  const d = img.data, b = bl.data;
+
+  // auto-levels from the luma histogram (clip 0.4% each side)
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < w * h; i++) {
+    hist[(d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8]++;
+  }
+  const clip = w * h * 0.004;
+  let lo = 0, hi = 255, acc = 0;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
+  if (hi - lo < 60) { lo = 0; hi = 255; } // low-contrast guard
+  const scale = 255 / (hi - lo);
+
+  for (let i = 0; i < w * h * 4; i += 4) {
+    for (let ch = 0; ch < 3; ch++) {
+      // unsharp mask on the denoised base, then stretch levels
+      let v = d[i + ch] + 0.6 * (d[i + ch] - b[i + ch]);
+      v = (v - lo) * scale;
+      d[i + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// Encode targeting [minB, maxB]: search quality; if even top quality is
+// too small (flat white background compresses hard), upscale and retry.
+async function jpegInRange(canvas, minB, maxB) {
+  let px = canvas.width, cur = canvas;
+  for (;;) {
+    const top = await canvasBlob(cur, 0.97);
+    if (top.size >= minB || px >= 1800) {
+      if (top.size <= maxB) return { blob: top, px };
+      let lo = 0.4, hi = 0.97, best = top;
+      for (let i = 0; i < 8; i++) {
+        const mid = (lo + hi) / 2;
+        const b = await canvasBlob(cur, mid);
+        if (b.size > maxB) hi = mid;
+        else { best = b; lo = mid; if (b.size >= minB) break; }
+      }
+      return { blob: best, px };
+    }
+    px = Math.min(1800, Math.round(px * 1.5));
+    const c2 = mkCanvas(px, px);
+    const cctx = c2.getContext("2d");
+    cctx.imageSmoothingQuality = "high";
+    cctx.drawImage(canvas, 0, 0, px, px);
+    cur = c2;
+  }
+}
+
+// ------------- passport mode (5x7 in page, <=500KB PDF) -------------
+
+async function processPassport() {
+  const inputImg = workingImg || srcImg;
+  status("Passport page তৈরি হচ্ছে…");
+  const W = 1800, H = 2520; // 5×7 in @360dpi
+  const page = mkCanvas(W, H);
+  const ctx = page.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, H);
+
+  // rotate landscape scans to fit the portrait page better
+  let img = inputImg;
+  if (inputImg.width > inputImg.height) {
+    const r = mkCanvas(inputImg.height, inputImg.width);
+    const rc = r.getContext("2d");
+    rc.translate(r.width / 2, r.height / 2);
+    rc.rotate(Math.PI / 2);
+    rc.drawImage(inputImg, -inputImg.width / 2, -inputImg.height / 2);
+    img = r;
+  }
+
+  const margin = 60;
+  const s = Math.min((W - 2 * margin) / img.width, (H - 2 * margin) / img.height);
+  const dw = img.width * s, dh = img.height * s;
+  ctx.filter = "brightness(104%) contrast(106%)";
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  applyColour(page);
+
+  showPreview(page, 380);
+  // leave ~15KB headroom for PDF structure
+  const jpeg = await jpegUnder(page, 485 * 1024);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ unit: "in", format: [5, 7] });
+  pdf.addImage(await blobToDataURL(jpeg), "JPEG", 0, 0, 5, 7);
+  outBlob = pdf.output("blob");
+
+  status("হয়ে গেছে — Download চাপুন");
+  $("adjustCard").style.display = "";
+  $("download").style.display = "block";
+  $("download").textContent = "⬇ Download PDF (5×7 inch)";
+  $("sizeHint").textContent = `5×7 inch — PDF size: ${(outBlob.size / 1024).toFixed(0)} KB`;
+  $("download").onclick = () => saveBlob(outBlob, "passport-5x7.pdf");
+}
+
+// ---------------- mask cleanup ----------------
+
+// Keep only the largest 4-connected blob of the binary mask; discards
+// stray background smudges the segmenter wrongly marked as person.
+function largestComponent(bin, w, h) {
+  const labels = new Int32Array(w * h); // 0 = unvisited
+  const stack = new Int32Array(w * h);
+  let bestLabel = 0, bestSize = 0, nextLabel = 1;
+  for (let start = 0; start < w * h; start++) {
+    if (!bin[start] || labels[start]) continue;
+    let sp = 0, size = 0;
+    stack[sp++] = start;
+    labels[start] = nextLabel;
+    while (sp) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      if (x > 0 && bin[p - 1] && !labels[p - 1]) { labels[p - 1] = nextLabel; stack[sp++] = p - 1; }
+      if (x < w - 1 && bin[p + 1] && !labels[p + 1]) { labels[p + 1] = nextLabel; stack[sp++] = p + 1; }
+      if (y > 0 && bin[p - w] && !labels[p - w]) { labels[p - w] = nextLabel; stack[sp++] = p - w; }
+      if (y < h - 1 && bin[p + w] && !labels[p + w]) { labels[p + w] = nextLabel; stack[sp++] = p + w; }
+    }
+    if (size > bestSize) { bestSize = size; bestLabel = nextLabel; }
+    nextLabel++;
+  }
+  if (!bestLabel || bestSize < (w * h) * 0.02) return null; // person too small/absent
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) out[i] = labels[i] === bestLabel ? 1 : 0;
+  return out;
+}
+
+// Fill enclosed holes: flood the background from the borders; anything
+// not reached and not person is a hole -> make it person.
+function fillHoles(mask, w, h) {
+  const outside = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  let sp = 0;
+  const push = (p) => { if (!mask[p] && !outside[p]) { outside[p] = 1; stack[sp++] = p; } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+  while (sp) {
+    const p = stack[--sp];
+    const x = p % w, y = (p / w) | 0;
+    if (x > 0) push(p - 1);
+    if (x < w - 1) push(p + 1);
+    if (y > 0) push(p - w);
+    if (y < h - 1) push(p + w);
+  }
+  for (let i = 0; i < w * h; i++) if (!mask[i] && !outside[i]) mask[i] = 1;
+}
+
+// ---------------- utils ----------------
+
+function mkCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  return c;
+}
+
+function showPreview(canvas, displayW) {
+  const p = $("preview");
+  p.width = canvas.width; p.height = canvas.height;
+  p.style.width = displayW + "px";
+  p.getContext("2d").drawImage(canvas, 0, 0);
+}
+
+function canvasBlob(canvas, q) {
+  return new Promise((res) => canvas.toBlob(res, "image/jpeg", q));
+}
+
+// highest JPEG quality that stays under maxBytes
+async function jpegUnder(canvas, maxBytes) {
+  let lo = 0.3, hi = 0.95, best = await canvasBlob(canvas, lo);
+  if (best.size > maxBytes) return best; // even lowest quality is over; return it
+  for (let i = 0; i < 7; i++) {
+    const mid = (lo + hi) / 2;
+    const b = await canvasBlob(canvas, mid);
+    if (b.size <= maxBytes) { best = b; lo = mid; } else hi = mid;
+  }
+  return best;
+}
+
+function blobToDataURL(blob) {
+  return new Promise((res) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.readAsDataURL(blob);
+  });
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+</script>
+</body>
+</html>

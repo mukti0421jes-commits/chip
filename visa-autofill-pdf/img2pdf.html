@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ PDF — Image to PDF</title>
+<link rel="stylesheet" href="rj-theme.css">
+<style>
+  .imgs{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0}
+  .imgc{width:150px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:8px;position:relative;cursor:grab}
+  .imgc.drag{opacity:.4}
+  .imgc img{width:100%;height:110px;object-fit:contain;border-radius:8px;background:#f1f5f9}
+  .imgc .nm{font-size:11px;color:var(--muted);margin-top:4px;word-break:break-all}
+  .imgc .x{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:#dc2626;color:#fff;border:none;font-size:13px;line-height:1}
+  .imgc .no{position:absolute;top:4px;left:4px;width:22px;height:22px;border-radius:6px;background:#7c3aed;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+  .ctrls{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
+  .ctrls .f{display:flex;flex-direction:column;gap:4px}
+  .ctrls label{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ PDF Editor</b><small>Image · to · PDF</small></div></div>
+  <div style="display:flex;gap:10px;align-items:center"><span class="mode">MODE · IMAGE TO PDF</span><button class="home" id="home">← হোম</button></div>
+</header>
+
+<div class="wrap" style="max-width:820px">
+  <h1>ছবি থেকে PDF বানান</h1>
+  <p class="lead">JPG বা PNG ফাইল আপলোড করুন — একটি বা একাধিক। ক্রম টেনে সাজান, তারপর PDF ডাউনলোড করুন।</p>
+  <div class="card"><div class="drop" id="drop"><div class="ic">🖼</div><div style="font-weight:800;font-size:18px">এখানে ছবি টেনে আনুন বা ক্লিক করুন</div><div class="note" style="background:none;border:none;color:var(--muted);margin-top:4px">JPG, JPEG, PNG সাপোর্ট করে · একসাথে অনেকগুলো ছবি দেওয়া যাবে</div></div>
+  <input type="file" id="file" accept="image/*" multiple class="hidden"></div>
+  <div class="note">🔒 সম্পূর্ণ প্রসেসিং আপনার ব্রাউজারেই হয় — কোনো ছবি সার্ভারে যায় না।</div>
+
+  <div id="loaded" class="hidden">
+    <div style="display:flex;align-items:center;margin-top:14px"><span class="note" style="background:none;border:none;color:var(--brand);padding:0">• টেনে ক্রম পরিবর্তন করুন</span>
+      <div style="margin-left:auto;display:flex;gap:8px"><button class="btn-soft" id="add">＋ আরো ছবি যোগ করুন</button><button id="clear">✕ সব মুছুন</button></div>
+    </div>
+    <div class="imgs" id="imgs"></div>
+    <div class="card">
+      <div class="ctrls">
+        <div class="f"><label>পেজের সাইজ</label><select id="size"><option value="a4">A4 (210×297 mm)</option><option value="a3">A3 (297×420 mm)</option><option value="letter">Letter (8.5×11 in)</option><option value="fit">ছবি অনুযায়ী (fit)</option></select></div>
+        <div class="f"><label>ওরিয়েন্টেশন</label><select id="orient"><option value="portrait">Portrait (লম্বা)</option><option value="landscape">Landscape (আড়া)</option><option value="auto">Auto (ছবি দেখে)</option></select></div>
+        <div class="f"><label>মার্জিন</label><select id="margin"><option value="0">মার্জিন হালকা (full bleed)</option><option value="20" selected>ছোট মার্জিন (20pt)</option><option value="40">মাঝারি মার্জিন (40pt)</option></select></div>
+      </div>
+      <button class="btn-primary" id="make" style="width:100%;padding:14px;margin-top:12px">🖹 PDF বানান</button>
+      <div id="status"></div>
+    </div>
+  </div>
+  <footer>© 2026 RJ Automation</footer>
+</div>
+
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="img2pdf.js"></script>
+</body>
+</html>

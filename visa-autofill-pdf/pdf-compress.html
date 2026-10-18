@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ PDF — Reduce Size</title>
+<link rel="stylesheet" href="rj-theme.css">
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">RJ</div><div><b>RJ PDF Editor</b><small>Reduce · Size</small></div></div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span class="mode">MODE · REDUCE SIZE</span>
+    <button class="home" id="home">← হোম</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- empty state -->
+  <div id="empty">
+    <h1>PDF সাইজ ছোট করুন</h1>
+    <p class="lead">একটি বা একাধিক PDF আপলোড করুন। সবগুলো স্বয়ংক্রিয়ভাবে ছোট হবে — IVAC বা যেকোনো পোর্টালে আপলোডের উপযোগী।</p>
+    <div class="card">
+      <div class="drop" id="drop"><div class="ic">⤓</div><div style="font-weight:800;font-size:18px">এখানে ফাইল টেনে আনুন বা ক্লিক করুন</div><div class="note" style="background:none;border:none;color:var(--muted);margin-top:4px">একসাথে একাধিক .pdf দেওয়া যাবে · স্ক্যান ও ছবিযুক্ত ফাইলে সবচেয়ে ভালো ফল</div></div>
+      <input type="file" id="file" accept="application/pdf" multiple class="hidden">
+    </div>
+    <div class="note">🔒 সম্পূর্ণ প্রসেসিং আপনার ব্রাউজারেই হয় — কোনো ফাইল সার্ভারে যায় না।</div>
+  </div>
+
+  <!-- loaded state -->
+  <div id="loaded" class="hidden">
+    <div class="card">
+      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
+        <div>
+          <label style="font-weight:700;font-size:13px">লক্ষ্য সাইজ (প্রতিটি)</label><br>
+          <select id="target">
+            <option value="300">300 KB</option>
+            <option value="480" selected>480 KB (ডিফল্ট)</option>
+            <option value="700">700 KB</option>
+            <option value="1000">1000 KB</option>
+            <option value="1500">1500 KB</option>
+          </select>
+          <div class="meta" style="margin-top:6px;color:var(--muted);font-size:13px">ফাইল: <b id="stFiles">0</b> &nbsp; মোট সাইজ: <b id="stSize" style="color:var(--brand)">0 KB</b> &nbsp; সম্পন্ন: <b id="stDone">0</b></div>
+        </div>
+        <div style="margin-left:auto;display:flex;flex-direction:column;gap:8px;min-width:200px">
+          <button class="btn-primary" id="run">⤓ সব ছোট করুন</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn-soft" id="add" style="flex:1">＋ যোগ করুন</button>
+            <button id="clear" style="flex:1">✕ সব মুছুন</button>
+          </div>
+        </div>
+      </div>
+      <div id="status"></div>
+    </div>
+    <div id="list"></div>
+  </div>
+
+  <footer>© 2026 RJ Automation</footer>
+</div>
+
+<script src="lib/jspdf.umd.min.js"></script>
+<script type="module" src="pdf-compress.js"></script>
+</body>
+</html>
