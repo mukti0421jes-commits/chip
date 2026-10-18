@@ -108,6 +108,17 @@ async function toJpegUnder1MB(imageLike) {
   return await new Promise((r) => src.toBlob(r, 'image/jpeg', 0.4));
 }
 
+// ছবি/ফাইল → JPEG data URL (1MB-এর নিচে) — সার্ভার OCR প্রক্সিতে পাঠানোর জন্য
+export async function toJpegDataUrl(imageLike) {
+  const blob = await toJpegUnder1MB(imageLike);
+  return await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('ছবি পড়া যায়নি'));
+    fr.readAsDataURL(blob);
+  });
+}
+
 // ---------- OCR.space (ফ্রি ক্লাউড OCR — অনেক নির্ভুল) ----------
 export async function ocrSpace(imageLike, key, onProgress) {
   if (!key) throw new Error('OCR.space key নেই');
