@@ -121,14 +121,26 @@ async function api(req, res, url) {
   }
 
   // --- charge (per webfile/action) ---
+  // webfileId দিলে idempotent: একই webfile দ্বিতীয়বার চার্জ হবে না (server-authoritative unlock)
   if (route === '/api/charge' && req.method === 'POST') {
     const u = authUser(req); if (!u) return send(res, 401, { error: 'login লাগবে' });
+    const wid = String(body.webfileId || '').trim();
+    if (!u.paid) u.paid = {};
+    if (wid && u.paid[wid]) return send(res, 200, { ok: true, already: true, balance: u.balance });
     const price = CFG.pricePerUse;
     if (u.balance < price) return send(res, 402, { error: 'ব্যালেন্স কম — রিচার্জ করুন', balance: u.balance, need: price });
     u.balance -= price;
+    if (wid) u.paid[wid] = now();
     DB.txns.push({ id: newId('t_'), uid: u.id, type: 'charge', amount: -price, note: String(body.note || 'webfile'), at: now() });
     saveDb();
     return send(res, 200, { ok: true, balance: u.balance });
+  }
+
+  // --- is this webfile already paid? (server-authoritative; HTML এডিট করে ফাঁকি দেওয়া যায় না) ---
+  if (route === '/api/ispaid' && req.method === 'GET') {
+    const u = authUser(req); if (!u) return send(res, 401, { error: 'login লাগবে' });
+    const wid = String(url.searchParams.get('id') || '').trim();
+    return send(res, 200, { paid: !!(u.paid && u.paid[wid]) });
   }
 
   // --- recharge request (manual bKash/Nagad) ---

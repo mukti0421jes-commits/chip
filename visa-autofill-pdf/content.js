@@ -104,6 +104,52 @@
     b.textContent = text;
   }
 
+  // ---------- ধাপে ধাপে গাইড প্যানেল (paid ইউজার আটকে গেলে পথ দেখায়) ----------
+  const GUIDE_STEPS = [
+    { key: 'reg',  label: '১. রেজিস্ট্রেশন — তথ্য বসবে, CAPTCHA লিখে Continue' },
+    { key: 'form', label: '২. আবেদন ফর্ম — সব ট্যাব অটো-ভরবে, যাচাই করে Continue' },
+    { key: 'addq', label: '৩. অতিরিক্ত প্রশ্ন — সব "No" + declaration টিক, Continue' },
+    { key: 'photo',label: '৪. ছবি আপলোড — ছবি বসবে, নিজে আপলোড/Confirm করুন' },
+    { key: 'docs', label: '৫. ডকুমেন্ট আপলোড — প্রতিটি সারিতে ফাইল বেছে আপলোড' },
+    { key: 'conf', label: '৬. চূড়ান্ত যাচাই — সব দেখে Confirm করুন' },
+  ];
+  function stepFromPath(path) {
+    if (/Registration/i.test(path)) return 'reg';
+    if (/AdditionalQuestion/i.test(path)) return 'addq';
+    if (/PhotoUpload/i.test(path)) return 'photo';
+    if (/DocumentUpload/i.test(path)) return 'docs';
+    if (/Confirm/i.test(path)) return 'conf';
+    return 'form';
+  }
+  function showGuide(curKey, note) {
+    let g = document.getElementById('rj-guide');
+    if (g && g.dataset.closed === '1') return; // ইউজার বন্ধ করলে আর দেখাব না
+    if (!g) {
+      g = document.createElement('div');
+      g.id = 'rj-guide';
+      g.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:2147483646;width:300px;max-width:86vw;' +
+        'background:#fff;color:#0b1220;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.28);' +
+        'font:13px "Noto Sans Bengali",Arial,sans-serif;overflow:hidden;border:1px solid #d7dee7';
+      document.body.appendChild(g);
+    }
+    const curIdx = GUIDE_STEPS.findIndex((s) => s.key === curKey);
+    const rows = GUIDE_STEPS.map((s, i) => {
+      const done = i < curIdx, cur = i === curIdx;
+      const ic = done ? '✓' : cur ? '▶' : '○';
+      const col = done ? '#0b6b4e' : cur ? '#0b6b4e' : '#9aa7ba';
+      const bg = cur ? 'background:#ecfdf5;' : '';
+      const wt = cur ? 'font-weight:800;' : done ? 'color:#41506a;' : 'color:#7a8aa0;';
+      return `<div style="display:flex;gap:7px;padding:5px 10px;${bg}"><span style="color:${col}">${ic}</span><span style="${wt}line-height:1.35">${s.label}</span></div>`;
+    }).join('');
+    g.innerHTML =
+      '<div style="background:linear-gradient(135deg,#0b6b4e,#12b886);color:#fff;padding:9px 12px;font-weight:800;display:flex;justify-content:space-between;align-items:center">' +
+        '<span>📋 RJ গাইড — কী করবেন</span><span id="rj-gx" style="cursor:pointer;font-size:16px;line-height:1">✕</span></div>' +
+      '<div style="padding:6px 0">' + rows + '</div>' +
+      (note ? '<div style="padding:8px 12px;background:#f0fdf4;color:#065f46;font-weight:700;border-top:1px solid #d7dee7">' + note + '</div>' : '') +
+      '<div style="padding:7px 12px;font-size:11px;color:#41506a;border-top:1px solid #eef2f7">✓ এই webfile paid — ভুল হলে আবার extension-এ "Fill Now" চাপুন, নতুন টাকা কাটবে না।</div>';
+    g.querySelector('#rj-gx').onclick = () => { g.dataset.closed = '1'; g.remove(); };
+  }
+
   // select-এ value মিললে value দিয়ে, নাহলে দৃশ্যমান লেখা (option text) দিয়ে মেলায়।
   // ফলে "BANGLADESH" বা "BGD" — দুটোর যেকোনোটাই কাজ করে।
   function setValueSmart(el, raw) {
@@ -344,15 +390,18 @@
         return;
       }
       const path = window.location.pathname;
+      const curStep = stepFromPath(path);
+      showGuide(curStep);
 
       // Photo/Document পেজে popup-এ রাখা ফাইল অটো-বসাই (আপলোড/সাবমিট নিজেই করতে হবে)
-      if (/PhotoUpload/i.test(path)) { handlePhotoUpload(); return; }
-      if (/DocumentUpload/i.test(path)) { handleDocumentUpload(); return; }
-      if (/Confirm/i.test(path)) { showBadge('👀 সব যাচাই করে তারপর Confirm করুন', '#e67e22'); return; }
+      if (/PhotoUpload/i.test(path)) { handlePhotoUpload(); showGuide('photo', 'ছবি বসানো হয়েছে — এখন পেজের Upload/Submit বোতাম নিজে চাপুন।'); return; }
+      if (/DocumentUpload/i.test(path)) { handleDocumentUpload(); showGuide('docs', 'প্রতিটি সারিতে ফাইল বেছে Upload চাপুন, তারপর Continue।'); return; }
+      if (/Confirm/i.test(path)) { showBadge('👀 সব যাচাই করে তারপর Confirm করুন', '#e67e22'); showGuide('conf', 'সব তথ্য ভালো করে দেখে নিচে Confirm চাপুন।'); return; }
 
       // Additional Questions পেজ: ৬টা প্রশ্নই "No" + declaration checkbox টিক
       if (/AdditionalQuestion/i.test(path)) {
         fillAdditionalQuestions();
+        showGuide('addq', 'সব প্রশ্ন "No" + declaration টিক করা হয়েছে — যাচাই করে Continue চাপুন।');
         if (res.vaAutoContinue === true) {
           await sleep(500);
           const btn = document.getElementById('continue');
@@ -369,12 +418,14 @@
         // Registration পেজ আলাদা — cascading dropdown ক্রম মেনে ভরতে হয়
         if (isRegistration) {
           await fillRegistration(active);
+          showGuide('reg', 'তথ্য বসানো হয়েছে — নিচের CAPTCHA (ছবির লেখা) টাইপ করে Continue চাপুন।');
           return; // Registration পেজে কখনো অটো-Continue নয়
         }
 
         await fillPage(active);
         await sleep(1200);
         await fillPage(active); // resume করলে সাইট নিজে reset করতে পারে — আবার বসাই
+        showGuide('form', 'সব ট্যাবের তথ্য বসানো হয়েছে — উপর থেকে নিচে যাচাই করে Continue চাপুন।');
 
         // Grandparent/SAARC — সাইট পরে reset করলেও যেন ঠিক থাকে, কয়েকবার নিশ্চিত করি
         const kf = active.flags || {};

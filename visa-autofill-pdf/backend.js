@@ -46,12 +46,22 @@ export async function rjMe() { return api('me', 'GET'); }
 
 /* per-use charge — note: কোন কাজের জন্য (webfile/passport/undertaking/pdf-edit/invoice)
    return: {ok, balance}  অথবা  {low:true, balance, need}  অথবা  {error} */
-export async function rjCharge(note) {
-  const { ok, status, j } = await api('charge', 'POST', { note: note || 'webfile' });
-  if (ok) return { ok: true, balance: j.balance };
+export async function rjCharge(note, webfileId) {
+  const body = { note: note || 'webfile' };
+  if (webfileId) body.webfileId = webfileId;
+  const { ok, status, j } = await api('charge', 'POST', body);
+  if (ok) return { ok: true, balance: j.balance, already: !!j.already };
   if (status === 402) return { ok: false, low: true, balance: j.balance, need: j.need };
   if (status === 401) return { ok: false, needLogin: true, error: j.error || 'login লাগবে' };
   return { ok: false, error: j.error || 'চার্জ ব্যর্থ' };
+}
+
+// সার্ভার-অথরিটেটিভ: এই webfile কি আগেই paid? (login না থাকলে false)
+export async function rjIsPaid(webfileId) {
+  if (!webfileId) return false;
+  if (!(await getTok())) return false;
+  const { ok, j } = await api('ispaid?id=' + encodeURIComponent(webfileId), 'GET');
+  return ok && !!j.paid;
 }
 
 /* server-side OCR (key সার্ভারে লুকানো) — dataUrl = 'data:image/...;base64,...' */

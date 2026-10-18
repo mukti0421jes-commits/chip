@@ -111,7 +111,7 @@ export function rjMountBalance(hostEl) {
 
 /* "X TK কাটবে? হ্যাঁ/না" মডাল। হ্যাঁ দিলে চার্জ করে।
    returns {charged:true, balance} | {cancelled:true} | {low:true} (রিচার্জ পেজ খোলা হয়) */
-export function rjChargeConfirm(note, label) {
+export function rjChargeConfirm(note, label, webfileId) {
   return new Promise(async (resolve) => {
     injectCss();
     // লগইন না থাকলে আগে লগইন করাই (তারপরই চার্জ কনফার্ম দেখাই)
@@ -142,7 +142,7 @@ export function rjChargeConfirm(note, label) {
     q('#rjNo').onclick = () => { ov.remove(); resolve({ cancelled: true }); };
     q('#rjYes').onclick = async () => {
       q('#rjYes').disabled = true; setMsg('প্রসেস হচ্ছে...', true);
-      const r = await rjCharge(note);
+      const r = await rjCharge(note, webfileId);
       if (r.ok) { ov.remove(); resolve({ charged: true, balance: r.balance }); return; }
       if (r.low) {
         setMsg('ব্যালেন্স কম (আছে ' + (r.balance || 0) + ' ' + cur + ')। রিচার্জ করুন।', false);

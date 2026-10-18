@@ -1,7 +1,7 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
 import { ocrImage, ocrSpace, parsePassport, toJpegDataUrl } from './ocr.js';
-import { rjOcr, rjLoggedIn } from './backend.js';
+import { rjOcr, rjLoggedIn, rjIsPaid } from './backend.js';
 import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
@@ -224,7 +224,10 @@ function renderProfiles() {
     const p = state.profiles[id];
     const div = document.createElement('div');
     div.className = 'prof' + (id === state.activeId ? ' active' : '');
-    div.innerHTML = `<div class="nm">${p.name || '(no name)'}</div>
+    div.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="nm">${p.name || '(no name)'}</div>
+        <span class="rjlock" data-lock>⏳</span>
+      </div>
       <div class="btns">
         <button data-a="use">✔ Active</button>
         <button data-a="edit">✏️ Edit</button>
@@ -239,8 +242,27 @@ function renderProfiles() {
       if (state.activeId === id) state.activeId = Object.keys(state.profiles)[0] || null;
       persist(); renderProfiles(); if (workingId === id) closeEditor();
     };
+    renderLock(div.querySelector('[data-lock]'), id);   // সার্ভার থেকে paid-স্ট্যাটাস এনে Unlock বোতাম বসায়
     box.appendChild(div);
   }
+}
+
+// প্রতি profile-এর Unlock/Paid স্ট্যাটাস — সার্ভার-অথরিটেটিভ (HTML এডিট করে ফাঁকি দেওয়া যায় না)
+async function renderLock(el, id) {
+  if (!el) return;
+  if (!(await rjLoggedIn())) { el.innerHTML = '<span style="color:#92400e;font-size:12px">🔒 লগইন লাগবে</span>'; return; }
+  const paid = await rjIsPaid(id);
+  if (paid) { el.innerHTML = '<span style="color:#0b6b4e;font-weight:800;font-size:12px" title="যতবার দরকার Fill করুন, আর টাকা কাটবে না">✓ Paid — যতবার দরকার Fill (ফ্রি)</span>'; return; }
+  el.innerHTML = '<button data-unlock style="background:linear-gradient(135deg,#0b6b4e,#12b886);border:none;color:#fff;font-weight:800;border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer">🔓 Unlock (2 TK)</button>';
+  el.querySelector('[data-unlock]').onclick = async () => {
+    const r = await rjChargeConfirm('webfile', 'এই profile Unlock', id);
+    if (r.charged) {
+      if (rjRefreshBalance) rjRefreshBalance();
+      status(r.balance != null ? ('✔ Unlocked — ব্যালেন্স ' + r.balance + ' TK') : '✔ Unlocked');
+      renderLock(el, id);
+    } else if (r.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
+    else if (r.needLogin) status('আগে লগইন করুন।', false);
+  };
 }
 
 // ---------------- editor ----------------
@@ -571,25 +593,21 @@ $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.targ
 $('autoContinueToggle').onchange = (e) => chrome.storage.local.set({ vaAutoContinue: e.target.checked });
 $('openSite').onclick = () => chrome.tabs.create({ url: SITE });
 
-// কোন কোন profile-এর জন্য ইতিমধ্যে চার্জ কাটা হয়েছে (একই webfile বারবার free)
-function getPaid() { return new Promise((r) => chrome.storage.local.get(['vaPaid'], (x) => r(x.vaPaid || {}))); }
-function setPaid(p) { return new Promise((r) => chrome.storage.local.set({ vaPaid: p }, () => r())); }
-
 $('fillNow').onclick = async () => {
   if (!state.activeId) { status('আগে একটা profile Active করুন।', false); return; }
-  // --- per-webfile charge (profile-এ একবার) ---
-  const paid = await getPaid();
-  if (!paid[state.activeId]) {
-    const r = await rjChargeConfirm('webfile', 'এই webfile টি Fill');
+  // --- per-webfile charge (server-authoritative; profile-এ একবার) ---
+  const already = await rjIsPaid(state.activeId);
+  if (!already) {
+    const r = await rjChargeConfirm('webfile', 'এই webfile টি Fill', state.activeId);
     if (!r.charged) {
       if (r.low) status('ব্যালেন্স কম — রিচার্জ করে আবার চেষ্টা করুন।', false);
       else if (r.needLogin) status('আগে লগইন করুন।', false);
       else status('বাতিল করা হয়েছে।', false);
       return;
     }
-    paid[state.activeId] = true; await setPaid(paid);
     if (rjRefreshBalance) rjRefreshBalance();
-    status('✔ ' + r.balance + ' TK ব্যালেন্স — webfile তৈরি হচ্ছে...');
+    renderProfiles();   // row-তে "✓ Paid" দেখাবে
+    status(r.balance != null ? ('✔ ' + r.balance + ' TK ব্যালেন্স — webfile তৈরি হচ্ছে...') : '✔ webfile তৈরি হচ্ছে...');
   }
   // যেকোনো উইন্ডোয় খোলা ভিসা-পেজ খুঁজি (popup বা RJ full-page — দুই জায়গা থেকেই কাজ করবে)
   let tabs = [];
