@@ -249,23 +249,20 @@ export function parsePassport(text) {
   put('fthrname', nm(/Father'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
   put('mother_name', nm(/Mother'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
   put('spouse_name', nm(/Spouse'?s?[ \t]+Na\w*[:.\s]+([A-Z][A-Z]+(?:[ \t]+[A-Z.]+){0,4})/i));
-  const tel = g(/Telephone No[:.\s]+\+?([\d][\d\s]{8,})/i);
-  if (tel) {
-    let d = tel.replace(/\D/g, '');
-    d = d.replace(/^880/, '');           // ISD আলাদা
-    if (d.length >= 10) { values['mobile'] = d; values['isd_code1'] = '880'; values['phoneofsponsor_msn'] = tel.replace(/\D/g, ''); }
-  }
-  // Permanent Address: ... (Emergency Contact-এর আগ পর্যন্ত)
-  const permM = T.match(/Permanent Address[:.\s]+([\s\S]*?)(?:Emergency Contact|Name\s*:|\n\n|$)/i);
+  // মোবাইল: যেকোনো জায়গায় +880 1XXXXXXXXX
+  const telM = T.replace(/\s/g, '').match(/\+?8801(\d{9})/);
+  if (telM) { values['mobile'] = '1' + telM[1]; values['isd_code1'] = '880'; }
+  // Permanent Address: "Emergency Contact"-এর আগ পর্যন্ত, আবর্জনা লাইন বাদ, comma দিয়ে ভাগ
+  const permM = T.match(/Permanent Address\s*[:.\s]\s*([\s\S]*?)(?:Emergency Contact|Telephone No|$)/i);
   if (permM) {
-    const parts = clean(permM[1]).split(',').map((s) => s.trim()).filter(Boolean);
-    if (parts.length) {
-      const w = clean(permM[1]).split(/\s+/).filter(Boolean);
-      values['perm_address1'] = w.slice(0, 2).join(' ');
-      const rest = w.slice(2).join(' ');
-      if (rest) values['perm_address2'] = rest.length > 35 ? rest.slice(0, 35) : rest;
-      const st = parts[parts.length - 1] || '';
-      if (/^[A-Z ]+$/.test(st.toUpperCase())) values['perm_address3'] = st.replace(/\s*-?\s*\d.*$/, '').trim();
+    const lines = permM[1].split('\n').map((x) => x.trim()).filter((x) => (x.match(/[A-Za-z]/g) || []).length >= 3);
+    const addr = clean(lines.join(' ').replace(/\s+/g, ' '));
+    const segs = addr.split(',').map((s) => s.trim()).filter(Boolean);
+    if (segs.length) {
+      const last = segs[segs.length - 1];
+      if (/^[A-Z][A-Za-z]+$/.test(last)) { values['perm_address3'] = last; segs.pop(); }
+      values['perm_address1'] = segs[0] || '';
+      if (segs.length > 1) values['perm_address2'] = segs.slice(1).join(', ');
     }
   }
 
@@ -280,8 +277,10 @@ export function parsePassport(text) {
   put('passport_expiry_date', dmy(g(/Date of Expiry\s*([0-9]{1,2}\s+[A-Z]{3}\s+[0-9]{4})/i)));
   const issAuth = g(/Issuing Auth\w*\s*([A-Z/]+)/i);
   if (/DHAKA/i.test(issAuth) || /DHAKA/i.test(T)) values['passport_issue_place'] = 'DHAKA';
-  const prevPp = g(/Previous Passport No[.:]?\s*([A-Z]{1,2}[0-9]{6,8})/i);
-  if (prevPp) { values['other_ppt_no'] = prevPp; flags.otherPassport = 'YES'; values['other_ppt_country_issue'] = 'BANGLADESH'; values['other_ppt_nat'] = 'BANGLADESH'; }
+  // Previous passport (BW/BY ইত্যাদি: ২ অক্ষর + ৭ সংখ্যা) — MRZ লাইন বাদ দিয়ে খুঁজি
+  const T2 = T.split('\n').filter((l) => !/^[A-Z0-9<]{25,}$/.test(l.replace(/\s/g, ''))).join('\n');
+  let prevPp = (T2.match(/Previous Passport No[\s\S]{0,40}?\b([A-Z]{2}\d{7})\b/i) || [])[1] ||
+               (T2.match(/\b([A-Z]{2}\d{7})\b/) || [])[1] || '';
   if (/BANGLADESH/i.test(T)) { values['country_birth'] = 'BANGLADESH'; values['nationality_id'] = 'BANGLADESH'; }
 
   // ---- MRZ (বেশি নির্ভুল — override) ----
@@ -298,6 +297,20 @@ export function parsePassport(text) {
       values['nationality_id'] = mrz.nationality;
       values['country_birth'] = CCODE[mrz.nationality] || values['country_birth'] || mrz.nationality;
     }
+  }
+
+  // Issue date: পাসপোর্টে ৩টা তারিখ (জন্ম<ইস্যু<মেয়াদ)। MRZ থেকে জন্ম+মেয়াদ নিশ্চিত,
+  // বাকি তারিখটাই ইস্যু (ছাপা label-নির্ভর নয়, তাই ভুল ক্রম হলেও ঠিক ধরে)
+  const toN = (s) => { const m = String(s).match(/(\d\d)\/(\d\d)\/(\d{4})/); return m ? +(m[3] + m[2] + m[1]) : 0; };
+  const allDates = [...new Set([...T.matchAll(/(\d{1,2})\s+([A-Z]{3})\s+(\d{4})/gi)].map((m) => dmy(m[0])).filter(Boolean))];
+  const dn = toN(values['dob_id']), en = toN(values['passport_expiry_date']);
+  const issueCand = allDates.filter((x) => { const n = toN(x); return n && n !== dn && n !== en && (!en || n < en) && (!dn || n > dn); }).sort((a, b) => toN(b) - toN(a));
+  if (issueCand.length) values['passport_issue_date'] = issueCand[0];
+
+  // Previous passport বসাই (MRZ-এর পাসপোর্টের সাথে এক না হলে)
+  if (prevPp && prevPp !== values['passport_no']) {
+    values['other_ppt_no'] = prevPp; flags.otherPassport = 'YES';
+    values['other_ppt_country_issue'] = 'BANGLADESH'; values['other_ppt_nat'] = 'BANGLADESH';
   }
 
   // Sex/Gender → সাইটের MALE/FEMALE
