@@ -245,6 +245,41 @@ function renderProfiles() {
     renderLock(div.querySelector('[data-lock]'), id);   // সার্ভার থেকে paid-স্ট্যাটাস এনে Unlock বোতাম বসায়
     box.appendChild(div);
   }
+  updateFlowGuide();
+}
+
+// ---------------- ওয়ার্কফ্লো গাইড (এখন কী করতে হবে — ধাপে ধাপে) ----------------
+async function visaTabOpen() {
+  try { const t = await chrome.tabs.query({ url: 'https://indianvisa-bangladesh.nic.in/*' }); return t.length > 0; } catch (_) { return false; }
+}
+async function updateFlowGuide() {
+  const box = $('rjFlow'); if (!box) return;
+  const ids = Object.keys(state.profiles);
+  const loggedIn = await rjLoggedIn();
+  const active = state.activeId && state.profiles[state.activeId];
+  const paid = active ? await rjIsPaid(state.activeId) : false;
+  const visaOpen = paid ? await visaTabOpen() : false;
+
+  const STAGES = ['profile তৈরি', 'Save', 'Unlock (২৳)', 'Visa সাইট খুলুন', 'Fill করুন'];
+  let cur = 0, action = '';
+  if (!ids.length) { cur = 0; action = '📄 ডান পাশে PDF/ছবি দিয়ে একটি profile বানান (অথবা "+ খালি profile তৈরি করুন")।'; }
+  else if (!active) { cur = 0; action = '👆 নিচের তালিকা থেকে একটি profile-এ "✔ Active" চাপুন।'; }
+  else if (!loggedIn) { cur = 2; action = '🔑 এখন লগইন করুন (🔓 Unlock চাপলে লগইন আসবে), তারপর Unlock করুন।'; }
+  else if (!paid) { cur = 1; action = '✏️ profile-টি "Edit" করে সব ট্যাব (Mission→References) যাচাই ও "Save" করুন → তারপর ঐ profile row-তে "🔓 Unlock (2 TK)" চাপুন।'; }
+  else if (!visaOpen) { cur = 3; action = '🌐 এখন "Visa Website খুলুন" বোতামে চাপুন — এই বোতাম দিয়ে খুললেই ফর্ম অটো-ভরবে।'; }
+  else { cur = 4; action = '⚡ "এই ভিসা পেজের ফর্ম এখন ভরো" চাপুন — তারপর ভিসা সাইটে ধাপে ধাপে গাইড পাবেন।'; }
+
+  const chips = STAGES.map((s, i) => {
+    const done = i < cur, isC = i === cur;
+    const bg = done ? '#0b6b4e' : isC ? 'linear-gradient(135deg,#0b6b4e,#12b886)' : '#e8eef7';
+    const col = (done || isC) ? '#fff' : '#41506a';
+    return `<span style="background:${bg};color:${col};border-radius:14px;padding:3px 10px;font-size:11px;font-weight:700;white-space:nowrap">${done ? '✓ ' : (i + 1) + '. '}${s}</span>`;
+  }).join('<span style="color:#9aa7ba">›</span>');
+  box.innerHTML =
+    '<div style="background:var(--card);border:1px solid var(--line);border-left:5px solid var(--brand);border-radius:12px;padding:12px 14px;margin-bottom:14px">' +
+      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">' + chips + '</div>' +
+      '<div style="font-size:14px;font-weight:700;color:var(--brand);line-height:1.5">' + action + '</div>' +
+    '</div>';
 }
 
 // প্রতি profile-এর Unlock/Paid স্ট্যাটাস — সার্ভার-অথরিটেটিভ (HTML এডিট করে ফাঁকি দেওয়া যায় না)
@@ -258,8 +293,9 @@ async function renderLock(el, id) {
     const r = await rjChargeConfirm('webfile', 'এই profile Unlock', id);
     if (r.charged) {
       if (rjRefreshBalance) rjRefreshBalance();
-      status(r.balance != null ? ('✔ Unlocked — ব্যালেন্স ' + r.balance + ' TK') : '✔ Unlocked');
+      status(r.balance != null ? ('✔ Unlocked — এখন "🌐 Visa Website খুলুন" চাপুন। ব্যালেন্স ' + r.balance + ' TK') : '✔ Unlocked — এখন Visa Website খুলুন।');
       renderLock(el, id);
+      updateFlowGuide();
     } else if (r.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
     else if (r.needLogin) status('আগে লগইন করুন।', false);
   };
@@ -284,9 +320,30 @@ function renderTabs() {
   TABS.forEach((tab, i) => {
     const b = document.createElement('button');
     b.textContent = tab.t; if (i === curTab) b.className = 'on';
-    b.onclick = () => { curTab = i; renderTabs(); renderFields(); };
+    b.onclick = () => { curTab = i; renderTabs(); renderFields(); renderEditGuide(); };
     box.appendChild(b);
   });
+  renderEditGuide();
+}
+
+// এডিটরে ট্যাব-বাই-ট্যাব গাইড: কোন ট্যাবে আছে, পরের ট্যাব/Save বোতাম
+function renderEditGuide() {
+  const g = $('editGuide'); if (!g) return;
+  const n = TABS.length, last = curTab >= n - 1;
+  const name = TABS[curTab] ? TABS[curTab].t : '';
+  const nextName = !last ? TABS[curTab + 1].t : '';
+  g.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:9px;padding:8px 12px;margin:8px 0">' +
+      '<div style="font-size:13px;color:#065f46;font-weight:700">ট্যাব ' + (curTab + 1) + '/' + n + ': ' + name +
+        ' — এই ট্যাবের ঘরগুলো দেখে নিন।' + (last ? ' সব ঠিক থাকলে নিচে <b>Save</b> করুন।' : '') + '</div>' +
+      (last
+        ? '<button id="egSave" style="background:linear-gradient(135deg,#0b6b4e,#12b886);border:none;color:#fff;font-weight:800;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">💾 Save করুন</button>'
+        : '<button id="egNext" style="background:linear-gradient(135deg,#0b6b4e,#12b886);border:none;color:#fff;font-weight:800;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">পরের ট্যাব: ' + nextName + ' ▶</button>') +
+    '</div>';
+  const nx = g.querySelector('#egNext');
+  if (nx) nx.onclick = () => { curTab = Math.min(n - 1, curTab + 1); renderTabs(); renderFields(); };
+  const sv = g.querySelector('#egSave');
+  if (sv) sv.onclick = () => $('saveBtn').click();
 }
 
 function renderFields() {
@@ -326,8 +383,9 @@ $('saveBtn').onclick = () => {
   if (!working) return;
   state.profiles[workingId] = { name: working.name, values: working.values, flags: working.flags };
   if (!state.activeId) state.activeId = workingId;
+  state.activeId = workingId;   // Save করলে সেটাই Active
   persist(); renderProfiles();
-  status('✔ Save হয়েছে — এখন ফর্ম পেজে গিয়ে "এখন ভরো" চাপুন।');
+  status('✔ Save হয়েছে — এখন নিচে "' + (working.name || 'profile') + '" row-তে "🔓 Unlock (2 TK)" চাপুন, তারপর Visa Website খুলে Fill করুন।');
 };
 $('closeEditor').onclick = closeEditor;
 

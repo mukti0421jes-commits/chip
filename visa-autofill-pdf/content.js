@@ -106,12 +106,12 @@
 
   // ---------- ধাপে ধাপে গাইড প্যানেল (paid ইউজার আটকে গেলে পথ দেখায়) ----------
   const GUIDE_STEPS = [
-    { key: 'reg',  label: '১. রেজিস্ট্রেশন — তথ্য বসবে, CAPTCHA লিখে Continue' },
-    { key: 'form', label: '২. আবেদন ফর্ম — সব ট্যাব অটো-ভরবে, যাচাই করে Continue' },
-    { key: 'addq', label: '৩. অতিরিক্ত প্রশ্ন — সব "No" + declaration টিক, Continue' },
-    { key: 'photo',label: '৪. ছবি আপলোড — ছবি বসবে, নিজে আপলোড/Confirm করুন' },
-    { key: 'docs', label: '৫. ডকুমেন্ট আপলোড — প্রতিটি সারিতে ফাইল বেছে আপলোড' },
-    { key: 'conf', label: '৬. চূড়ান্ত যাচাই — সব দেখে Confirm করুন' },
+    { key: 'reg',  label: '১. রেজিস্ট্রেশন', do: 'তথ্য বসানো হয়েছে — নিচের CAPTCHA (ছবির লেখা) টাইপ করুন, তারপর Continue চাপুন।' },
+    { key: 'form', label: '২. আবেদন ফর্ম', do: 'সব ট্যাবের তথ্য বসানো হয়েছে — উপর থেকে নিচে একবার যাচাই করে Continue চাপুন।' },
+    { key: 'addq', label: '৩. অতিরিক্ত প্রশ্ন', do: 'সব প্রশ্ন "No" + declaration টিক করা আছে — যাচাই করে Continue চাপুন।' },
+    { key: 'photo',label: '৪. ছবি আপলোড', do: 'ছবি বসানো হয়েছে — পেজের Upload/Submit বোতাম নিজে চাপুন।' },
+    { key: 'docs', label: '৫. ডকুমেন্ট আপলোড', do: 'প্রতিটি সারিতে ফাইল বেছে Upload চাপুন, তারপর Continue।' },
+    { key: 'conf', label: '৬. চূড়ান্ত যাচাই', do: 'সব তথ্য ভালো করে দেখে নিচে Confirm চাপুন — ব্যস, webfile শেষ!' },
   ];
   function stepFromPath(path) {
     if (/Registration/i.test(path)) return 'reg';
@@ -127,27 +127,50 @@
     if (!g) {
       g = document.createElement('div');
       g.id = 'rj-guide';
-      g.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:2147483646;width:300px;max-width:86vw;' +
+      g.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:2147483646;width:310px;max-width:86vw;' +
         'background:#fff;color:#0b1220;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.28);' +
         'font:13px "Noto Sans Bengali",Arial,sans-serif;overflow:hidden;border:1px solid #d7dee7';
       document.body.appendChild(g);
     }
     const curIdx = GUIDE_STEPS.findIndex((s) => s.key === curKey);
+    const cur = GUIDE_STEPS[curIdx] || null;
+    const next = GUIDE_STEPS[curIdx + 1] || null;
+    // note না দিলে ধাপের নিজস্ব 'do' দেখাই
+    const doMsg = note || (cur && cur.do) || '';
     const rows = GUIDE_STEPS.map((s, i) => {
-      const done = i < curIdx, cur = i === curIdx;
-      const ic = done ? '✓' : cur ? '▶' : '○';
-      const col = done ? '#0b6b4e' : cur ? '#0b6b4e' : '#9aa7ba';
-      const bg = cur ? 'background:#ecfdf5;' : '';
-      const wt = cur ? 'font-weight:800;' : done ? 'color:#41506a;' : 'color:#7a8aa0;';
+      const done = i < curIdx, isCur = i === curIdx;
+      const ic = done ? '✓' : isCur ? '▶' : '○';
+      const col = done ? '#0b6b4e' : isCur ? '#0b6b4e' : '#9aa7ba';
+      const bg = isCur ? 'background:#ecfdf5;' : '';
+      const wt = isCur ? 'font-weight:800;' : done ? 'color:#41506a;' : 'color:#7a8aa0;';
       return `<div style="display:flex;gap:7px;padding:5px 10px;${bg}"><span style="color:${col}">${ic}</span><span style="${wt}line-height:1.35">${s.label}</span></div>`;
     }).join('');
     g.innerHTML =
       '<div style="background:linear-gradient(135deg,#0b6b4e,#12b886);color:#fff;padding:9px 12px;font-weight:800;display:flex;justify-content:space-between;align-items:center">' +
-        '<span>📋 RJ গাইড — কী করবেন</span><span id="rj-gx" style="cursor:pointer;font-size:16px;line-height:1">✕</span></div>' +
+        '<span>📋 RJ গাইড — ধাপ ' + (curIdx + 1) + '/' + GUIDE_STEPS.length + '</span><span id="rj-gx" style="cursor:pointer;font-size:16px;line-height:1">✕</span></div>' +
       '<div style="padding:6px 0">' + rows + '</div>' +
-      (note ? '<div style="padding:8px 12px;background:#f0fdf4;color:#065f46;font-weight:700;border-top:1px solid #d7dee7">' + note + '</div>' : '') +
-      '<div style="padding:7px 12px;font-size:11px;color:#41506a;border-top:1px solid #eef2f7">✓ এই webfile paid — ভুল হলে আবার extension-এ "Fill Now" চাপুন, নতুন টাকা কাটবে না।</div>';
+      (doMsg ? '<div style="padding:9px 12px;background:#f0fdf4;color:#065f46;font-weight:700;border-top:1px solid #d7dee7;line-height:1.5">👉 এখন: ' + doMsg + '</div>' : '') +
+      (next ? '<div style="padding:7px 12px;font-size:12px;color:#0b6b4e;background:#f8fafc;border-top:1px solid #eef2f7">➡ এরপর: <b>' + next.label.replace(/^\d+\.\s*/, '') + '</b></div>'
+            : '<div style="padding:7px 12px;font-size:12px;color:#0b6b4e;background:#f8fafc;border-top:1px solid #eef2f7;font-weight:700">✅ এটাই শেষ ধাপ!</div>') +
+      '<div style="padding:7px 12px;font-size:11px;color:#41506a;border-top:1px solid #eef2f7">ভুল হলে extension-এ আবার "Fill Now" চাপুন — ঐ webfile-এ নতুন টাকা কাটবে না।</div>';
     g.querySelector('#rj-gx').onclick = () => { g.dataset.closed = '1'; g.remove(); };
+    watchContinue(cur, next);
+  }
+
+  // Continue/Submit চাপলেই তাৎক্ষণিক বার্তা — "ধাপ শেষ, পরের ধাপে যাচ্ছি"
+  function watchContinue(cur, next) {
+    const btn = document.getElementById('continue') ||
+      Array.from(document.querySelectorAll('button,input[type=submit]')).find((b) => /continue|submit|save|next/i.test((b.textContent || b.value || '')));
+    if (!btn || btn.dataset.rjWatched === '1') return;
+    btn.dataset.rjWatched = '1';
+    btn.addEventListener('click', () => {
+      const g = document.getElementById('rj-guide');
+      if (g && g.dataset.closed !== '1') {
+        const msg = next ? ('✓ ' + (cur ? cur.label.replace(/^\d+\.\s*/, '') : 'ধাপ') + ' শেষ — পরের ধাপ লোড হচ্ছে: ' + next.label.replace(/^\d+\.\s*/, ''))
+                         : '✓ শেষ ধাপ — Confirm হলে আপনার webfile সম্পন্ন!';
+        showBadge(msg, '#2563eb');
+      }
+    }, { once: true });
   }
 
   // select-এ value মিললে value দিয়ে, নাহলে দৃশ্যমান লেখা (option text) দিয়ে মেলায়।
