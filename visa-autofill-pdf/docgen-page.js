@@ -1,7 +1,16 @@
 /* RJ Automation — full-page driver (invitation → undertaking/consent + signature) */
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseInvitation, isMinor, buildPatientUndertaking, buildAttendantUndertaking, buildParentalConsent, MISSIONS } from './docgen.js';
+import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
+import { rjLoggedIn } from './backend.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
+
+let rjRefreshBalance = null;
+(async () => {
+  if (!(await rjLoggedIn())) return;            // login জোর নয় — চার্জের সময় চাইবে
+  const h = document.querySelector('header');
+  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+})();
 
 const $ = (id) => document.getElementById(id);
 const full = (p) => ((p.given || '') + ' ' + (p.surname || '')).trim();
@@ -104,8 +113,17 @@ function openPrepare(item) {
     chooseSource((src) => openSignature(b.dataset.sig, src, () => refreshSigStates()));
   });
   // generate
-  $('modalBody').querySelectorAll('[data-gen]').forEach((b) => b.onclick = () => {
+  $('modalBody').querySelectorAll('[data-gen]').forEach((b) => b.onclick = async () => {
     const d = docs[+b.dataset.gen];
+    // --- charge (ডাউনলোডের সময়) ---
+    const cr = await rjChargeConfirm('undertaking', 'এই ডকুমেন্ট ডাউনলোড');
+    if (!cr.charged) {
+      if (cr.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
+      else if (cr.needLogin) status('আগে লগইন করুন।', false);
+      else status('বাতিল করা হয়েছে।', false);
+      return;
+    }
+    if (rjRefreshBalance) rjRefreshBalance();
     try {
       let res;
       if (d.consent) res = buildParentalConsent(data, p, mission, { father: sigStore[d.sigKey + ':father'], mother: sigStore[d.sigKey + ':mother'] });

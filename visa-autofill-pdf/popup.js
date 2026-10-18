@@ -1,6 +1,8 @@
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
-import { ocrImage, ocrSpace, parsePassport } from './ocr.js';
+import { ocrImage, ocrSpace, parsePassport, toJpegDataUrl } from './ocr.js';
+import { rjOcr, rjLoggedIn } from './backend.js';
+import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 const SITE = 'https://indianvisa-bangladesh.nic.in/visa/';
@@ -111,7 +113,19 @@ let state = { profiles: {}, activeId: null };
 let vaOcrKey = '';
 // OCR.space key থাকলে ক্লাউড (নির্ভুল), নাহলে অফলাইন Tesseract
 async function getOcrText(imageLike, onProgress) {
-  const t = await (vaOcrKey ? ocrSpace(imageLike, vaOcrKey, onProgress) : ocrImage(imageLike, onProgress));
+  let t = '';
+  // ১) সার্ভার OCR (লগইন থাকলে — key সার্ভারে লুকানো, সবচেয়ে নির্ভুল)
+  if (await rjLoggedIn()) {
+    try {
+      if (onProgress) onProgress(0.2);
+      const dataUrl = await toJpegDataUrl(imageLike);
+      if (onProgress) onProgress(0.5);
+      t = await rjOcr(dataUrl);
+      if (onProgress) onProgress(1);
+    } catch (e) { t = ''; /* সার্ভার ব্যর্থ → নিচে fallback */ }
+  }
+  // ২) fallback: লোকাল OCR.space key থাকলে, নাহলে অফলাইন Tesseract
+  if (!t) t = await (vaOcrKey ? ocrSpace(imageLike, vaOcrKey, onProgress) : ocrImage(imageLike, onProgress));
   const dbg = $('ocrRaw'); if (dbg) dbg.value = t; // ডিবাগ: কাঁচা OCR টেক্সট
   return t;
 }
@@ -557,8 +571,26 @@ $('enableToggle').onchange = (e) => chrome.storage.local.set({ vaEnabled: e.targ
 $('autoContinueToggle').onchange = (e) => chrome.storage.local.set({ vaAutoContinue: e.target.checked });
 $('openSite').onclick = () => chrome.tabs.create({ url: SITE });
 
+// কোন কোন profile-এর জন্য ইতিমধ্যে চার্জ কাটা হয়েছে (একই webfile বারবার free)
+function getPaid() { return new Promise((r) => chrome.storage.local.get(['vaPaid'], (x) => r(x.vaPaid || {}))); }
+function setPaid(p) { return new Promise((r) => chrome.storage.local.set({ vaPaid: p }, () => r())); }
+
 $('fillNow').onclick = async () => {
   if (!state.activeId) { status('আগে একটা profile Active করুন।', false); return; }
+  // --- per-webfile charge (profile-এ একবার) ---
+  const paid = await getPaid();
+  if (!paid[state.activeId]) {
+    const r = await rjChargeConfirm('webfile', 'এই webfile টি Fill');
+    if (!r.charged) {
+      if (r.low) status('ব্যালেন্স কম — রিচার্জ করে আবার চেষ্টা করুন।', false);
+      else if (r.needLogin) status('আগে লগইন করুন।', false);
+      else status('বাতিল করা হয়েছে।', false);
+      return;
+    }
+    paid[state.activeId] = true; await setPaid(paid);
+    if (rjRefreshBalance) rjRefreshBalance();
+    status('✔ ' + r.balance + ' TK ব্যালেন্স — webfile তৈরি হচ্ছে...');
+  }
   // যেকোনো উইন্ডোয় খোলা ভিসা-পেজ খুঁজি (popup বা RJ full-page — দুই জায়গা থেকেই কাজ করবে)
   let tabs = [];
   try { tabs = await chrome.tabs.query({ url: 'https://indianvisa-bangladesh.nic.in/*' }); } catch (_) {}
@@ -593,7 +625,16 @@ if (spBtn && spFile) {
   spFile.onchange = async () => {
     const f = spFile.files[0]; if (!f) return;
     if (!working) { status('আগে একটা profile Edit করুন।', false); return; }
-    status(vaOcrKey ? '🔎 পাসপোর্ট OCR (ক্লাউড) চলছে...' : '🔎 পাসপোর্ট OCR চলছে (কয়েক সেকেন্ড)...');
+    // --- passport scan charge (প্রতিবার) ---
+    const cr = await rjChargeConfirm('passport', 'পাসপোর্ট স্ক্যান');
+    if (!cr.charged) {
+      if (cr.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
+      else if (cr.needLogin) status('আগে লগইন করুন।', false);
+      else status('বাতিল করা হয়েছে।', false);
+      spFile.value = ''; return;
+    }
+    if (rjRefreshBalance) rjRefreshBalance();
+    status('🔎 পাসপোর্ট OCR চলছে...');
     try {
       const text = await getOcrText(f, (p) => status('🔎 পাসপোর্ট OCR ' + Math.round(p * 100) + '%'));
       const res = parsePassport(text);
@@ -612,3 +653,11 @@ const openRJBtn = $('openRJ');
 if (openRJBtn) openRJBtn.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('docgen.html') });
 
 load();
+
+// ---------------- RJ account: balance chip (login জোর নয়, চার্জের সময় চাইবে) ----------------
+let rjRefreshBalance = null;
+(async () => {
+  if (!(await rjLoggedIn())) return;
+  const host = document.querySelector('header');
+  if (host) rjRefreshBalance = rjMountBalance(host.lastElementChild || host);
+})();

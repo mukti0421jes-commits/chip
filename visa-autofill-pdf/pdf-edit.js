@@ -1,7 +1,16 @@
 /* RJ PDF — Edit: transparent text layer over the page; click a text to edit it in place
    (whites out the original beneath), add movable new text, then flatten & download. */
 import * as pdfjsLib from './lib/pdf.min.mjs';
+import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
+import { rjLoggedIn } from './backend.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
+
+let rjRefreshBalance = null;
+(async () => {
+  if (!(await rjLoggedIn())) return;
+  const h = document.querySelector('header');
+  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+})();
 
 const $ = (id) => document.getElementById(id);
 let pages = [];   // {page,w,h,items,edits:Map(idx->text),newboxes:[], _canvas,_ctx,_vp}
@@ -145,6 +154,15 @@ function saveBytes(bytes, name) { const a = document.createElement('a'); a.href 
 
 $('tDownload').onclick = async () => {
   if (!srcBytes) { status('আগে একটি PDF লোড করুন।', false); return; }
+  // --- charge (ডাউনলোডের সময়) ---
+  const cr = await rjChargeConfirm('pdf-edit', 'এডিট করা PDF ডাউনলোড');
+  if (!cr.charged) {
+    if (cr.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
+    else if (cr.needLogin) status('আগে লগইন করুন।', false);
+    else status('বাতিল করা হয়েছে।', false);
+    return;
+  }
+  if (rjRefreshBalance) rjRefreshBalance();
   status('⏳ ফাইল তৈরি হচ্ছে...');
   try {
     // কোনো পরিবর্তন না থাকলে আসল ফাইলটাই দিই — সাইজ হুবহু একই থাকবে

@@ -1,6 +1,15 @@
 /* RJ PDF — Edit Invoice: detect IVAC payment-invoice fields, edit, preview, download (vector) */
 import * as pdfjsLib from './lib/pdf.min.mjs';
+import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
+import { rjLoggedIn } from './backend.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
+
+let rjRefreshBalance = null;
+(async () => {
+  if (!(await rjLoggedIn())) return;
+  const h = document.querySelector('header');
+  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+})();
 
 const $ = (id) => document.getElementById(id);
 let srcBytes = null, page = null, styles = {}, lines = [], zoom = 1;
@@ -132,6 +141,16 @@ $('other').onclick = () => { $('editor').classList.add('hidden'); $('empty').cla
 function ansi(s) { return String(s || '').replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); }
 function saveBytes(bytes, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
 $('save').onclick = async () => {
+  if (!srcBytes) { status('আগে একটি invoice PDF লোড করুন।', false); return; }
+  // --- charge (ডাউনলোডের সময়) ---
+  const cr = await rjChargeConfirm('invoice', 'এডিট করা Invoice ডাউনলোড');
+  if (!cr.charged) {
+    if (cr.low) status('ব্যালেন্স কম — রিচার্জ করুন।', false);
+    else if (cr.needLogin) status('আগে লগইন করুন।', false);
+    else status('বাতিল করা হয়েছে।', false);
+    return;
+  }
+  if (rjRefreshBalance) rjRefreshBalance();
   status('⏳ ফাইল তৈরি হচ্ছে...');
   try {
     const changed = fields.filter((f) => f.value !== f.orig);

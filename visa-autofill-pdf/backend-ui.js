@@ -112,8 +112,13 @@ export function rjMountBalance(hostEl) {
 /* "X TK কাটবে? হ্যাঁ/না" মডাল। হ্যাঁ দিলে চার্জ করে।
    returns {charged:true, balance} | {cancelled:true} | {low:true} (রিচার্জ পেজ খোলা হয়) */
 export function rjChargeConfirm(note, label) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     injectCss();
+    // লগইন না থাকলে আগে লগইন করাই (তারপরই চার্জ কনফার্ম দেখাই)
+    const me = await rjMe();
+    if (!me.ok || !me.j || !me.j.user) {
+      await new Promise((r) => showLoginOverlay((d) => { cachedMe = d; r(); }, {}));
+    }
     const price = rjPrice(), cur = rjCurrency();
     const ov = document.createElement('div'); ov.className = 'rjov';
     ov.innerHTML = `
