@@ -31,7 +31,7 @@ const CFG = loadConfig();
 let DB = { users: {}, txns: [], recharges: [] };
 function loadDb() { try { DB = JSON.parse(fs.readFileSync(DB_PATH, 'utf8')); } catch (_) { DB = { users: {}, txns: [], recharges: [] }; } }
 let saveTimer = null;
-function saveDb() { fs.writeFileSync(DB_PATH, JSON.stringify(DB, null, 2)); }
+function saveDb() { try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch (_) {} fs.writeFileSync(DB_PATH, JSON.stringify(DB, null, 2)); }
 loadDb();
 
 // ---------- auth helpers ----------
