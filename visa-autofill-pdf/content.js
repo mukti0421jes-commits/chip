@@ -9,6 +9,18 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // ---------- সার্ভার-অথরিটেটিভ paid চেক (manual খুললেও ফাঁকি দেওয়া যাবে না) ----------
+  const RJ_SERVER = 'https://app.duttauzzal.shop';
+  function rjToken() { return new Promise((r) => chrome.storage.local.get(['rjToken'], (x) => r(x.rjToken || ''))); }
+  async function rjIsPaid(id) {
+    const t = await rjToken(); if (!t || !id) return false;
+    try {
+      const res = await fetch(RJ_SERVER + '/api/ispaid?id=' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + t } });
+      if (!res.ok) return false;
+      const j = await res.json(); return !!j.paid;
+    } catch (_) { return false; }
+  }
+
   // data URL → File
   function dataURLtoFile(dataurl, filename, mime) {
     const arr = String(dataurl).split(',');
@@ -410,6 +422,12 @@
       }
       if (!active) {
         showBadge('⚠ কোনো profile সিলেক্ট করা নেই — extension আইকনে ক্লিক করুন', '#c0392b');
+        return;
+      }
+      // --- paid গেট: profile Unlock করা না থাকলে কিছুই ভরবে না (server-authoritative) ---
+      const paidOk = await rjIsPaid(res.vaActiveId);
+      if (!paidOk) {
+        showBadge('🔒 এই profile Unlock করা নেই — extension খুলে "🔓 Unlock (2 TK)" করুন', '#c0392b');
         return;
       }
       const path = window.location.pathname;
