@@ -1,15 +1,13 @@
 /* RJ Automation — full-page driver (invitation → undertaking/consent + signature) */
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseInvitation, isMinor, buildPatientUndertaking, buildAttendantUndertaking, buildParentalConsent, MISSIONS } from './docgen.js';
-import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
-import { rjLoggedIn } from './backend.js';
+import { rjMountAccount, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 let rjRefreshBalance = null;
-(async () => {
-  if (!(await rjLoggedIn())) return;            // login জোর নয় — চার্জের সময় চাইবে
-  const h = document.querySelector('header');
-  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+(() => {
+  const host = document.getElementById('rjAccount') || (document.querySelector('header') || {}).lastElementChild;
+  if (host) rjRefreshBalance = rjMountAccount(host);
 })();
 
 const $ = (id) => document.getElementById(id);

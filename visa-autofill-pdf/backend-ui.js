@@ -109,6 +109,59 @@ export function rjMountBalance(hostEl) {
   return refresh;
 }
 
+/* হেডারে অ্যাকাউন্ট বোতাম: logged out হলে "👤 লগইন", logged in হলে "💰 ব্যালেন্স ▾" (মেনু সহ)।
+   returns refresh() ফাংশন। */
+export function rjMountAccount(hostEl) {
+  injectCss();
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'position:relative;display:inline-block';
+  const btn = document.createElement('button');
+  btn.className = 'rjacc';
+  btn.style.cssText = 'background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.45);color:#fff;border-radius:20px;padding:6px 14px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit';
+  wrap.appendChild(btn);
+  const menu = document.createElement('div');
+  menu.style.cssText = 'position:absolute;right:0;top:110%;z-index:2147483600;min-width:210px;background:#fff;color:#0b1220;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:8px;display:none;font-family:"Noto Sans Bengali",Arial,sans-serif';
+  wrap.appendChild(menu);
+  hostEl.appendChild(wrap);
+
+  const refresh = async () => {
+    const { ok, j } = await rjMe();
+    if (ok && j.user) {
+      cachedMe = j;
+      btn.innerHTML = '💰 ' + j.user.balance + ' ' + j.currency + ' ▾';
+      const admin = j.user.isAdmin ? '<div class="rjmi" data-go="admin">🛠 অ্যাডমিন প্যানেল</div>' : '';
+      menu.innerHTML =
+        '<div style="padding:8px 10px;border-bottom:1px solid #eef2f7;font-size:12px;color:#41506a">' + j.user.email + '</div>' +
+        '<div style="padding:10px;font-size:15px;font-weight:800;color:#0b6b4e">ব্যালেন্স: ' + j.user.balance + ' ' + j.currency + '</div>' +
+        '<div class="rjmi" data-go="site">💳 রিচার্জ / অ্যাকাউন্ট</div>' + admin +
+        '<div class="rjmi" data-go="logout" style="color:#dc2626">🚪 লগআউট</div>';
+    } else {
+      cachedMe = null;
+      btn.innerHTML = '👤 লগইন / Sign up';
+      menu.innerHTML = '';
+    }
+    menu.querySelectorAll('.rjmi').forEach((m) => {
+      m.style.cssText = 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:700';
+      m.onmouseenter = () => m.style.background = '#f1f5f9';
+      m.onmouseleave = () => m.style.background = '';
+      m.onclick = async () => {
+        menu.style.display = 'none';
+        const go = m.dataset.go;
+        if (go === 'logout') { await rjLogout(); refresh(); }
+        else if (go === 'admin') { chrome.tabs ? chrome.tabs.create({ url: RJ_SERVER + '/admin' }) : window.open(RJ_SERVER + '/admin', '_blank'); }
+        else { chrome.tabs ? chrome.tabs.create({ url: RJ_SERVER }) : window.open(RJ_SERVER, '_blank'); }
+      };
+    });
+  };
+  btn.onclick = async () => {
+    if (!(await rjMe()).ok) { await new Promise((r) => showLoginOverlay((d) => { cachedMe = d; r(); }, {})); refresh(); return; }
+    menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+  };
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) menu.style.display = 'none'; });
+  refresh();
+  return refresh;
+}
+
 /* "X TK কাটবে? হ্যাঁ/না" মডাল। হ্যাঁ দিলে চার্জ করে।
    returns {charged:true, balance} | {cancelled:true} | {low:true} (রিচার্জ পেজ খোলা হয়) */
 export function rjChargeConfirm(note, label, webfileId) {

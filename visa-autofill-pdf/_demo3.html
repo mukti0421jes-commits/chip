@@ -1,0 +1,13 @@
+<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><link rel="stylesheet" href="rj-theme.css"></head>
+<body>
+<header><div class="brand"><div class="logo">RJ</div><div><b>RJ Automation</b><small>Undertaking · Consent</small></div></div>
+<div class="hbtns"><button class="hb hb-amber">✎ ম্যানুয়ালি</button><button class="hb hb-green">▦ QR</button><button class="hb hb-out">↓ অ্যাপ</button><span id="rjAccount"></span></div></header>
+<script>
+window.chrome={storage:{local:{get:(k,cb)=>cb({rjToken:'x'}),set:(o,cb)=>cb&&cb()}},tabs:{create(){}}};
+window.fetch=async()=>({ok:true,status:200,json:async()=>({user:{email:'uzzaldutta@yahoo.com',balance:46,isAdmin:true},pricePerUse:2,currency:'TK'})});
+</script>
+<script type="module">
+import { rjMountAccount } from './backend-ui.js';
+const r = rjMountAccount(document.getElementById('rjAccount'));
+setTimeout(()=>document.querySelector('.rjacc').click(),700);
+</script></body></html>

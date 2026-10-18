@@ -1,15 +1,13 @@
 /* RJ PDF — Edit: transparent text layer over the page; click a text to edit it in place
    (whites out the original beneath), add movable new text, then flatten & download. */
 import * as pdfjsLib from './lib/pdf.min.mjs';
-import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
-import { rjLoggedIn } from './backend.js';
+import { rjMountAccount, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 let rjRefreshBalance = null;
-(async () => {
-  if (!(await rjLoggedIn())) return;
+(() => {
   const h = document.querySelector('header');
-  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+  if (h) rjRefreshBalance = rjMountAccount(h.lastElementChild || h);
 })();
 
 const $ = (id) => document.getElementById(id);

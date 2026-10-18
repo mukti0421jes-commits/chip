@@ -1,14 +1,12 @@
 /* RJ PDF — Edit Invoice: detect IVAC payment-invoice fields, edit, preview, download (vector) */
 import * as pdfjsLib from './lib/pdf.min.mjs';
-import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
-import { rjLoggedIn } from './backend.js';
+import { rjMountAccount, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 let rjRefreshBalance = null;
-(async () => {
-  if (!(await rjLoggedIn())) return;
+(() => {
   const h = document.querySelector('header');
-  if (h) rjRefreshBalance = rjMountBalance(h.lastElementChild || h);
+  if (h) rjRefreshBalance = rjMountAccount(h.lastElementChild || h);
 })();
 
 const $ = (id) => document.getElementById(id);

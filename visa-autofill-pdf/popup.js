@@ -2,7 +2,7 @@ import * as pdfjsLib from './lib/pdf.min.mjs';
 import { parseVisaPdf, parseRefBlock } from './pdf-extract.js';
 import { ocrImage, ocrSpace, parsePassport, toJpegDataUrl } from './ocr.js';
 import { rjOcr, rjLoggedIn, rjIsPaid } from './backend.js';
-import { rjMountBalance, rjChargeConfirm } from './backend-ui.js';
+import { rjMountAccount, rjChargeConfirm } from './backend-ui.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
 
 const SITE = 'https://indianvisa-bangladesh.nic.in/visa/';
@@ -730,10 +730,9 @@ if (openRJBtn) openRJBtn.onclick = () => chrome.tabs.create({ url: chrome.runtim
 
 load();
 
-// ---------------- RJ account: balance chip (login জোর নয়, চার্জের সময় চাইবে) ----------------
+// ---------------- RJ account: হেডারে লগইন/অ্যাকাউন্ট বোতাম (সবসময় দেখায়) ----------------
 let rjRefreshBalance = null;
-(async () => {
-  if (!(await rjLoggedIn())) return;
+(() => {
   const host = document.querySelector('header');
-  if (host) rjRefreshBalance = rjMountBalance(host.lastElementChild || host);
+  if (host) rjRefreshBalance = rjMountAccount(host.lastElementChild || host);
 })();
