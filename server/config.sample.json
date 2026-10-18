@@ -1,0 +1,17 @@
+{
+  "port": 8080,
+  "jwtSecret": "CHANGE-THIS-TO-A-LONG-RANDOM-STRING",
+  "pricePerUse": 2,
+  "minRecharge": 50,
+  "currency": "TK",
+  "ocrSpaceKey": "",
+  "payment": {
+    "bkash": "01XXXXXXXXX (Personal / Send Money)",
+    "nagad": "01XXXXXXXXX (Personal / Send Money)",
+    "rocket": "01XXXXXXXXX (Personal)"
+  },
+  "admin": { "email": "admin@rj.local", "password": "change-me-admin" },
+  "siteName": "RJ Automation",
+  "extensionZip": "rj-automation.zip",
+  "webStoreUrl": ""
+}

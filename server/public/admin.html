@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJ Admin</title>
+<style>
+  body{margin:0;font-family:"Noto Sans Bengali",Arial,sans-serif;background:#0b1220;color:#e8eef7;font-size:15px}
+  header{background:linear-gradient(90deg,#065f46,#0f766e);padding:12px 20px;font-weight:800}
+  .wrap{max-width:900px;margin:0 auto;padding:20px}
+  .card{background:#16233b;border:1px solid #2b3a52;border-radius:12px;padding:16px;margin-bottom:14px}
+  input{width:100%;padding:9px;border-radius:8px;border:1px solid #2b3a52;background:#0e1a2e;color:#e8eef7;margin:5px 0}
+  button{padding:8px 14px;border-radius:8px;border:none;background:#12b886;color:#fff;font-weight:700;cursor:pointer}
+  button.r{background:#dc2626}button.g{background:#2563eb}
+  table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;border-bottom:1px solid #2b3a52;text-align:left}
+  .p{color:#fbbf24}.a{color:#34d399}.x{color:#f87171}
+  .msg{min-height:18px;color:#fbbf24}
+</style>
+</head>
+<body>
+<header>RJ Automation — Admin</header>
+<div class="wrap">
+  <div class="card" id="login">
+    <h3>Admin লগইন</h3>
+    <input id="email" placeholder="admin email"><input id="pass" type="password" placeholder="password">
+    <button id="loginBtn">লগইন</button> <span class="msg" id="msg"></span>
+  </div>
+  <div class="card hidden" id="panel" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">রিচার্জ রিকোয়েস্ট</h3><button class="g" id="refresh">↻ রিফ্রেশ</button></div>
+    <table id="tbl"><tbody></tbody></table>
+  </div>
+</div>
+<script>
+const $=(id)=>document.getElementById(id);
+let TOKEN=localStorage.getItem('rj_admin')||'';
+async function api(p,m,b){const r=await fetch('/api/'+p,{method:m||'GET',headers:Object.assign({'Content-Type':'application/json'},TOKEN?{Authorization:'Bearer '+TOKEN}:{}),body:b?JSON.stringify(b):undefined});return {ok:r.ok,j:await r.json().catch(()=>({}))};}
+$('loginBtn').onclick=async()=>{const {ok,j}=await api('login','POST',{email:$('email').value,password:$('pass').value});if(!ok||!j.user||!j.user.isAdmin){$('msg').textContent=j.error||'admin নয়';return;}TOKEN=j.token;localStorage.setItem('rj_admin',TOKEN);show();};
+$('refresh').onclick=load;
+function show(){$('login').style.display='none';$('panel').style.display='block';load();}
+async function load(){const {ok,j}=await api('admin/recharges');if(!ok){$('login').style.display='block';$('panel').style.display='none';return;}
+  const rows=(j.recharges||[]).map(r=>`<tr><td>${new Date(r.at).toLocaleString()}</td><td>${r.email}</td><td>${r.method}</td><td>${r.amount}</td><td>${r.txnid}</td><td class="${r.status==='approved'?'a':r.status==='rejected'?'x':'p'}">${r.status}</td><td>${r.status==='pending'?`<button onclick="approve('${r.id}')">Approve</button> <button class="r" onclick="reject('${r.id}')">Reject</button>`:''}</td></tr>`).join('');
+  $('tbl').querySelector('tbody').innerHTML='<tr><th>সময়</th><th>ইউজার</th><th>method</th><th>টাকা</th><th>TrxID</th><th>status</th><th></th></tr>'+rows;
+}
+async function approve(id){await api('admin/approve','POST',{id});load();}
+async function reject(id){await api('admin/reject','POST',{id});load();}
+window.approve=approve;window.reject=reject;
+if(TOKEN)show();
+</script>
+</body>
+</html>
